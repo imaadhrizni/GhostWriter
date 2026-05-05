@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>GhostWriter</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ghostwriter.app</string>
+    <key>CFBundleName</key>
+    <string>GhostWriter</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>GhostWriter needs microphone access to transcribe your speech into text.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>GhostWriter needs accessibility access to detect the Right Option key and inject text at your cursor.</string>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+</dict>
+</plist>

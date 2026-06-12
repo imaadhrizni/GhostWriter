@@ -213,4 +213,4 @@ let format = AVAudioFormat(
 - ✅ API key stored in macOS Keychain
 - ✅ Audio transmitted only over HTTPS to Groq
 - ✅ Memory buffers zeroed after processing
-- ✅ Open source — audit the code yourself
+- ✅ Open source — audit the code yourself 

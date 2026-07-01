@@ -65,6 +65,13 @@ final class HotkeyManager {
     // MARK: - Internal Handling
 
     fileprivate func handleEvent(_ event: CGEvent, type: CGEventType) -> Unmanaged<CGEvent>? {
+        // macOS disables the tap if a callback is slow or on certain input events.
+        // Re-enable it so the hotkey doesn't silently stop working.
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+            return Unmanaged.passRetained(event)
+        }
+
         // We only care about flagsChanged (modifier keys)
         guard type == .flagsChanged else { return Unmanaged.passRetained(event) }
 

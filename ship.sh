@@ -8,7 +8,66 @@ set -e
 APP_NAME="GhostWriter"
 # FRESH IDENTITY HERE
 BUNDLE_ID="com.ghostwriter.dictation"
-INSTALL_PATH="$HOME/Applications/${APP_NAME}.app"
+SIGN_IDENTITY="GhostWriter Dev"  # Self-signed cert from Keychain Access → Certificate Assistant
+INSTALL_PATH="/Applications/${APP_NAME}.app"
+
+# ---------------------------------------------------------------------------
+# Auto-create a stable self-signed code-signing cert (one time only).
+# Using the same cert across builds keeps macOS TCC permissions stable —
+# no more "Accessibility permission" or Keychain prompts after every rebuild.
+# ---------------------------------------------------------------------------
+ensure_signing_cert() {
+    if security find-certificate -c "${SIGN_IDENTITY}" \
+           ~/Library/Keychains/login.keychain-db &>/dev/null; then
+        echo "✅ Signing cert '${SIGN_IDENTITY}' already in keychain"
+        return 0
+    fi
+
+    echo "🔐 Creating self-signed code-signing cert '${SIGN_IDENTITY}'..."
+
+    local TMPDIR_CERT
+    TMPDIR_CERT=$(mktemp -d)
+    local KEY="${TMPDIR_CERT}/key.pem"
+    local CERT="${TMPDIR_CERT}/cert.pem"
+    local CFG="${TMPDIR_CERT}/openssl.cnf"
+
+    cat > "${CFG}" <<OPENSSL_EOF
+[ req ]
+default_bits        = 2048
+prompt              = no
+default_md          = sha256
+distinguished_name  = dn
+x509_extensions     = v3_codesign
+
+[ dn ]
+CN = ${SIGN_IDENTITY}
+
+[ v3_codesign ]
+subjectKeyIdentifier   = hash
+basicConstraints       = critical,CA:false
+keyUsage               = critical,digitalSignature
+extendedKeyUsage       = codeSigning
+OPENSSL_EOF
+
+    openssl genrsa -out "${KEY}" 2048 2>/dev/null
+    openssl req -new -x509 -key "${KEY}" -out "${CERT}" \
+        -days 3650 -config "${CFG}" 2>/dev/null
+    # Import key and cert as separate PEM files — avoids PKCS12 format issues
+    security import "${KEY}" \
+        -k ~/Library/Keychains/login.keychain-db \
+        -T /usr/bin/codesign -A
+    security import "${CERT}" \
+        -k ~/Library/Keychains/login.keychain-db \
+        -T /usr/bin/codesign -A
+
+    # Trust the cert for code signing (best-effort — may prompt for password)
+    security add-trusted-cert -p codeSign "${CERT}" 2>/dev/null || true
+
+    rm -rf "${TMPDIR_CERT}"
+    echo "✅ Cert created and trusted"
+}
+
+ensure_signing_cert
 
 echo "🧹 Cleaning up old builds..."
 rm -rf ".build"
@@ -44,19 +103,44 @@ cat <<EOF > "${APP_NAME}.app/Contents/Info.plist"
     <string>GhostWriter needs microphone access to transcribe your speech into text.</string>
     <key>NSAccessibilityUsageDescription</key>
     <string>GhostWriter needs accessibility access to detect the Right Option key and inject text at your cursor.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>GhostWriter needs system audio recording access to transcribe the other participants in your meetings.</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
 </dict>
 </plist>
 EOF
 
-echo "💾 Copying binary..."
+echo "💾 Copying binary and icon..."
 cp ".build/release/${APP_NAME}" "${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
+if [ -f "GhostWriter.icns" ]; then
+    cp "GhostWriter.icns" "${APP_NAME}.app/Contents/Resources/AppIcon.icns"
+fi
 
 echo "🔐 Signing app with FRESH Identity..."
-codesign --force --identifier "${BUNDLE_ID}" --entitlements entitlements.plist --deep --sign - "${APP_NAME}.app"
+codesign --force --identifier "${BUNDLE_ID}" --entitlements entitlements.plist --deep --sign "${SIGN_IDENTITY}" "${APP_NAME}.app" 2>/dev/null || {
+    echo "⚠️  Cert '${SIGN_IDENTITY}' not found — falling back to ad-hoc (permissions will reset on each build)"
+    codesign --force --identifier "${BUNDLE_ID}" --entitlements entitlements.plist --deep --sign - "${APP_NAME}.app"
+}
 
-echo "🚀 Installing to ${INSTALL_PATH} (Local Testing)..."
-rm -rf "${INSTALL_PATH}"
-mv "${APP_NAME}.app" "${INSTALL_PATH}"
+echo "🚀 Installing to ${INSTALL_PATH}..."
+if [ -d "${INSTALL_PATH}" ]; then
+    # Update in-place — preserves the app bundle directory so macOS doesn't invalidate
+    # Accessibility/Keychain TCC entries (replacing the whole bundle triggers re-evaluation)
+    cp "${APP_NAME}.app/Contents/MacOS/${APP_NAME}" "${INSTALL_PATH}/Contents/MacOS/${APP_NAME}"
+    cp "${APP_NAME}.app/Contents/Info.plist"         "${INSTALL_PATH}/Contents/Info.plist"
+    [ -f "${APP_NAME}.app/Contents/Resources/AppIcon.icns" ] && \
+        cp "${APP_NAME}.app/Contents/Resources/AppIcon.icns" "${INSTALL_PATH}/Contents/Resources/AppIcon.icns"
+    codesign --force --identifier "${BUNDLE_ID}" --entitlements entitlements.plist --deep \
+        --sign "${SIGN_IDENTITY}" "${INSTALL_PATH}" 2>/dev/null || \
+    codesign --force --identifier "${BUNDLE_ID}" --entitlements entitlements.plist --deep \
+        --sign - "${INSTALL_PATH}"
+    rm -rf "${APP_NAME}.app"
+else
+    mv "${APP_NAME}.app" "${INSTALL_PATH}"
+fi
 
 echo "📦 Packaging for Distribution..."
 mkdir -p .release
@@ -92,4 +176,6 @@ cd ..
 
 echo "✨ Installed LOCALLY at: ${INSTALL_PATH}"
 echo "🎁 Redistributable package ready at: .release/GhostWriter.zip"
-echo "👉 Run: open ${INSTALL_PATH}"
+echo ""
+echo "👉 Launching: open ${INSTALL_PATH}"
+open "${INSTALL_PATH}"

@@ -18,6 +18,8 @@
     <string>GhostWriter needs microphone access to transcribe your speech into text.</string>
     <key>NSAccessibilityUsageDescription</key>
     <string>GhostWriter needs accessibility access to detect the Right Option key and inject text at your cursor.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>GhostWriter needs system audio recording access to transcribe the other participants in your meetings.</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
 </dict>

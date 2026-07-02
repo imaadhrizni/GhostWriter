@@ -46,7 +46,7 @@ final class AppSettings: ObservableObject {
         static let transcriptionModel              = "whisper-large-v3"
         static let polishingModel                  = "llama-3.3-70b-versatile"
         static let pttKeyCode: Int                 = 61     // Right Option
-        static let preferBuiltInMic                = true
+        static let preferBuiltInMic                = false  // use the system default input
         static let meetingMicThreshold: Float      = -40.0
         static let systemAudioThreshold: Float     = -50.0
         static let silenceDebounce: TimeInterval   = 1.5

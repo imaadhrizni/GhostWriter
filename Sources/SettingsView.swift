@@ -154,7 +154,7 @@ private struct GeneralPane: View {
 
             SettingsGroup("Microphone") {
                 Toggle("Prefer built-in microphone", isOn: $settings.preferBuiltInMic)
-                Text("Keeps Bluetooth headphones (AirPods) in high-quality audio: using their mic forces the low-quality call profile and shifts volume. Applies to dictation and meetings.")
+                Text("Off: capture from the system default input (e.g. your headset mic). On: always use the Mac's built-in mic — keeps Bluetooth headphones (AirPods) in high-quality audio, since using their mic forces the low-quality call profile and shifts volume. Applies to dictation and meetings.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

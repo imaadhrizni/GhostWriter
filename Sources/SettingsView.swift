@@ -37,6 +37,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case general     = "General"
     case dictation   = "Dictation"
     case meeting     = "Meeting Mode"
+    case shortcuts   = "Shortcuts"
     case permissions = "Permissions"
 
     var id: String { rawValue }
@@ -46,6 +47,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general:     return "gearshape.fill"
         case .dictation:   return "mic.fill"
         case .meeting:     return "person.2.wave.2.fill"
+        case .shortcuts:   return "command"
         case .permissions: return "lock.shield.fill"
         }
     }
@@ -55,6 +57,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general:     return .gray
         case .dictation:   return .blue
         case .meeting:     return .purple
+        case .shortcuts:   return .orange
         case .permissions: return .green
         }
     }
@@ -87,6 +90,7 @@ struct SettingsView: View {
                     case .general:     GeneralPane()
                     case .dictation:   DictationPane()
                     case .meeting:     MeetingPane()
+                    case .shortcuts:   ShortcutsPane()
                     case .permissions: PermissionsPane()
                     }
                 }
@@ -211,6 +215,53 @@ private struct DictationPane: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+        }
+    }
+}
+
+// MARK: - Shortcuts
+
+private struct ShortcutsPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    private var pttKeyName: String {
+        (PTTKey(rawValue: settings.pttKeyCode) ?? .rightOption).displayName
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Dictation") {
+                ShortcutRow(keys: "Hold \(pttKeyName)", detail: "Push-to-talk — record while held, type on release")
+                ShortcutRow(keys: "Esc", detail: "Cancel an in-progress dictation (types nothing)")
+            }
+
+            SettingsGroup("Meeting Mode") {
+                ShortcutRow(keys: "⌃⌥M", detail: "Start / stop Meeting Mode")
+                ShortcutRow(keys: "⌃⌥P", detail: "Pause / resume meeting transcription")
+                ShortcutRow(keys: "⌃⌥N", detail: "Open meeting notes (live file, or the notes folder)")
+            }
+
+            Text("All shortcuts work system-wide, from any app. The push-to-talk key can be changed in the Dictation pane.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+}
+
+private struct ShortcutRow: View {
+    let keys: String
+    let detail: String
+
+    var body: some View {
+        HStack {
+            Text(keys)
+                .font(.system(.body, design: .monospaced))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
+            Text(detail)
+                .foregroundColor(.secondary)
+            Spacer()
         }
     }
 }

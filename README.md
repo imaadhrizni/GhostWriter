@@ -12,8 +12,9 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 - **Context-Aware Polishing:** Detects the app you're typing in (e.g. Slack, Mail, Xcode) and uses `llama-3.3-70b-versatile` to format dictation appropriately — casual for Slack, formal for Mail, code-friendly for IDEs.
 - **Meeting Mode:** Captures system audio via CoreAudio **process taps** (no screen-recording permission required) alongside your microphone, producing a timestamped, speaker-labeled (**You** / _Them_) transcript.
 - **Echo Suppression:** When you're on the built-in speaker instead of headphones, half-duplex gating stops the remote party's voice (picked up by your mic as echo) from being mislabeled as "You".
+- **Global Shortcuts:** Push-to-talk dictation (hold Right Option), Esc to cancel a dictation, ⌃⌥M to toggle Meeting Mode, ⌃⌥P to pause/resume transcription, ⌃⌥N to open the notes — all system-wide, from any app.
 - **Native macOS Integration:** Built entirely in Swift. CoreGraphics event taps for global hotkeys, Accessibility (`AXUIElement`) for text injection.
-- **Settings Window:** A System Settings-style sidebar UI (⌘,) — configurable AI models, push-to-talk key, meeting overlay mode, speech-detection thresholds, notes folder, and speaker labels. Everything persists and applies live.
+- **Settings Window:** A System Settings-style sidebar UI — configurable AI models, push-to-talk key, meeting overlay mode, speech-detection thresholds, notes folder, and speaker labels. Everything persists and applies live.
 - **Guided Permissions:** A live permission-status panel and menu items to authorize Microphone, System Audio Recording, and Accessibility, plus a one-click **Reset All Permissions** that clears the TCC grants and relaunches for a clean re-prompt.
 - **Secure Key Management:** Your API key is stored in the macOS Keychain.
 
@@ -46,25 +47,39 @@ A build-and-deploy script is provided:
 4. Release the key. GhostWriter transcribes, polishes, and types the result at your cursor.
 
 ### Meeting Mode
-1. Open the menu-bar icon and choose **Meeting Mode** (⌘M).
+1. Open the menu-bar icon and choose **Meeting Mode**, or press **⌃⌥M** from anywhere.
 2. GhostWriter listens to both your mic and the system audio and writes a live Markdown transcript, tagging each line as **You** or _Them_ (labels customizable).
 3. A small pill overlay indicates recording is active — switch it to live captions or hide it entirely in Settings.
 4. Choose **Meeting Mode** again to stop; the session is finalized to the notes file.
 
 ### Menu bar
-- **Meeting Mode** (⌘M) — start/stop meeting transcription.
-- **Settings…** (⌘,) — the settings window (see below).
-- **Set API Key…** (⌘K)
+- **Meeting Mode** (⌃⌥M) — start/stop meeting transcription.
+- **Pause Transcription** (⌃⌥P) — mute note-taking mid-meeting without ending the session (writes *paused/resumed* markers to the notes).
+- **Open Meeting Notes** (⌃⌥N) — the live notes file during a meeting, or the notes folder otherwise.
+- **Settings…** — the settings window (see below).
+- **Set API Key…**
 - **Permissions ▸** — authorize Microphone / System Audio Recording / Accessibility, and **Reset All Permissions…** to revoke the TCC grants and relaunch for a fresh prompt.
 
-### Settings (⌘,)
-A sidebar-style settings window with four panes:
+### Global shortcuts
+These work system-wide, from any app (they ride the same Accessibility event tap as the push-to-talk key):
+
+| Shortcut | Action |
+| --- | --- |
+| Hold **Right Option** (configurable) | Push-to-talk dictation |
+| **Esc** (while dictating) | Cancel the recording — nothing is typed |
+| **⌃⌥M** | Start / stop Meeting Mode |
+| **⌃⌥P** | Pause / resume meeting transcription |
+| **⌃⌥N** | Open meeting notes |
+
+### Settings
+A sidebar-style settings window with five panes:
 
 | Pane | Options (defaults in bold) |
 | --- | --- |
 | **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); reset all settings |
 | **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn) |
 | **Meeting Mode** | Overlay mode (**minimal pill** / live captions / hidden); notes folder (**~/Documents/Notes**); speaker labels (**You** / **Them**); echo suppression (**on**, gate **0.4 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**) |
+| **Shortcuts** | Reference card of all global shortcuts (push-to-talk, Esc, ⌃⌥M / ⌃⌥P / ⌃⌥N) |
 | **Permissions** | Live status of Microphone, System Audio Recording, and Accessibility with shortcuts to the relevant Settings panes |
 
 All values are stored in `UserDefaults` and take effect immediately — model and hotkey changes apply to the very next request/keypress, no restart needed. Every control has a per-item reset, plus a global "Reset All Settings".
@@ -82,7 +97,7 @@ All values are stored in `UserDefaults` and take effect immediately — model an
 
 | Path | Purpose |
 | --- | --- |
-| `Sources/HotkeyManager.swift` | Global Right-Option hotkey via CGEvent tap |
+| `Sources/HotkeyManager.swift` | Global hotkeys (push-to-talk, Esc, ⌃⌥ shortcuts) via CGEvent tap |
 | `Sources/AudioCapture.swift` | Microphone capture + VAD |
 | `Sources/SystemAudioCapture.swift` | System-audio capture via CoreAudio process taps |
 | `Sources/GroqService.swift` | Groq transcription + polishing API client |

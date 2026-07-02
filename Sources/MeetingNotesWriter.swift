@@ -73,6 +73,15 @@ final class MeetingNotesWriter {
         append(line, to: fileURL)
     }
 
+    /// Appends an italic event marker (e.g. "Transcription paused") with a timestamp.
+    func appendMarker(_ text: String) {
+        guard let fileURL = currentFilePath else { return }
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH:mm:ss"
+        let timestamp = timeFormatter.string(from: Date())
+        append("*[\(timestamp)] — \(text)*\n\n", to: fileURL)
+    }
+
     // MARK: - Private
 
     private func append(_ text: String, to url: URL) {

@@ -61,6 +61,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let meetingNotes = MeetingNotesWriter()
     private var meetingStartTime: Date?
 
+    // Pause (⌃⌥P): gate transcription without ending the session.
+    // Read from the audio queues, written on main — guarded by a lock.
+    private let pauseLock = NSLock()
+    private var meetingTranscriptionPaused = false
+    private var isTranscriptionPaused: Bool {
+        pauseLock.lock(); defer { pauseLock.unlock() }
+        return meetingTranscriptionPaused
+    }
+    private func setTranscriptionPaused(_ value: Bool) {
+        pauseLock.lock(); meetingTranscriptionPaused = value; pauseLock.unlock()
+    }
+    private var pauseMenuItem: NSMenuItem?
+
     // Support logic
     private var hasPromptedForPermissions = false
 
@@ -141,21 +154,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
 
         // ── Actions ─────────────────────────────────────────────
+        // ⌃⌥M is a true global hotkey (handled by the CGEventTap); the key shown
+        // here is display-only so users can discover it.
         let meetingItem = NSMenuItem(title: "Meeting Mode", action: #selector(toggleMeetingMode), keyEquivalent: "m")
+        meetingItem.keyEquivalentModifierMask = [.control, .option]
         meetingItem.image = NSImage(systemSymbolName: "person.2.wave.2", accessibilityDescription: nil)
         meetingItem.target = self
         menu.addItem(meetingItem)
         self.meetingModeMenuItem = meetingItem
 
+        let pauseItem = NSMenuItem(title: "Pause Transcription", action: #selector(togglePauseTranscription), keyEquivalent: "p")
+        pauseItem.keyEquivalentModifierMask = [.control, .option]
+        pauseItem.image = NSImage(systemSymbolName: "pause.circle", accessibilityDescription: nil)
+        pauseItem.target = self
+        menu.addItem(pauseItem)
+        self.pauseMenuItem = pauseItem
+
+        let notesItem = NSMenuItem(title: "Open Meeting Notes", action: #selector(openNotes), keyEquivalent: "n")
+        notesItem.keyEquivalentModifierMask = [.control, .option]
+        notesItem.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)
+        notesItem.target = self
+        menu.addItem(notesItem)
+
         menu.addItem(NSMenuItem.separator())
 
         // ── Configuration ───────────────────────────────────────
-        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettingsWindow), keyEquivalent: ",")
+        // No key equivalents on window-opening items: this is a background app
+        // (LSUIElement), so menu shortcuts only fire while the menu is open —
+        // showing ⌘, / ⌘K would just mislead.
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettingsWindow), keyEquivalent: "")
         settingsItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         settingsItem.target = self
         menu.addItem(settingsItem)
 
-        let apiKeyItem = NSMenuItem(title: "Set API Key…", action: #selector(showAPIKeyWindow), keyEquivalent: "k")
+        let apiKeyItem = NSMenuItem(title: "Set API Key…", action: #selector(showAPIKeyWindow), keyEquivalent: "")
         apiKeyItem.image = NSImage(systemSymbolName: "key", accessibilityDescription: nil)
         apiKeyItem.target = self
         menu.addItem(apiKeyItem)
@@ -288,6 +320,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyManager.onKeyUp = { [weak self] in
             self?.stopRecordingAndProcess()
         }
+
+        // ⌃⌥M — global Meeting Mode toggle (works while the app is in background)
+        hotkeyManager.onMeetingModeHotkey = { [weak self] in
+            self?.toggleMeetingMode()
+        }
+
+        // ⌃⌥N — open the live meeting notes file, or the notes folder when idle
+        hotkeyManager.onOpenNotesHotkey = { [weak self] in
+            self?.openNotes()
+        }
+
+        // ⌃⌥P — pause/resume meeting transcription (no-op outside meetings)
+        hotkeyManager.onPauseMeetingHotkey = { [weak self] in
+            self?.togglePauseTranscription()
+        }
+
+        // Esc — cancel an in-flight dictation without typing anything
+        hotkeyManager.shouldCaptureEscape = { [weak self] in
+            self?.appState.recordingState == .listening
+        }
+        hotkeyManager.onCancelDictation = { [weak self] in
+            self?.cancelRecording()
+        }
+    }
+
+    // MARK: - Notes & Pause Hotkeys
+
+    /// ⌃⌥N: reveal the live meeting notes file, or the notes folder when idle.
+    @objc private func openNotes() {
+        if let file = meetingNotes.currentFilePath {
+            NSWorkspace.shared.open(file)
+        } else {
+            let folder = settings.notesFolder
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(folder)
+        }
+    }
+
+    /// ⌃⌥P: pause/resume meeting transcription without ending the session.
+    @objc private func togglePauseTranscription() {
+        guard appState.isMeetingMode else { return }
+
+        pauseLock.lock()
+        meetingTranscriptionPaused.toggle()
+        let paused = meetingTranscriptionPaused
+        pauseLock.unlock()
+
+        // Drop any half-captured speech so nothing straddles the pause boundary.
+        meetingQueue.async { [weak self] in
+            self?.meetingSpeechBuffer = Data()
+            self?.meetingLastVoiceTime = nil
+            self?.meetingSegmentStart = nil
+        }
+        micMeetingQueue.async { [weak self] in
+            self?.micMeetingSpeechBuffer = Data()
+            self?.micMeetingLastVoiceTime = nil
+            self?.micMeetingSegmentStart = nil
+        }
+
+        meetingNotes.appendMarker(paused ? "Transcription paused" : "Transcription resumed")
+        pauseMenuItem?.title = paused ? "Resume Transcription" : "Pause Transcription"
+        appState.meetingCaption = paused ? "Paused" : "Listening to meeting…"
+        appState.isSpeakerActive = false
+        statusItem?.button?.image = NSImage(
+            systemSymbolName: paused ? "pause.circle.fill" : "headphones.circle.fill",
+            accessibilityDescription: "Meeting Mode")
+        print(paused ? "⏸ Transcription paused" : "▶️ Transcription resumed")
     }
 
     // MARK: - PTT Recording Flow
@@ -314,6 +413,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         audioCapture.start()
+    }
+
+    /// Esc pressed while recording: discard the buffer, type nothing.
+    private func cancelRecording() {
+        guard appState.recordingState == .listening else { return }
+        audioCapture.stop()
+        audioBuffer = Data()
+        appState.recordingState = .idle
+        if !appState.isMeetingMode { overlayPanel?.orderOut(nil) }
+        print("🎤 Dictation cancelled (Esc)")
     }
 
     private func stopRecordingAndProcess() {
@@ -386,6 +495,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.isMeetingMode = true
         appState.meetingCaption = "Listening to meeting…"
         appState.isSpeakerActive = false
+        setTranscriptionPaused(false)
+        pauseMenuItem?.title = "Pause Transcription"
         meetingModeMenuItem?.state = .on
         meetingStartTime = Date()
         meetingNotes.beginSession()
@@ -425,6 +536,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         speakerLastActiveTime = nil
         echoGateLock.unlock()
 
+        setTranscriptionPaused(false)
+        DispatchQueue.main.async { [weak self] in
+            self?.pauseMenuItem?.title = "Pause Transcription"
+        }
+
         if let start = meetingStartTime {
             meetingNotes.endSession(startedAt: start)
             meetingStartTime = nil
@@ -462,7 +578,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vad.silenceDebounce = 0.1  // We handle our own longer debounce below
 
         systemAudioCapture.onAudioBuffer = { [weak self] buffer in
-            guard let self else { return }
+            guard let self, !self.isTranscriptionPaused else { return }
             let rms = vad.calculateRMS(from: buffer)
             let dbfs = vad.rmsToDBFS(rms)
             let isVoice = dbfs >= self.settings.systemAudioThreshold
@@ -477,7 +593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupMicMeetingCallback() {
         let vad = VoiceActivityDetector()
         micCapture.onAudioBuffer = { [weak self] buffer in
-            guard let self else { return }
+            guard let self, !self.isTranscriptionPaused else { return }
             let rms = vad.calculateRMS(from: buffer)
             let isVoice = vad.rmsToDBFS(rms) >= self.settings.meetingMicThreshold  // mic threshold — louder than system audio
             self.micMeetingQueue.async { [weak self] in
@@ -677,6 +793,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openPermissions() {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
         NSWorkspace.shared.open(url)
+    }
+
+    /// Grey out "Pause Transcription" when no meeting is running.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem === pauseMenuItem { return appState.isMeetingMode }
+        return true
     }
 
     private func showError(_ message: String) {

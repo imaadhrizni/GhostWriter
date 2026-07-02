@@ -148,26 +148,6 @@ private struct GeneralPane: View {
                 )
             }
 
-            SettingsGroup("Meeting Overlay") {
-                HStack {
-                    Text("Display")
-                    Spacer()
-                    Picker("", selection: $settings.overlayMode) {
-                        ForEach(MeetingOverlayMode.allCases) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 240)
-                    DefaultResetButton(isDefault: settings.overlayMode == AppSettings.Default.overlayMode) {
-                        settings.overlayMode = AppSettings.Default.overlayMode
-                    }
-                }
-                Text(settings.overlayMode.help)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
             SettingsGroup("Maintenance") {
                 ResetToDefaultsRow()
             }
@@ -239,9 +219,30 @@ private struct DictationPane: View {
 
 private struct MeetingPane: View {
     @ObservedObject private var settings = AppSettings.shared
+    @State private var showAdvanced = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Overlay") {
+                HStack {
+                    Text("During meetings show")
+                    Spacer()
+                    Picker("", selection: $settings.overlayMode) {
+                        ForEach(MeetingOverlayMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 240)
+                    DefaultResetButton(isDefault: settings.overlayMode == AppSettings.Default.overlayMode) {
+                        settings.overlayMode = AppSettings.Default.overlayMode
+                    }
+                }
+                Text(settings.overlayMode.help)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             SettingsGroup("Notes") {
                 HStack {
                     Text("Save to")
@@ -271,34 +272,6 @@ private struct MeetingPane: View {
                 }
             }
 
-            SettingsGroup("Segmenting") {
-                DurationSlider(
-                    title: "Pause before flushing a segment",
-                    value: $settings.silenceDebounce, range: 0.5...4.0, step: 0.1, unit: "s",
-                    defaultValue: AppSettings.Default.silenceDebounce
-                )
-                DurationSlider(
-                    title: "Maximum segment length",
-                    value: $settings.maxSegmentSeconds, range: 10...25, step: 1, unit: "s",
-                    defaultValue: AppSettings.Default.maxSegmentSeconds
-                )
-            }
-
-            SettingsGroup("Voice Detection") {
-                ThresholdSlider(
-                    title: "Your microphone",
-                    value: $settings.meetingMicThreshold, range: -60...(-20),
-                    defaultValue: AppSettings.Default.meetingMicThreshold,
-                    help: nil
-                )
-                ThresholdSlider(
-                    title: "System audio (others)",
-                    value: $settings.systemAudioThreshold, range: -70...(-30),
-                    defaultValue: AppSettings.Default.systemAudioThreshold,
-                    help: nil
-                )
-            }
-
             SettingsGroup("Echo Suppression") {
                 Toggle("Suppress speaker echo (built-in speaker mode)", isOn: $settings.echoSuppressionEnabled)
                 if settings.echoSuppressionEnabled {
@@ -311,6 +284,43 @@ private struct MeetingPane: View {
                 Text("Prevents the other side's voice — heard through your speakers — from being transcribed as you. Not needed with headphones.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+
+            // Expert knobs, collapsed by default so the pane isn't intimidating.
+            DisclosureGroup(isExpanded: $showAdvanced) {
+                VStack(alignment: .leading, spacing: 16) {
+                    SettingsGroup("Voice Detection") {
+                        ThresholdSlider(
+                            title: "Your microphone",
+                            value: $settings.meetingMicThreshold, range: -60...(-20),
+                            defaultValue: AppSettings.Default.meetingMicThreshold,
+                            help: "Mic audio above this level counts as your speech."
+                        )
+                        ThresholdSlider(
+                            title: "System audio (others)",
+                            value: $settings.systemAudioThreshold, range: -70...(-30),
+                            defaultValue: AppSettings.Default.systemAudioThreshold,
+                            help: "System audio above this level counts as the other participants speaking."
+                        )
+                    }
+
+                    SettingsGroup("Segmenting") {
+                        DurationSlider(
+                            title: "Pause before flushing a segment",
+                            value: $settings.silenceDebounce, range: 0.5...4.0, step: 0.1, unit: "s",
+                            defaultValue: AppSettings.Default.silenceDebounce
+                        )
+                        DurationSlider(
+                            title: "Maximum segment length",
+                            value: $settings.maxSegmentSeconds, range: 10...25, step: 1, unit: "s",
+                            defaultValue: AppSettings.Default.maxSegmentSeconds
+                        )
+                    }
+                }
+                .padding(.top, 8)
+            } label: {
+                Label("Advanced", systemImage: "slider.horizontal.3")
+                    .font(.headline)
             }
         }
     }

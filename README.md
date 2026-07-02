@@ -62,9 +62,9 @@ A sidebar-style settings window with four panes:
 
 | Pane | Options (defaults in bold) |
 | --- | --- |
-| **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); meeting overlay mode (**minimal pill** / live captions / hidden); reset all settings |
+| **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); reset all settings |
 | **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn) |
-| **Meeting Mode** | Notes folder (**~/Documents/Notes**); speaker labels (**You** / **Them**); segment flush pause (**1.5 s**); max segment length (**25 s**); mic threshold (**−40 dBFS**); system-audio threshold (**−50 dBFS**); echo suppression (**on**, gate **0.4 s**) |
+| **Meeting Mode** | Overlay mode (**minimal pill** / live captions / hidden); notes folder (**~/Documents/Notes**); speaker labels (**You** / **Them**); echo suppression (**on**, gate **0.4 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**) |
 | **Permissions** | Live status of Microphone, System Audio Recording, and Accessibility with shortcuts to the relevant Settings panes |
 
 All values are stored in `UserDefaults` and take effect immediately — model and hotkey changes apply to the very next request/keypress, no restart needed. Every control has a per-item reset, plus a global "Reset All Settings".

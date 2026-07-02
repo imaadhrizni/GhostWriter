@@ -52,7 +52,7 @@ A build-and-deploy script is provided:
 3. A small pill overlay indicates recording is active — switch it to live captions or hide it entirely in Settings.
 4. Choose **Meeting Mode** again to stop; the session is finalized to the notes file.
 
-> **Bluetooth headsets (AirPods):** while Meeting Mode uses the AirPods microphone, Bluetooth switches from the high-quality A2DP profile to the HFP call profile — the audio-quality/volume shift you hear is inherent to Bluetooth mics (all conferencing apps do this). GhostWriter fully releases the mic when the meeting ends, so AirPods return to full quality immediately.
+> **Bluetooth headsets (AirPods):** using a Bluetooth microphone forces AirPods from the high-quality A2DP profile into the HFP call profile — output quality drops and volume shifts (all conferencing apps have this). By default GhostWriter avoids this entirely: **"Prefer built-in microphone"** (Settings → General) captures your voice from the Mac's built-in mic for both dictation and meetings, so AirPods stay in full quality throughout. Turn it off if you specifically want the headset mic; the mic is fully released after each use either way.
 
 ### Menu bar
 - **Meeting Mode** (⌃⌥M) — start/stop meeting transcription.
@@ -78,7 +78,7 @@ A sidebar-style settings window with five panes:
 
 | Pane | Options (defaults in bold) |
 | --- | --- |
-| **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); reset all settings |
+| **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); prefer built-in microphone (**on** — keeps AirPods in high-quality audio); reset all settings |
 | **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn) |
 | **Meeting Mode** | Overlay mode (**minimal pill** / live captions / hidden); notes folder (**~/Documents/Notes**); speaker labels (**You** / **Them**); echo suppression (**on**, gate **0.4 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**) |
 | **Shortcuts** | Reference card of all global shortcuts (push-to-talk, Esc, ⌃⌥M / ⌃⌥P / ⌃⌥N) |

@@ -20,6 +20,7 @@ final class AppSettings: ObservableObject {
         static let transcriptionModel     = "api.transcriptionModel"
         static let polishingModel         = "api.polishingModel"
         static let pttKeyCode             = "dictation.pttKeyCode"
+        static let preferBuiltInMic       = "audio.preferBuiltInMic"
         static let meetingMicThreshold    = "meeting.micThresholdDBFS"
         static let systemAudioThreshold   = "meeting.systemAudioThresholdDBFS"
         static let silenceDebounce        = "meeting.silenceDebounceSeconds"
@@ -32,6 +33,7 @@ final class AppSettings: ObservableObject {
         static let overlayMode            = "meeting.overlayMode"
 
         static let all = [transcriptionModel, polishingModel, pttKeyCode,
+                          preferBuiltInMic,
                           meetingMicThreshold, systemAudioThreshold,
                           silenceDebounce, maxSegmentSeconds, echoGateWindow,
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
@@ -44,6 +46,7 @@ final class AppSettings: ObservableObject {
         static let transcriptionModel              = "whisper-large-v3"
         static let polishingModel                  = "llama-3.3-70b-versatile"
         static let pttKeyCode: Int                 = 61     // Right Option
+        static let preferBuiltInMic                = true
         static let meetingMicThreshold: Float      = -40.0
         static let systemAudioThreshold: Float     = -50.0
         static let silenceDebounce: TimeInterval   = 1.5
@@ -80,6 +83,14 @@ final class AppSettings: ObservableObject {
     var pttKeyCode: Int {
         get { int(Key.pttKeyCode, Default.pttKeyCode) }
         set { set(newValue, Key.pttKeyCode) }
+    }
+
+    /// Prefer the built-in Mac microphone over Bluetooth mics. Keeps AirPods in
+    /// the high-quality A2DP profile (using their mic forces the HFP call profile,
+    /// which degrades output quality and shifts volume).
+    var preferBuiltInMic: Bool {
+        get { bool(Key.preferBuiltInMic, Default.preferBuiltInMic) }
+        set { set(newValue, Key.preferBuiltInMic) }
     }
 
     // MARK: - Meeting Mode

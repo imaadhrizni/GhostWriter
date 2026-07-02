@@ -152,6 +152,13 @@ private struct GeneralPane: View {
                 )
             }
 
+            SettingsGroup("Microphone") {
+                Toggle("Prefer built-in microphone", isOn: $settings.preferBuiltInMic)
+                Text("Keeps Bluetooth headphones (AirPods) in high-quality audio: using their mic forces the low-quality call profile and shifts volume. Applies to dictation and meetings.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             SettingsGroup("Maintenance") {
                 ResetToDefaultsRow()
             }

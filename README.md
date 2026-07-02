@@ -16,7 +16,7 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 - **Native macOS Integration:** Built entirely in Swift. CoreGraphics event taps for global hotkeys, Accessibility (`AXUIElement`) for text injection.
 - **Settings Window:** A System Settings-style sidebar UI — configurable AI models, push-to-talk key, meeting overlay mode, speech-detection thresholds, notes folder, and speaker labels. Everything persists and applies live.
 - **Guided Permissions:** A live permission-status panel and menu items to authorize Microphone, System Audio Recording, and Accessibility, plus a one-click **Reset All Permissions** that clears the TCC grants and relaunches for a clean re-prompt.
-- **Secure Key Management:** Your API key is stored in the macOS Keychain.
+- **Secure Key Management:** Your API key is verified against the Groq API at setup and stored in the macOS Keychain — never on disk in plain text.
 
 ## 🚀 Installation
 
@@ -37,7 +37,7 @@ A build-and-deploy script is provided:
 ## ⚙️ Setup & Usage
 
 ### First launch
-1. **API Key:** GhostWriter prompts for a [Groq API Key](https://console.groq.com/keys) — enter your key starting with `gsk_`.
+1. **API Key:** GhostWriter prompts for a [Groq API Key](https://console.groq.com/keys) — enter your key starting with `gsk_`. The key is verified live against the Groq API before saving and stored in the macOS Keychain (change it later via menu bar → Set API Key…).
 2. **Permissions:** macOS presents native prompts for **Microphone**, **System Audio Recording**, and **Accessibility**. Grant all three. (Accessibility must be toggled on in System Settings — that's a macOS requirement; the app detects the grant and starts the hotkey without needing a relaunch.)
 
 ### Dictation

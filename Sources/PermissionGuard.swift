@@ -22,13 +22,13 @@ final class PermissionGuard {
     /// Requests microphone permission. Returns true if granted.
     func requestMicrophonePermission() async -> Bool {
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
-        print("🎙️ Current Microphone Status: \(status.rawValue)")
+        Log.permissions.debug("🎙️ Current Microphone Status: \(status.rawValue)")
 
         switch status {
         case .authorized:
             return true
         case .notDetermined:
-            print("🎙️ Requesting Mic — Attempting to force prompt...")
+            Log.permissions.debug("🎙️ Requesting Mic — Attempting to force prompt...")
             await NSApplication.shared.activate(ignoringOtherApps: true)
             
             // First try the polite way
@@ -45,7 +45,7 @@ final class PermissionGuard {
             try? await Task.sleep(for: .seconds(2))
             return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         case .denied, .restricted:
-            print("🎤 Microphone permission denied in System Settings. Opening Settings...")
+            Log.permissions.info("🎤 Microphone permission denied in System Settings. Opening Settings...")
             openMicrophoneSettings()
             return false
         @unknown default:
@@ -110,7 +110,7 @@ final class PermissionGuard {
         let trusted = AXIsProcessTrustedWithOptions(options)
 
         if !trusted {
-            print("♿ Accessibility permission not granted — prompting user")
+            Log.permissions.info("♿ Accessibility permission not granted — prompting user")
         }
 
         return trusted
@@ -152,10 +152,10 @@ final class PermissionGuard {
                 task.waitUntilExit()
                 if task.terminationStatus != 0 {
                     // Non-zero is expected when the app has no entry for that service yet.
-                    print("ℹ️ tccutil reset \(service) exited \(task.terminationStatus)")
+                    Log.permissions.info("ℹ️ tccutil reset \(service) exited \(task.terminationStatus)")
                 }
             } catch {
-                print("❌ tccutil reset \(service) failed: \(error.localizedDescription)")
+                Log.permissions.error("❌ tccutil reset \(service) failed: \(error.localizedDescription)")
                 allOK = false
             }
         }

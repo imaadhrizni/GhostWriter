@@ -91,7 +91,7 @@ enum GroqError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingAPIKey:
-            return "Groq API key not set. Set GROQ_API_KEY environment variable."
+            return "Groq API key not set. Add one via the menu bar → Set API Key…"
         case .invalidResponse:
             return "Invalid response from Groq API."
         case .apiError(let code, let message):

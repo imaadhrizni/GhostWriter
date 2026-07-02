@@ -19,6 +19,8 @@ final class SystemAudioCapture {
     private var tapID: AudioObjectID = kAudioObjectUnknown
     private var aggregateDeviceID: AudioObjectID = kAudioObjectUnknown
     private var ioProcID: AudioDeviceIOProcID?
+    /// Self pointer retained for the IOProc's clientData; released in stop().
+    private var retainedSelf: UnsafeMutableRawPointer?
 
     private let audioQueue = DispatchQueue(label: "com.ghostwriter.systemaudio", qos: .userInteractive)
     private let targetFormat = AVAudioFormat(
@@ -46,7 +48,7 @@ final class SystemAudioCapture {
             stop()
             return true
         } catch {
-            print("ℹ️ System audio permission probe failed: \(error.localizedDescription)")
+            Log.audio.info("ℹ️ System audio permission probe failed: \(error.localizedDescription)")
             stop()
             return false
         }
@@ -70,13 +72,13 @@ final class SystemAudioCapture {
         guard tapStatus == noErr else { throw CaptureError.tapCreationFailed(tapStatus) }
         tapID = tapObjectID
         let tapUID = try readString(object: tapObjectID, selector: kAudioTapPropertyUID)
-        print("🎵 Tap created: \(tapUID)")
+        Log.audio.debug("🎵 Tap created: \(tapUID)")
 
         // 2. Find built-in (non-Bluetooth) output device for clock stability
         guard let clockUID = builtInOutputDeviceUID() else {
             destroyTap(); throw CaptureError.noClockDevice
         }
-        print("🎵 Clock source: \(clockUID)")
+        Log.audio.debug("🎵 Clock source: \(clockUID)")
 
         // 3. Create aggregate device
         //    kAudioAggregateDeviceTapAutoStartKey intentionally omitted:
@@ -105,11 +107,12 @@ final class SystemAudioCapture {
 
         // 5. Read the hardware stream format from the aggregate device
         let hwFormat = try aggregateInputFormat(deviceID: aggID)
-        print("🎵 Aggregate hardware format: \(hwFormat)")
+        Log.audio.debug("🎵 Aggregate hardware format: \(hwFormat)")
         converter = AVAudioConverter(from: hwFormat, to: targetFormat)
 
         // 6. Register IOProc and start the device directly (no AVAudioEngine)
         let selfPtr = Unmanaged.passRetained(self).toOpaque()
+        retainedSelf = selfPtr
 
         let procStatus = AudioDeviceCreateIOProcID(aggID, { _, _, inData, _, _, _, clientData in
             guard let ptr = clientData else { return noErr }
@@ -119,7 +122,7 @@ final class SystemAudioCapture {
         }, selfPtr, &ioProcID)
 
         guard procStatus == noErr, let ioProcID else {
-            Unmanaged<SystemAudioCapture>.fromOpaque(selfPtr).release()
+            releaseRetainedSelf()
             destroyAggregate(); destroyTap()
             throw CaptureError.ioProcFailed(procStatus)
         }
@@ -127,15 +130,15 @@ final class SystemAudioCapture {
 
         let startStatus = AudioDeviceStart(aggID, ioProcID)
         guard startStatus == noErr else {
-            Unmanaged<SystemAudioCapture>.fromOpaque(selfPtr).release()
             AudioDeviceDestroyIOProcID(aggID, ioProcID)
             self.ioProcID = nil
+            releaseRetainedSelf()
             destroyAggregate(); destroyTap()
             throw CaptureError.startFailed(startStatus)
         }
 
         isRunning = true
-        print("🎵 System audio capture started (CoreAudio IOProc)")
+        Log.audio.info("🎵 System audio capture started (CoreAudio IOProc)")
     }
 
     func stop() {
@@ -147,12 +150,19 @@ final class SystemAudioCapture {
             AudioDeviceDestroyIOProcID(aggregateDeviceID, proc)
             ioProcID = nil
         }
-        // Release the retained self pointer registered with the IOProc
-        // (only safe once the IOProc is fully stopped)
+        // Balance the passRetained from start() — only safe once the IOProc
+        // is fully stopped and can no longer call back with the pointer.
+        releaseRetainedSelf()
         destroyAggregate()
         destroyTap()
         converter = nil
-        print("🎵 System audio capture stopped")
+        Log.audio.info("🎵 System audio capture stopped")
+    }
+
+    private func releaseRetainedSelf() {
+        guard let ptr = retainedSelf else { return }
+        retainedSelf = nil
+        Unmanaged<SystemAudioCapture>.fromOpaque(ptr).release()
     }
 
     // MARK: - IOProc handler (called on the CoreAudio I/O thread)
@@ -203,7 +213,7 @@ final class SystemAudioCapture {
         var streamsSize: UInt32 = 0
         AudioObjectGetPropertyDataSize(deviceID, &streamsProp, 0, nil, &streamsSize)
         let streamCount = Int(streamsSize) / MemoryLayout<AudioStreamID>.size
-        print("🎵 Aggregate input stream count: \(streamCount)")
+        Log.audio.debug("🎵 Aggregate input stream count: \(streamCount)")
 
         if streamCount > 0 {
             var streamIDs = [AudioStreamID](repeating: 0, count: streamCount)

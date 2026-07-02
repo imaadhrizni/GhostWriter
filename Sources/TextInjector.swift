@@ -20,7 +20,7 @@ final class TextInjector {
         let axElement = element as! AXUIElement
         let setResult = AXUIElementSetAttributeValue(axElement, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
         if setResult == .success {
-            print("✅ Text injected via AX")
+            Log.dictation.debug("✅ Text injected via AX")
             return true
         }
         return false
@@ -47,6 +47,6 @@ final class TextInjector {
                 pasteboard.setString(saved, forType: .string)
             }
         }
-        print("✅ Text injected via clipboard")
+        Log.dictation.debug("✅ Text injected via clipboard")
     }
 }

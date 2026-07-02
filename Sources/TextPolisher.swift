@@ -61,7 +61,7 @@ final class TextPolisher {
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             // Graceful degradation: return raw text on error
-            print("⚠️ Polishing failed — returning raw text")
+            Log.api.warning("⚠️ Polishing failed — returning raw text")
             return rawText
         }
 

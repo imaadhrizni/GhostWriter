@@ -16,8 +16,14 @@ final class AudioCapture {
 
     // MARK: - Private State
 
-    private let engine = AVAudioEngine()
+    // Recreated on every stop: a stopped AVAudioEngine still holds its input
+    // HAL unit, which keeps the mic "in use" — on Bluetooth headsets (AirPods)
+    // that pins them in the low-quality HFP call profile until the app quits.
+    private var engine = AVAudioEngine()
     private var isRunning = false
+
+    /// Cached converter — creating one per buffer is wasteful (~10×/sec).
+    private var converter: AVAudioConverter?
 
     /// Target format for Groq Whisper: 16kHz, 16-bit signed integer, mono
     private lazy var targetFormat: AVAudioFormat = {
@@ -48,9 +54,9 @@ final class AudioCapture {
         do {
             try engine.start()
             isRunning = true
-            print("🎙️ Audio capture started — 16kHz PCM, memory-only")
+            Log.audio.debug("🎙️ Audio capture started — 16kHz PCM, memory-only")
         } catch {
-            print("❌ Failed to start audio engine: \(error)")
+            Log.audio.error("❌ Failed to start audio engine: \(error)")
         }
     }
 
@@ -60,8 +66,13 @@ final class AudioCapture {
 
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        engine.reset()
+        // Drop the engine entirely so the input HAL unit is truly released —
+        // this lets Bluetooth headsets fall back from HFP to A2DP immediately.
+        engine = AVAudioEngine()
+        converter = nil
         isRunning = false
-        print("🎙️ Audio capture stopped")
+        Log.audio.debug("🎙️ Audio capture stopped")
     }
 
     // MARK: - Buffer Processing
@@ -69,9 +80,13 @@ final class AudioCapture {
     /// Convert the captured buffer to our target format (16kHz, 16-bit, mono)
     /// and emit as raw Data.
     private func processBuffer(_ buffer: AVAudioPCMBuffer, from sourceFormat: AVAudioFormat) {
-        // Create a converter from input format to target format
-        guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
-            print("❌ Cannot create audio converter")
+        // Reuse the converter across buffers; rebuild only if the format changed
+        // (e.g. AirPods switching profiles mid-capture).
+        if converter == nil || converter?.inputFormat != sourceFormat {
+            converter = AVAudioConverter(from: sourceFormat, to: targetFormat)
+        }
+        guard let converter else {
+            Log.audio.error("❌ Cannot create audio converter")
             return
         }
 
@@ -98,7 +113,7 @@ final class AudioCapture {
         }
 
         if let error {
-            print("❌ Audio conversion error: \(error)")
+            Log.audio.error("❌ Audio conversion error: \(error)")
             return
         }
 

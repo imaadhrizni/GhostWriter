@@ -423,7 +423,19 @@ private struct PermissionsPane: View {
                 ) { permissionGuard.openAccessibilitySettings() }
             }
 
-            Text("Changes made in System Settings are picked up automatically. If a permission is stuck after an update, use “Reset All Permissions…” in the menu bar.")
+            SettingsGroup("Maintenance") {
+                HStack {
+                    Text("Revoke all grants and relaunch so macOS prompts again. Use this if a permission is stuck after an update.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Reset All Permissions…", role: .destructive) {
+                        NotificationCenter.default.post(name: .resetAllPermissions, object: nil)
+                    }
+                }
+            }
+
+            Text("Changes made in System Settings are picked up automatically.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -591,8 +603,9 @@ private struct ResetToDefaultsRow: View {
 // MARK: - Helpers
 
 extension Notification.Name {
-    static let showAPIKeyWindow = Notification.Name("ShowAPIKeyWindow")
-    static let settingsDidReset = Notification.Name("SettingsDidReset")
+    static let showAPIKeyWindow    = Notification.Name("ShowAPIKeyWindow")
+    static let settingsDidReset    = Notification.Name("SettingsDidReset")
+    static let resetAllPermissions = Notification.Name("ResetAllPermissions")
 }
 
 private extension String {

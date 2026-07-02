@@ -12,6 +12,19 @@ final class MeetingNotesWriter {
     /// Read live from settings so a folder change applies to the next session.
     private var notesDirectory: URL { AppSettings.shared.notesFolder }
 
+    // Formatters are expensive to create — build once. This class is only used
+    // from the transcription Tasks one line at a time, so this is safe.
+    private static let fileNameFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return f
+    }()
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
     // MARK: - Session Lifecycle
 
     /// Call when meeting mode starts. Creates the notes file and writes the header.
@@ -19,9 +32,7 @@ final class MeetingNotesWriter {
         do {
             try FileManager.default.createDirectory(at: notesDirectory, withIntermediateDirectories: true)
 
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-            let timestamp = formatter.string(from: Date())
+            let timestamp = Self.fileNameFormatter.string(from: Date())
             let fileName = "Meeting_\(timestamp).md"
             let fileURL = notesDirectory.appendingPathComponent(fileName)
 
@@ -34,9 +45,9 @@ final class MeetingNotesWriter {
             try header.write(to: fileURL, atomically: true, encoding: .utf8)
 
             currentFilePath = fileURL
-            print("📝 Meeting notes → \(fileURL.path)")
+            Log.meeting.info("📝 Meeting notes → \(fileURL.path)")
         } catch {
-            print("❌ Could not create meeting notes file: \(error.localizedDescription)")
+            Log.meeting.error("❌ Could not create meeting notes file: \(error.localizedDescription)")
         }
     }
 
@@ -50,7 +61,7 @@ final class MeetingNotesWriter {
 
         append(footer, to: fileURL)
         currentFilePath = nil
-        print("📝 Meeting notes saved")
+        Log.meeting.info("📝 Meeting notes saved")
     }
 
     // MARK: - Appending Transcripts
@@ -59,9 +70,7 @@ final class MeetingNotesWriter {
     func append(segment text: String, speaker: String = "Them") {
         guard let fileURL = currentFilePath else { return }
 
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "HH:mm:ss"
-        let timestamp = timeFormatter.string(from: Date())
+        let timestamp = Self.timeFormatter.string(from: Date())
 
         // "You"/"Them" are role keys — map them to the user's custom labels
         // (falling back to defaults if a label was left empty in Settings).
@@ -76,9 +85,7 @@ final class MeetingNotesWriter {
     /// Appends an italic event marker (e.g. "Transcription paused") with a timestamp.
     func appendMarker(_ text: String) {
         guard let fileURL = currentFilePath else { return }
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "HH:mm:ss"
-        let timestamp = timeFormatter.string(from: Date())
+        let timestamp = Self.timeFormatter.string(from: Date())
         append("*[\(timestamp)] — \(text)*\n\n", to: fileURL)
     }
 

@@ -58,7 +58,7 @@ final class HotkeyManager {
             callback: HotkeyManager_hotkeyCallback,
             userInfo: selfPointer
         ) else {
-            print("❌ Failed to create CGEventTap — check Accessibility permissions")
+            Log.hotkey.error("❌ Failed to create CGEventTap — check Accessibility permissions")
             return false
         }
 
@@ -69,7 +69,7 @@ final class HotkeyManager {
         // Modern Swift API for enabling the tap
         CGEvent.tapEnable(tap: tap, enable: true)
 
-        print("⌨️ Sentinel active — listening for \(pttKey.displayName)")
+        Log.hotkey.info("⌨️ Sentinel active — listening for \(self.pttKey.displayName)")
         return true
     }
 
@@ -77,7 +77,7 @@ final class HotkeyManager {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
             eventTap = nil
-            print("⌨️ Sentinel stopped")
+            Log.hotkey.info("⌨️ Sentinel stopped")
         }
     }
 

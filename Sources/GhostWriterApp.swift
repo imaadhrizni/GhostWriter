@@ -87,15 +87,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(onAPIKeySaved), name: NSNotification.Name("APIKeySaved"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(showAPIKeyWindow), name: .showAPIKeyWindow, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onSettingsChanged), name: .settingsDidReset, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(resetPermissions), name: .resetAllPermissions, object: nil)
 
         if KeychainService.groqAPIKey() == nil {
-            print("🔑 API Key missing — showing setup window")
+            Log.app.info("🔑 API Key missing — showing setup window")
             showAPIKeyWindow()
         } else {
             finishInitialization()
         }
 
-        print("🎤 GhostWriter launched")
+        Log.app.info("🎤 GhostWriter launched")
     }
 
     private func finishInitialization() {
@@ -148,7 +149,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
 
         // ── Header ──────────────────────────────────────────────
-        let titleItem = NSMenuItem(title: "GhostWriter v0.1.0", action: nil, keyEquivalent: "")
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+        let titleItem = NSMenuItem(title: "GhostWriter v\(version)", action: nil, keyEquivalent: "")
         titleItem.isEnabled = false
         menu.addItem(titleItem)
         menu.addItem(NSMenuItem.separator())
@@ -386,7 +388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.button?.image = NSImage(
             systemSymbolName: paused ? "pause.circle.fill" : "headphones.circle.fill",
             accessibilityDescription: "Meeting Mode")
-        print(paused ? "⏸ Transcription paused" : "▶️ Transcription resumed")
+        Log.meeting.info("\(paused ? "⏸ Transcription paused" : "▶️ Transcription resumed")")
     }
 
     // MARK: - PTT Recording Flow
@@ -394,7 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startRecording() {
         guard permissionGuard.hasMicrophonePermission,
               permissionGuard.hasAccessibilityPermission else {
-            print("⚠️ Missing permissions — cannot record")
+            Log.dictation.warning("⚠️ Missing permissions — cannot record")
             if !hasPromptedForPermissions {
                 Task { @MainActor in await checkPermissions() }
             }
@@ -422,7 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         audioBuffer = Data()
         appState.recordingState = .idle
         if !appState.isMeetingMode { overlayPanel?.orderOut(nil) }
-        print("🎤 Dictation cancelled (Esc)")
+        Log.dictation.debug("🎤 Dictation cancelled (Esc)")
     }
 
     private func stopRecordingAndProcess() {
@@ -460,7 +462,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if !appState.isMeetingMode { overlayPanel?.orderOut(nil) }
                 }
             } catch {
-                print("❌ Pipeline error: \(error)")
+                Log.dictation.error("❌ Pipeline error: \(error)")
                 await MainActor.run { appState.recordingState = .error(error.localizedDescription) }
                 try? await Task.sleep(for: .seconds(2))
                 await MainActor.run {
@@ -483,12 +485,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func startMeetingMode() async {
-        // Ensure screen recording permission (SCShareableContent will prompt if needed)
+        // Transcription needs the Groq key — fail fast with guidance instead of
+        // silently producing an empty notes file.
+        guard KeychainService.groqAPIKey() != nil else {
+            showAPIKeyWindow()
+            return
+        }
+
+        // Starting the capture chain surfaces the System Audio Recording TCC
+        // prompt on first use; a failure here usually means it was denied.
         do {
             try await systemAudioCapture.start()
         } catch {
-            print("❌ Could not start system audio capture: \(error.localizedDescription)")
-            showError("Screen Recording permission is required for Meeting Mode. Enable it in System Settings → Privacy & Security → Screen Recording.")
+            Log.meeting.error("❌ Could not start system audio capture: \(error.localizedDescription)")
+            showError("System Audio Recording permission is required for Meeting Mode. Enable GhostWriter in System Settings → Privacy & Security → Screen & System Audio Recording.")
             return
         }
 
@@ -517,7 +527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 panel.orderOut(nil)
             }
         }
-        print("📡 Meeting Mode ON")
+        Log.meeting.info("📡 Meeting Mode ON")
 
         setupMeetingAudioCallback()
         setupMicMeetingCallback()
@@ -569,7 +579,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     panel.orderOut(nil)
                 }
             }
-            print("📡 Meeting Mode OFF")
+            Log.meeting.info("📡 Meeting Mode OFF")
         }
     }
 
@@ -650,10 +660,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty,
                       !self.whisperHallucinations.contains(trimmed.lowercased()) else { return }
-                print("🎤 You: \(trimmed)")
+                Log.meeting.debug("🎤 You: \(trimmed)")
                 self.meetingNotes.append(segment: trimmed, speaker: "You")
             } catch {
-                print("❌ Mic transcription error: \(error.localizedDescription)")
+                Log.meeting.error("❌ Mic transcription error: \(error.localizedDescription)")
             }
         }
     }
@@ -721,7 +731,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Whisper hallucinates on very short clips
         let minBytes = 16000 * 2 / 2  // 0.5s at 16kHz Int16
         guard capturedAudio.count >= minBytes else {
-            print("⏭ Segment too short (\(capturedAudio.count) bytes), skipping")
+            Log.meeting.debug("⏭ Segment too short (\(capturedAudio.count) bytes), skipping")
             return
         }
 
@@ -733,11 +743,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
                 // Discard known Whisper hallucinations
                 guard !self.whisperHallucinations.contains(trimmed.lowercased()) else {
-                    print("⏭ Filtered hallucination: '\(trimmed)'")
+                    Log.meeting.debug("⏭ Filtered hallucination: '\(trimmed)'")
                     return
                 }
 
-                print("📡 Meeting transcript: \(trimmed)")
+                Log.meeting.debug("📡 Meeting transcript: \(trimmed)")
                 self.meetingNotes.append(segment: trimmed)
                 if self.settings.overlayMode == .captions {
                     await MainActor.run { [weak self] in
@@ -745,7 +755,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             } catch {
-                print("❌ Meeting transcription error: \(error.localizedDescription)")
+                Log.meeting.error("❌ Meeting transcription error: \(error.localizedDescription)")
             }
         }
     }

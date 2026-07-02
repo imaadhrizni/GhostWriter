@@ -52,6 +52,8 @@ A build-and-deploy script is provided:
 3. A small pill overlay indicates recording is active — switch it to live captions or hide it entirely in Settings.
 4. Choose **Meeting Mode** again to stop; the session is finalized to the notes file.
 
+> **Bluetooth headsets (AirPods):** while Meeting Mode uses the AirPods microphone, Bluetooth switches from the high-quality A2DP profile to the HFP call profile — the audio-quality/volume shift you hear is inherent to Bluetooth mics (all conferencing apps do this). GhostWriter fully releases the mic when the meeting ends, so AirPods return to full quality immediately.
+
 ### Menu bar
 - **Meeting Mode** (⌃⌥M) — start/stop meeting transcription.
 - **Pause Transcription** (⌃⌥P) — mute note-taking mid-meeting without ending the session (writes *paused/resumed* markers to the notes).
@@ -80,7 +82,7 @@ A sidebar-style settings window with five panes:
 | **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn) |
 | **Meeting Mode** | Overlay mode (**minimal pill** / live captions / hidden); notes folder (**~/Documents/Notes**); speaker labels (**You** / **Them**); echo suppression (**on**, gate **0.4 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**) |
 | **Shortcuts** | Reference card of all global shortcuts (push-to-talk, Esc, ⌃⌥M / ⌃⌥P / ⌃⌥N) |
-| **Permissions** | Live status of Microphone, System Audio Recording, and Accessibility with shortcuts to the relevant Settings panes |
+| **Permissions** | Live status of Microphone, System Audio Recording, and Accessibility with shortcuts to the relevant Settings panes, plus Reset All Permissions |
 
 All values are stored in `UserDefaults` and take effect immediately — model and hotkey changes apply to the very next request/keypress, no restart needed. Every control has a per-item reset, plus a global "Reset All Settings".
 
@@ -92,6 +94,10 @@ All values are stored in `UserDefaults` and take effect immediately — model an
 - **Input/Output:** `CoreGraphics` CGEvent taps for the global hotkey; `ApplicationServices` `AXUIElement` API for text injection.
 - **UI:** SwiftUI for the API-key onboarding and the floating recording indicator.
 - **AI backend:** REST calls to Groq's Whisper (`whisper-large-v3`) and Llama (`llama-3.3-70b-versatile`) models.
+- **Logging:** unified `os.Logger` with per-feature categories. Rare lifecycle events at info, errors/warnings always persisted, high-frequency events at debug (transcript content is privacy-redacted). Inspect with:
+  ```bash
+  log stream --predicate 'subsystem BEGINSWITH "com.ghostwriter"' --level debug
+  ```
 
 ## 📁 Project Layout
 
@@ -106,6 +112,7 @@ All values are stored in `UserDefaults` and take effect immediately — model an
 | `Sources/MeetingNotesWriter.swift` | Markdown transcript writer |
 | `Sources/PermissionGuard.swift` | Mic / Accessibility / System-audio permission handling |
 | `Sources/AppSettings.swift` | UserDefaults-backed settings store with defaults |
+| `Sources/Log.swift` | os.Logger categories (visible in Console.app) |
 | `Sources/SettingsView.swift` | Sidebar-style settings window (SwiftUI) |
 | `Sources/GhostWriterApp.swift` | Menu-bar app, meeting mode, permission flow |
 | `ship.sh` | Build, bundle, sign, and install to `/Applications` |

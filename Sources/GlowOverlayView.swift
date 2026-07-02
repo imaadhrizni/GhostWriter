@@ -9,32 +9,81 @@ struct GlowOverlayView: View {
     var body: some View {
         ZStack {
             if state.isMeetingMode {
-                MeetingPillView(
+                MeetingOverlayView(
                     isSpeakerActive: state.isSpeakerActive,
-                    isRecording: state.recordingState == .listening
+                    isRecording: state.recordingState == .listening,
+                    caption: state.meetingCaption,
+                    showCaptions: AppSettings.shared.overlayMode == .captions
                 )
+                .frame(width: 380, height: 120)
             } else {
-                switch state.recordingState {
-                case .idle:
-                    EmptyView()
-                case .listening:
-                    ListeningView(audioLevel: state.audioLevel)
-                case .processing:
-                    ProcessingView()
-                case .done:
-                    DoneView()
-                case .error(let message):
-                    ErrorView(message: message)
+                Group {
+                    switch state.recordingState {
+                    case .idle:
+                        EmptyView()
+                    case .listening:
+                        ListeningView(audioLevel: state.audioLevel)
+                    case .processing:
+                        ProcessingView()
+                    case .done:
+                        DoneView()
+                    case .error(let message):
+                        ErrorView(message: message)
+                    }
                 }
+                .frame(width: 180, height: 180)
             }
         }
-        .frame(width: 180, height: 180)
         .animation(.easeInOut(duration: 0.3), value: state.recordingState)
         .animation(.easeInOut(duration: 0.3), value: state.isMeetingMode)
     }
 }
 
-// MARK: - Meeting Mode Pill
+// MARK: - Meeting Mode Overlay (pill + optional live captions)
+
+private struct MeetingOverlayView: View {
+    let isSpeakerActive: Bool
+    let isRecording: Bool
+    let caption: String
+    let showCaptions: Bool
+
+    /// Captions fade out after this many seconds without a new line.
+    private static let captionLingerSeconds: UInt64 = 6
+
+    @State private var captionOpacity: Double = 0
+
+    var body: some View {
+        VStack(spacing: 8) {
+            MeetingPillView(isSpeakerActive: isSpeakerActive, isRecording: isRecording)
+
+            if showCaptions && !caption.isEmpty {
+                Text(caption)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.95))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(.black.opacity(0.75))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                            )
+                    )
+                    .frame(maxWidth: 360)
+                    .opacity(captionOpacity)
+                    .task(id: caption) {
+                        // New caption: show it, then fade after a quiet period.
+                        withAnimation(.easeIn(duration: 0.2)) { captionOpacity = 1 }
+                        try? await Task.sleep(nanoseconds: Self.captionLingerSeconds * 1_000_000_000)
+                        withAnimation(.easeOut(duration: 1.0)) { captionOpacity = 0 }
+                    }
+            }
+        }
+    }
+}
 
 private struct MeetingPillView: View {
     let isSpeakerActive: Bool

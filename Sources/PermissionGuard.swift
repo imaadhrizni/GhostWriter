@@ -61,6 +61,20 @@ final class PermissionGuard {
 
     // MARK: - System Audio Recording
 
+    /// Best-effort status of the System Audio Recording permission.
+    /// There is no public query API for this TCC category, so we preflight via
+    /// the TCC framework (same approach as AudioCap). Returns nil if unavailable.
+    var hasSystemAudioPermission: Bool? {
+        typealias PreflightFunc = @convention(c) (CFString, CFDictionary?) -> Int32
+        guard let handle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC", RTLD_NOW),
+              let sym = dlsym(handle, "TCCAccessPreflight") else { return nil }
+        let preflight = unsafeBitCast(sym, to: PreflightFunc.self)
+        // 0 = granted, 1 = denied, 2 = prompt required (not yet determined)
+        let result = preflight("kTCCServiceAudioCapture" as CFString, nil)
+        dlclose(handle)
+        return result == 0
+    }
+
     /// Opens System Settings → Privacy & Security → Screen & System Audio Recording.
     /// This is where the "System Audio Recording Only" (CoreAudio process tap) permission lives.
     func openSystemAudioSettings() {

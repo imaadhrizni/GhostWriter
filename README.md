@@ -13,7 +13,8 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 - **Meeting Mode:** Captures system audio via CoreAudio **process taps** (no screen-recording permission required) alongside your microphone, producing a timestamped, speaker-labeled (**You** / _Them_) transcript.
 - **Echo Suppression:** When you're on the built-in speaker instead of headphones, half-duplex gating stops the remote party's voice (picked up by your mic as echo) from being mislabeled as "You".
 - **Native macOS Integration:** Built entirely in Swift. CoreGraphics event taps for global hotkeys, Accessibility (`AXUIElement`) for text injection.
-- **Guided Permissions:** In-app menu items to authorize Microphone, System Audio Recording, and Accessibility, plus a one-click **Reset All Permissions** that clears the TCC grants and relaunches for a clean re-prompt.
+- **Settings Window:** A System Settings-style sidebar UI (⌘,) — configurable AI models, push-to-talk key, meeting overlay mode, speech-detection thresholds, notes folder, and speaker labels. Everything persists and applies live.
+- **Guided Permissions:** A live permission-status panel and menu items to authorize Microphone, System Audio Recording, and Accessibility, plus a one-click **Reset All Permissions** that clears the TCC grants and relaunches for a clean re-prompt.
 - **Secure Key Management:** Your API key is stored in the macOS Keychain.
 
 ## 🚀 Installation
@@ -40,19 +41,33 @@ A build-and-deploy script is provided:
 
 ### Dictation
 1. Place your cursor in any text field, in any app.
-2. Press and hold the **Right Option** key — a glowing indicator appears.
+2. Press and hold the push-to-talk key (**Right Option** by default, configurable in Settings) — a glowing indicator appears.
 3. Speak naturally.
 4. Release the key. GhostWriter transcribes, polishes, and types the result at your cursor.
 
 ### Meeting Mode
 1. Open the menu-bar icon and choose **Meeting Mode** (⌘M).
-2. GhostWriter listens to both your mic and the system audio and writes a live Markdown transcript, tagging each line as **You** or _Them_.
-3. Choose **Meeting Mode** again to stop; the session is finalized to the notes file.
+2. GhostWriter listens to both your mic and the system audio and writes a live Markdown transcript, tagging each line as **You** or _Them_ (labels customizable).
+3. A small pill overlay indicates recording is active — switch it to live captions or hide it entirely in Settings.
+4. Choose **Meeting Mode** again to stop; the session is finalized to the notes file.
 
-### Menu-bar actions
-- **Set API Key…**
-- **Authorize Microphone… / System Audio Recording… / Accessibility…** — trigger the native prompt or open the relevant Settings pane.
-- **Reset All Permissions…** — revoke GhostWriter's TCC grants and relaunch for a fresh prompt.
+### Menu bar
+- **Meeting Mode** (⌘M) — start/stop meeting transcription.
+- **Settings…** (⌘,) — the settings window (see below).
+- **Set API Key…** (⌘K)
+- **Permissions ▸** — authorize Microphone / System Audio Recording / Accessibility, and **Reset All Permissions…** to revoke the TCC grants and relaunch for a fresh prompt.
+
+### Settings (⌘,)
+A sidebar-style settings window with four panes:
+
+| Pane | Options (defaults in bold) |
+| --- | --- |
+| **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); meeting overlay mode (**minimal pill** / live captions / hidden); reset all settings |
+| **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn) |
+| **Meeting Mode** | Notes folder (**~/Documents/Notes**); speaker labels (**You** / **Them**); segment flush pause (**1.5 s**); max segment length (**25 s**); mic threshold (**−40 dBFS**); system-audio threshold (**−50 dBFS**); echo suppression (**on**, gate **0.4 s**) |
+| **Permissions** | Live status of Microphone, System Audio Recording, and Accessibility with shortcuts to the relevant Settings panes |
+
+All values are stored in `UserDefaults` and take effect immediately — model and hotkey changes apply to the very next request/keypress, no restart needed. Every control has a per-item reset, plus a global "Reset All Settings".
 
 ## 🛠 Tech Stack & Architecture
 
@@ -75,6 +90,8 @@ A build-and-deploy script is provided:
 | `Sources/TextInjector.swift` | Accessibility-based text injection |
 | `Sources/MeetingNotesWriter.swift` | Markdown transcript writer |
 | `Sources/PermissionGuard.swift` | Mic / Accessibility / System-audio permission handling |
+| `Sources/AppSettings.swift` | UserDefaults-backed settings store with defaults |
+| `Sources/SettingsView.swift` | Sidebar-style settings window (SwiftUI) |
 | `Sources/GhostWriterApp.swift` | Menu-bar app, meeting mode, permission flow |
 | `ship.sh` | Build, bundle, sign, and install to `/Applications` |
 | `make_icon.swift` | Generates the app icon (`GhostWriter.icns`) |

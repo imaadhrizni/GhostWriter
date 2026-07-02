@@ -40,8 +40,8 @@ final class GroqService {
 
         var body = Data()
 
-        // Model parameter
-        body.appendMultipart(name: "model", value: "whisper-large-v3", boundary: boundary)
+        // Model parameter (user-configurable in Settings)
+        body.appendMultipart(name: "model", value: AppSettings.shared.transcriptionModel, boundary: boundary)
 
         // Language hint (optional — helps accuracy)
         body.appendMultipart(name: "language", value: "en", boundary: boundary)

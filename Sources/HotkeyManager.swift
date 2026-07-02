@@ -6,10 +6,12 @@ import CoreGraphics
 /// This allows us to listen to keys even when the app is in the background or has no focus.
 final class HotkeyManager {
 
-    // MARK: - Constants
+    // MARK: - Configuration
 
-    /// Right Option key code on most Mac keyboards
-    private static let rightOptionKeyCode: Int64 = 61
+    /// The push-to-talk key, read live from settings (default: Right Option).
+    private var pttKey: PTTKey {
+        PTTKey(rawValue: AppSettings.shared.pttKeyCode) ?? .rightOption
+    }
 
     // MARK: - State
 
@@ -50,7 +52,7 @@ final class HotkeyManager {
         // Modern Swift API for enabling the tap
         CGEvent.tapEnable(tap: tap, enable: true)
 
-        print("⌨️ Sentinel active — listening for Right Option key")
+        print("⌨️ Sentinel active — listening for \(pttKey.displayName)")
         return true
     }
 
@@ -78,14 +80,15 @@ final class HotkeyManager {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
 
-        // Specifically looking for Right Option (keyCode 61)
-        if keyCode == Self.rightOptionKeyCode {
-            let isOptionPressed = flags.contains(.maskAlternate)
+        // Match the configured push-to-talk key (default: Right Option, keyCode 61)
+        let key = pttKey
+        if keyCode == Int64(key.rawValue) {
+            let isModifierPressed = flags.rawValue & key.flagMask != 0
 
-            if isOptionPressed && !isPressed {
+            if isModifierPressed && !isPressed {
                 isPressed = true
                 onKeyDown?()
-            } else if !isOptionPressed && isPressed {
+            } else if !isModifierPressed && isPressed {
                 isPressed = false
                 onKeyUp?()
             }

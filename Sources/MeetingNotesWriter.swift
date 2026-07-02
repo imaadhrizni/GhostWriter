@@ -8,12 +8,9 @@ import Foundation
 final class MeetingNotesWriter {
 
     private(set) var currentFilePath: URL?
-    private let notesDirectory: URL
 
-    init() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        notesDirectory = docs.appendingPathComponent("Notes", isDirectory: true)
-    }
+    /// Read live from settings so a folder change applies to the next session.
+    private var notesDirectory: URL { AppSettings.shared.notesFolder }
 
     // MARK: - Session Lifecycle
 
@@ -66,7 +63,12 @@ final class MeetingNotesWriter {
         timeFormatter.dateFormat = "HH:mm:ss"
         let timestamp = timeFormatter.string(from: Date())
 
-        let speakerTag = speaker == "You" ? "**You**" : "_Them_"
+        // "You"/"Them" are role keys — map them to the user's custom labels
+        // (falling back to defaults if a label was left empty in Settings).
+        let settings = AppSettings.shared
+        let you  = settings.speakerLabelYou.isEmpty  ? AppSettings.Default.speakerLabelYou  : settings.speakerLabelYou
+        let them = settings.speakerLabelThem.isEmpty ? AppSettings.Default.speakerLabelThem : settings.speakerLabelThem
+        let speakerTag = speaker == "You" ? "**\(you)**" : "_\(them)_"
         let line = "**[\(timestamp)]** \(speakerTag): \(text)\n\n"
         append(line, to: fileURL)
     }

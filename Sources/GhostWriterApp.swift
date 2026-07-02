@@ -12,7 +12,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlayPanel: NSPanel?
     private var overlayHostingView: NSHostingView<GlowOverlayView>?
     private var apiKeyWindowController: APIKeyWindowController?
+    private var settingsWindowController: SettingsWindowController?
     private var meetingModeMenuItem: NSMenuItem?
+
+    // Settings (UserDefaults-backed, live)
+    private let settings = AppSettings.shared
 
     // Core services
     private let permissionGuard = PermissionGuard()
@@ -36,8 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var meetingSpeechBuffer = Data()
     private var meetingLastVoiceTime: Date?
     private var meetingSegmentStart: Date?
-    private let meetingSilenceDebounce: TimeInterval = 1.5
-    private let meetingMaxSegmentSeconds: TimeInterval = 25.0
+    private var meetingSilenceDebounce: TimeInterval { settings.silenceDebounce }
+    private var meetingMaxSegmentSeconds: TimeInterval { settings.maxSegmentSeconds }
 
     // Meeting mode state — microphone (self), accessed on micMeetingQueue
     private let micMeetingQueue = DispatchQueue(label: "com.ghostwriter.meeting.mic", qos: .userInteractive)
@@ -51,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // mislabels it "You". We gate the mic while the speaker is (recently) active.
     private let echoGateLock = NSLock()
     private var speakerLastActiveTime: Date?
-    private let echoGateWindow: TimeInterval = 0.4  // mute mic for this long after speaker audio
+    private var echoGateWindow: TimeInterval { settings.echoGateWindow }  // mute mic for this long after speaker audio
 
     // Meeting notes
     private let meetingNotes = MeetingNotesWriter()
@@ -68,6 +72,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupHotkeyCallbacks()
 
         NotificationCenter.default.addObserver(self, selector: #selector(onAPIKeySaved), name: NSNotification.Name("APIKeySaved"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showAPIKeyWindow), name: .showAPIKeyWindow, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(onSettingsChanged), name: .settingsDidReset, object: nil)
 
         if KeychainService.groqAPIKey() == nil {
             print("🔑 API Key missing — showing setup window")
@@ -88,6 +94,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func onAPIKeySaved() {
         finishInitialization()
+    }
+
+    @objc private func showSettingsWindow() {
+        if settingsWindowController == nil {
+            settingsWindowController = SettingsWindowController()
+        }
+        settingsWindowController?.showAndActivate()
+    }
+
+    @objc private func onSettingsChanged() {
+        // Sliders write straight to UserDefaults and the capture callbacks read
+        // AppSettings live, so a reset needs no re-wiring — this hook exists for
+        // anything that caches a value at setup time.
     }
 
     @objc private func showAPIKeyWindow() {
@@ -114,38 +133,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "GhostWriter v0.1.0", action: nil, keyEquivalent: ""))
+
+        // ── Header ──────────────────────────────────────────────
+        let titleItem = NSMenuItem(title: "GhostWriter v0.1.0", action: nil, keyEquivalent: "")
+        titleItem.isEnabled = false
+        menu.addItem(titleItem)
         menu.addItem(NSMenuItem.separator())
 
+        // ── Actions ─────────────────────────────────────────────
         let meetingItem = NSMenuItem(title: "Meeting Mode", action: #selector(toggleMeetingMode), keyEquivalent: "m")
+        meetingItem.image = NSImage(systemSymbolName: "person.2.wave.2", accessibilityDescription: nil)
         meetingItem.target = self
         menu.addItem(meetingItem)
         self.meetingModeMenuItem = meetingItem
 
         menu.addItem(NSMenuItem.separator())
 
+        // ── Configuration ───────────────────────────────────────
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettingsWindow), keyEquivalent: ",")
+        settingsItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
         let apiKeyItem = NSMenuItem(title: "Set API Key…", action: #selector(showAPIKeyWindow), keyEquivalent: "k")
+        apiKeyItem.image = NSImage(systemSymbolName: "key", accessibilityDescription: nil)
         apiKeyItem.target = self
         menu.addItem(apiKeyItem)
 
+        // Permissions grouped into a submenu to keep the top level clean
+        let permissionsItem = NSMenuItem(title: "Permissions", action: nil, keyEquivalent: "")
+        permissionsItem.image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: nil)
+        let permissionsMenu = NSMenu(title: "Permissions")
+
         let micItem = NSMenuItem(title: "Authorize Microphone…", action: #selector(manualMicRequest), keyEquivalent: "")
         micItem.target = self
-        menu.addItem(micItem)
+        permissionsMenu.addItem(micItem)
 
         let sysAudioItem = NSMenuItem(title: "Authorize System Audio Recording…", action: #selector(manualSystemAudioRequest), keyEquivalent: "")
         sysAudioItem.target = self
-        menu.addItem(sysAudioItem)
+        permissionsMenu.addItem(sysAudioItem)
 
         let a11yItem = NSMenuItem(title: "Authorize Accessibility…", action: #selector(openPermissions), keyEquivalent: "")
         a11yItem.target = self
-        menu.addItem(a11yItem)
+        permissionsMenu.addItem(a11yItem)
+
+        permissionsMenu.addItem(NSMenuItem.separator())
 
         let resetItem = NSMenuItem(title: "Reset All Permissions…", action: #selector(resetPermissions), keyEquivalent: "")
         resetItem.target = self
-        menu.addItem(resetItem)
+        permissionsMenu.addItem(resetItem)
+
+        permissionsItem.submenu = permissionsMenu
+        menu.addItem(permissionsItem)
 
         menu.addItem(NSMenuItem.separator())
 
+        // ── Quit ────────────────────────────────────────────────
         let quitItem = NSMenuItem(title: "Quit GhostWriter", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitItem)
 
@@ -350,8 +393,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Update status bar icon
         statusItem?.button?.image = NSImage(systemSymbolName: "headphones.circle.fill", accessibilityDescription: "Meeting Mode")
 
-        overlayPanel?.ignoresMouseEvents = false  // allow dragging the pill
-        overlayPanel?.orderFront(nil)
+        // Overlay behavior per settings: captions / minimal pill / hidden
+        if let panel = overlayPanel {
+            switch settings.overlayMode {
+            case .captions, .minimal:
+                // Wider panel so the caption line has room (minimal just leaves it blank)
+                panel.setContentSize(NSSize(width: 380, height: 120))
+                positionOverlayPanel(panel)
+                panel.ignoresMouseEvents = false  // allow dragging the pill
+                panel.orderFront(nil)
+            case .hidden:
+                panel.orderOut(nil)
+            }
+        }
         print("📡 Meeting Mode ON")
 
         setupMeetingAudioCallback()
@@ -391,9 +445,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.meetingModeMenuItem?.state = .off
             self.statusItem?.button?.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: "GhostWriter")
 
-            self.overlayPanel?.ignoresMouseEvents = true  // restore pass-through
-            if self.appState.recordingState == .idle {
-                self.overlayPanel?.orderOut(nil)
+            if let panel = self.overlayPanel {
+                panel.ignoresMouseEvents = true  // restore pass-through
+                panel.setContentSize(NSSize(width: 180, height: 180))  // back to PTT size
+                self.positionOverlayPanel(panel)
+                if self.appState.recordingState == .idle {
+                    panel.orderOut(nil)
+                }
             }
             print("📡 Meeting Mode OFF")
         }
@@ -407,7 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             let rms = vad.calculateRMS(from: buffer)
             let dbfs = vad.rmsToDBFS(rms)
-            let isVoice = dbfs >= -50.0
+            let isVoice = dbfs >= self.settings.systemAudioThreshold
             self.meetingQueue.async { [weak self] in
                 self?.processMeetingBuffer(buffer, isVoice: isVoice, rms: rms)
             }
@@ -421,7 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         micCapture.onAudioBuffer = { [weak self] buffer in
             guard let self else { return }
             let rms = vad.calculateRMS(from: buffer)
-            let isVoice = vad.rmsToDBFS(rms) >= -40.0  // mic threshold — louder than system audio
+            let isVoice = vad.rmsToDBFS(rms) >= self.settings.meetingMicThreshold  // mic threshold — louder than system audio
             self.micMeetingQueue.async { [weak self] in
                 self?.processMicMeetingBuffer(buffer, isVoice: isVoice)
             }
@@ -436,11 +494,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // mic is almost certainly hearing the remote party through the speaker, not
         // the local user. Drop it so it isn't mislabeled as "You".
         var speakerActive = false
-        echoGateLock.lock()
-        if let last = speakerLastActiveTime, now.timeIntervalSince(last) < echoGateWindow {
-            speakerActive = true
+        if settings.echoSuppressionEnabled {
+            echoGateLock.lock()
+            if let last = speakerLastActiveTime, now.timeIntervalSince(last) < echoGateWindow {
+                speakerActive = true
+            }
+            echoGateLock.unlock()
         }
-        echoGateLock.unlock()
 
         let isVoice = isVoice && !speakerActive
 
@@ -563,8 +623,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
                 print("📡 Meeting transcript: \(trimmed)")
                 self.meetingNotes.append(segment: trimmed)
-                await MainActor.run { [weak self] in
-                    self?.appState.meetingCaption = trimmed
+                if self.settings.overlayMode == .captions {
+                    await MainActor.run { [weak self] in
+                        self?.appState.meetingCaption = trimmed
+                    }
                 }
             } catch {
                 print("❌ Meeting transcription error: \(error.localizedDescription)")

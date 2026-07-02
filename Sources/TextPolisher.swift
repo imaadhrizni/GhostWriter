@@ -16,7 +16,7 @@ final class TextPolisher {
 
     private let baseURL = "https://api.groq.com/openai/v1"
     private let session = URLSession.shared
-    private let model = "llama-3.3-70b-versatile"
+    private var model: String { AppSettings.shared.polishingModel }  // user-configurable in Settings
 
     // MARK: - Polishing
 

@@ -103,17 +103,72 @@ private enum NotesLibrary {
         return hits
     }
 
+    /// Retrieval for cross-meeting Ask: lines matching any search term, with
+    /// a little surrounding context, grouped per meeting and labeled so the
+    /// model can cite which meeting an answer came from.
+    /// Caps: newest `maxFiles` meetings, `maxChars` total prompt budget.
+    struct ExcerptResult {
+        let text: String
+        let sources: [MeetingFile]   // meetings the excerpts came from, newest first
+    }
+
+    static func excerpts(matching terms: [String],
+                         contextLines: Int = 2,
+                         maxFiles: Int = 200,
+                         maxChars: Int = 20_000) -> ExcerptResult {
+        let needles = terms.map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.count >= 2 }
+        guard !needles.isEmpty else { return ExcerptResult(text: "", sources: []) }
+
+        var out = ""
+        var sources: [MeetingFile] = []
+        for file in meetingFiles(limit: maxFiles) {
+            if Task.isCancelled || out.count >= maxChars { break }
+            guard let content = try? String(contentsOf: file.url, encoding: .utf8) else { continue }
+            let lines = content.split(whereSeparator: \.isNewline).map(String.init)
+
+            // Collect matching line indexes ± context, merged into ranges.
+            var keep = IndexSet()
+            for (i, line) in lines.enumerated() {
+                if needles.contains(where: { line.range(of: $0, options: .caseInsensitive) != nil }) {
+                    keep.insert(integersIn: max(0, i - contextLines)...min(lines.count - 1, i + contextLines))
+                }
+            }
+            guard !keep.isEmpty else { continue }
+
+            var block = "\n=== Meeting \(file.displayName) ===\n"
+            var lastIndex = -2
+            for i in keep.sorted() {
+                if i > lastIndex + 1 { block += "…\n" }
+                block += lines[i] + "\n"
+                lastIndex = i
+            }
+            if out.count + block.count > maxChars { break }
+            out += block
+            sources.append(file)
+        }
+        return ExcerptResult(text: out, sources: sources)
+    }
+
     struct ActionItem: Identifiable {
         let id = UUID()
         let file: MeetingFile
         let text: String
     }
 
-    /// Bullets under "## Action Items" headings, newest meetings first.
-    static func actionItems(fromLast meetings: Int = 10) -> [ActionItem] {
-        var items: [ActionItem] = []
+    struct MeetingActionItems: Identifiable {
+        let file: MeetingFile
+        let items: [ActionItem]
+        var id: URL { file.url }
+    }
+
+    /// Bullets under "## Action Items" headings, grouped per meeting,
+    /// newest meetings first. Meetings without action items are skipped.
+    static func actionItemsByMeeting(fromLast meetings: Int = 10) -> [MeetingActionItems] {
+        var groups: [MeetingActionItems] = []
         for file in meetingFiles(limit: meetings) {
             guard let content = try? String(contentsOf: file.url, encoding: .utf8) else { continue }
+            var items: [ActionItem] = []
             var inSection = false
             for rawLine in content.split(whereSeparator: \.isNewline) {
                 let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -126,8 +181,9 @@ private enum NotesLibrary {
                     }
                 }
             }
+            if !items.isEmpty { groups.append(MeetingActionItems(file: file, items: items)) }
         }
-        return items
+        return groups
     }
 }
 
@@ -168,6 +224,19 @@ private struct SearchTab: View {
     @State private var hits: [NotesLibrary.SearchHit] = []
     @State private var searchTask: Task<Void, Never>?
 
+    /// Hits per meeting, in arrival (newest-first) order.
+    private var groupedHits: [(file: NotesLibrary.MeetingFile, hits: [NotesLibrary.SearchHit])] {
+        var groups: [(file: NotesLibrary.MeetingFile, hits: [NotesLibrary.SearchHit])] = []
+        for hit in hits {
+            if groups.last?.file == hit.file {
+                groups[groups.count - 1].hits.append(hit)
+            } else {
+                groups.append((hit.file, [hit]))
+            }
+        }
+        return groups
+    }
+
     /// Debounce + cancel: typing restarts the timer, and the file reads run
     /// off the main thread so the field never stutters on a large archive.
     private func scheduleSearch(_ q: String) {
@@ -201,21 +270,38 @@ private struct SearchTab: View {
                     .foregroundColor(.secondary)
                 Spacer()
             } else {
-                List(hits) { hit in
-                    Button {
-                        NSWorkspace.shared.open(hit.file.url)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(hit.line)
-                                .lineLimit(2)
-                            Text(hit.file.displayName)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                // Hits arrive newest-meeting-first — group consecutive hits
+                // from the same file into one section per meeting.
+                List {
+                    ForEach(groupedHits, id: \.file.url) { group in
+                        Section {
+                            ForEach(group.hits) { hit in
+                                Button {
+                                    NSWorkspace.shared.open(hit.file.url)
+                                } label: {
+                                    Text(hit.line)
+                                        .lineLimit(2)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        } header: {
+                            Button {
+                                NSWorkspace.shared.open(group.file.url)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(group.file.displayName)
+                                        .font(.subheadline.weight(.semibold))
+                                    Image(systemName: "arrow.up.forward.square")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .help("Open this meeting's notes file")
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
                 }
                 .listStyle(.inset)
             }
@@ -230,6 +316,7 @@ private struct AskTab: View {
     @State private var selected: NotesLibrary.MeetingFile?
     @State private var question = ""
     @State private var answer = ""
+    @State private var sources: [NotesLibrary.MeetingFile] = []
     @State private var isAsking = false
     @State private var errorMessage: String?
 
@@ -240,6 +327,8 @@ private struct AskTab: View {
             HStack {
                 Text("Meeting")
                 Picker("", selection: $selected) {
+                    Text("All meetings").tag(Optional<NotesLibrary.MeetingFile>.none)
+                    Divider()
                     ForEach(NotesLibrary.meetingsByDay(limit: 15), id: \.day) { group in
                         Section(header: Text(group.day)) {
                             ForEach(group.meetings) { meeting in
@@ -272,7 +361,7 @@ private struct AskTab: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isAsking || selected == nil || question.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(isAsking || question.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             .padding(.horizontal, 16)
 
@@ -283,15 +372,41 @@ private struct AskTab: View {
 
             ScrollView {
                 if answer.isEmpty && !isAsking {
-                    Text("Answers are grounded in the selected meeting's transcript — nothing leaves your Mac except the transcript sent to Groq for this question.")
+                    Text(selected == nil
+                         ? "Searches every meeting for lines related to your question and answers from those excerpts, citing which meeting — only the matching excerpts are sent to Groq."
+                         : "Answers are grounded in the selected meeting's transcript — nothing leaves your Mac except the transcript sent to Groq for this question.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .padding()
                 } else {
-                    Text(answer)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(answer)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if !sources.isEmpty {
+                            Divider()
+                            Text("Sources")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.secondary)
+                            ForEach(sources) { source in
+                                Button {
+                                    NSWorkspace.shared.open(source.url)
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "doc.text")
+                                        Text(source.displayName)
+                                        Image(systemName: "arrow.up.forward.square")
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .font(.caption)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Open this meeting's notes file")
+                            }
+                        }
+                    }
+                    .padding()
                 }
             }
             .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
@@ -300,23 +415,39 @@ private struct AskTab: View {
         }
         .onAppear {
             meetings = NotesLibrary.meetingFiles(limit: 15)
-            if selected == nil { selected = meetings.first }
         }
     }
 
     private func ask() {
-        guard let meeting = selected,
-              let transcript = try? String(contentsOf: meeting.url, encoding: .utf8) else { return }
         let q = question.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return }
 
         isAsking = true
         errorMessage = nil
         answer = ""
+        sources = []
+        let meeting = selected
         Task {
             do {
-                let result = try await polisher.answer(question: q, transcript: transcript)
-                await MainActor.run { answer = result; isAsking = false }
+                let result: String
+                var usedSources: [NotesLibrary.MeetingFile] = []
+                if let meeting,
+                   let transcript = try? String(contentsOf: meeting.url, encoding: .utf8) {
+                    result = try await polisher.answer(question: q, transcript: transcript)
+                    usedSources = [meeting]
+                } else {
+                    // All meetings: expand the question into search terms,
+                    // retrieve matching excerpts, answer from those.
+                    let terms = await polisher.searchTerms(for: q)
+                    let retrieved = NotesLibrary.excerpts(matching: terms)
+                    if retrieved.text.isEmpty {
+                        result = "No meeting content matched this question (searched terms: \(terms.joined(separator: ", "))). Try rewording, or pick a specific meeting."
+                    } else {
+                        result = try await polisher.answerAcrossMeetings(question: q, excerpts: retrieved.text)
+                        usedSources = retrieved.sources
+                    }
+                }
+                await MainActor.run { answer = result; sources = usedSources; isAsking = false }
             } catch {
                 await MainActor.run {
                     errorMessage = error.localizedDescription
@@ -330,11 +461,11 @@ private struct AskTab: View {
 // MARK: - Action Items
 
 private struct ActionItemsTab: View {
-    @State private var items: [NotesLibrary.ActionItem] = []
+    @State private var groups: [NotesLibrary.MeetingActionItems] = []
 
     var body: some View {
         Group {
-            if items.isEmpty {
+            if groups.isEmpty {
                 VStack {
                     Spacer()
                     Text("No action items found in the last 10 meetings.")
@@ -345,28 +476,38 @@ private struct ActionItemsTab: View {
                     Spacer()
                 }
             } else {
-                List(items) { item in
-                    Button {
-                        NSWorkspace.shared.open(item.file.url)
-                    } label: {
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "checkmark.circle")
-                                .foregroundColor(.accentColor)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.text)
-                                Text(item.file.displayName)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                List {
+                    ForEach(groups) { group in
+                        Section {
+                            ForEach(group.items) { item in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "checkmark.circle")
+                                        .foregroundColor(.accentColor)
+                                    Text(item.text)
+                                        .textSelection(.enabled)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
+                        } header: {
+                            Button {
+                                NSWorkspace.shared.open(group.file.url)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(group.file.displayName)
+                                        .font(.subheadline.weight(.semibold))
+                                    Image(systemName: "arrow.up.forward.square")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .help("Open this meeting's notes file")
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
                 }
                 .listStyle(.inset)
             }
         }
-        .onAppear { items = NotesLibrary.actionItems() }
+        .onAppear { groups = NotesLibrary.actionItemsByMeeting() }
     }
 }

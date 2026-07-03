@@ -164,6 +164,90 @@ final class TextPolisher {
         return content
     }
 
+    // MARK: - Cross-Meeting Q&A
+
+    /// Expand a natural-language question into search keywords (including
+    /// likely synonyms) for retrieving relevant transcript excerpts.
+    /// Falls back to the question's own significant words on any failure.
+    func searchTerms(for question: String) async -> [String] {
+        let fallback = question
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 4 }
+
+        guard !apiKey.isEmpty else { return fallback }
+
+        let requestBody = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                Extract search keywords from the user's question for finding relevant lines in meeting transcripts.
+                Include likely synonyms and related terms. Output ONLY a comma-separated list of 3-8 short keywords, nothing else.
+                """),
+                .init(role: "user", content: question)
+            ],
+            temperature: 0,
+            max_tokens: 100
+        )
+
+        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 15
+        request.httpBody = try? JSONEncoder().encode(requestBody)
+
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let result = try? JSONDecoder().decode(ChatResponse.self, from: data),
+              let content = result.choices.first?.message.content else { return fallback }
+
+        let terms = content
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return terms.isEmpty ? fallback : terms
+    }
+
+    /// Answer a question from excerpts drawn across many meetings.
+    /// Excerpts are labeled "=== Meeting <name> ===" so answers can cite them.
+    func answerAcrossMeetings(question: String, excerpts: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+
+        let clipped = String(excerpts.suffix(24_000))
+        let requestBody = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                You answer questions using ONLY the provided meeting-transcript excerpts.
+                Excerpts are grouped under "=== Meeting <date · time> ===" headers.
+                Always cite which meeting(s) an answer comes from, e.g. "(2026-07-03 · 14:30)".
+                Be concise. If the excerpts do not contain the answer, say so plainly — never guess.
+                Different meetings are different conversations — do not blend them together.
+                """),
+                .init(role: "user", content: "Excerpts:\n\(clipped)\n\nQuestion: \(question)")
+            ],
+            temperature: 0.2,
+            max_tokens: 1024
+        )
+
+        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
+        request.httpBody = try JSONEncoder().encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw GroqError.invalidResponse
+        }
+        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        guard let content = result.choices.first?.message.content, !content.isEmpty else {
+            throw GroqError.invalidResponse
+        }
+        return content
+    }
+
     // MARK: - Context-Aware Prompts
 
     /// Build a system prompt tailored to the active application.

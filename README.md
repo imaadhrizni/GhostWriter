@@ -16,7 +16,7 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 - **Custom Vocabulary & Replacements:** Feed Whisper your names, acronyms, and jargon, plus post-transcription find→replace rules — domain terms transcribe correctly.
 - **Offline Fallback:** If Groq is unreachable, transcription falls back to Apple's on-device speech recognition — dictation keeps working with zero network.
 - **Retry Queue:** Meeting segments that fail to transcribe (network blips) are retried automatically with backoff; anything unrecoverable becomes a visible `⚠️ transcription failed` marker in the notes instead of a silent gap.
-- **Notes Assistant:** One window to **search** meeting transcripts (debounced, background, scans the 200 most recent meetings), **ask questions** about a meeting ("what did we decide about X?") answered from the transcript, and see aggregated **action items** across recent meetings.
+- **Notes Assistant:** One window with three tools, all grouped by meeting with one-click file open. **Search** transcripts (debounced, background, scans the 200 most recent meetings). **Ask** a single meeting — or **All meetings**: the question is expanded into search terms, matching excerpts are retrieved across your whole archive, and the answer cites which meeting each point came from, with the source files listed under the answer. **Action Items** aggregates the last 10 meetings.
 - **Usage Stats:** Local-only counters — dictations, words typed, meetings recorded, meeting time — shown at the top of the menu and in Settings → Stats.
 - **Echo Suppression:** When you're on the built-in speaker instead of headphones, half-duplex gating stops the remote party's voice (picked up by your mic as echo) from being mislabeled as "You".
 - **Voice Diarization (experimental):** Optionally label distinct remote voices (Them / Them 2 / Them 3) by fingerprinting each segment's voice — pitch via autocorrelation plus timbre — and clustering, fully on-device.
@@ -68,7 +68,7 @@ A build-and-deploy script is provided:
 - **Meeting Mode** (⌃⌥M) — start/stop meeting transcription.
 - **Pause Transcription** (⌃⌥P) — mute note-taking mid-meeting without ending the session (writes *paused/resumed* markers to the notes).
 - **Meeting Notes ▸** — open the current/latest notes (⌃⌥N), the last 10 meetings grouped by day (mirroring the dated folder hierarchy), and the notes folder.
-- **Notes Assistant…** — search all transcripts, ask questions about a meeting, and review aggregated action items.
+- **Notes Assistant…** — search all transcripts, ask questions about one meeting or across all of them (with cited sources), and review action items grouped by meeting.
 - **Recent Dictations ▸** — the last 20 dictations with timestamp and duration; click to copy; Clear History at the bottom.
 - The menu header shows quick stats: meetings this week and total dictations.
 - **Settings…** — the settings window (see below).

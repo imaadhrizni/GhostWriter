@@ -38,20 +38,38 @@ private enum NotesLibrary {
     struct MeetingFile: Identifiable, Hashable {
         let url: URL
         var id: URL { url }
-        var displayName: String {
+
+        /// "yyyy-MM-dd_HH-mm-ss" from the filename.
+        private var stamp: String {
             url.deletingPathExtension().lastPathComponent
                 .replacingOccurrences(of: "Meeting_", with: "")
-                .replacingOccurrences(of: "_", with: " ")
         }
+        /// "2026-07-03" — grouping key matching the folder hierarchy.
+        var day: String { String(stamp.prefix(10)) }
+        /// "14:30:22"
+        var time: String {
+            stamp.count > 11
+                ? String(stamp.dropFirst(11)).replacingOccurrences(of: "-", with: ":")
+                : stamp
+        }
+        var displayName: String { "\(day) · \(time)" }
+    }
+
+    /// Meetings grouped by day, newest day (and meeting) first.
+    static func meetingsByDay(limit: Int = 50) -> [(day: String, meetings: [MeetingFile])] {
+        var groups: [(day: String, meetings: [MeetingFile])] = []
+        for meeting in meetingFiles(limit: limit) {
+            if groups.last?.day == meeting.day {
+                groups[groups.count - 1].meetings.append(meeting)
+            } else {
+                groups.append((meeting.day, [meeting]))
+            }
+        }
+        return groups
     }
 
     static func meetingFiles(limit: Int = 50) -> [MeetingFile] {
-        let folder = AppSettings.shared.notesFolder
-        let files = (try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: nil)) ?? []
-        return files
-            .filter { $0.lastPathComponent.hasPrefix("Meeting_") && $0.pathExtension == "md" }
-            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+        MeetingNotesWriter.allMeetingFiles(under: AppSettings.shared.notesFolder)
             .prefix(limit)
             .map(MeetingFile.init)
     }
@@ -62,12 +80,18 @@ private enum NotesLibrary {
         let line: String
     }
 
-    static func search(_ query: String, maxHits: Int = 60) -> [SearchHit] {
+    /// Full-text search over the most recent meetings, newest first.
+    /// Reads files one at a time and honors Task cancellation so a stale
+    /// keystroke's search stops as soon as the next one starts.
+    /// Capped at `maxFiles` recent meetings — with an unbounded archive,
+    /// reading every file on each keystroke would freeze the window.
+    static func search(_ query: String, maxHits: Int = 60, maxFiles: Int = 200) async -> [SearchHit] {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard trimmed.count >= 2 else { return [] }
 
         var hits: [SearchHit] = []
-        for file in meetingFiles() {
+        for file in meetingFiles(limit: maxFiles) {
+            if Task.isCancelled { return hits }
             guard let content = try? String(contentsOf: file.url, encoding: .utf8) else { continue }
             for line in content.split(whereSeparator: \.isNewline) {
                 if line.range(of: trimmed, options: .caseInsensitive) != nil {
@@ -142,6 +166,20 @@ struct NotesAssistantView: View {
 private struct SearchTab: View {
     @State private var query = ""
     @State private var hits: [NotesLibrary.SearchHit] = []
+    @State private var searchTask: Task<Void, Never>?
+
+    /// Debounce + cancel: typing restarts the timer, and the file reads run
+    /// off the main thread so the field never stutters on a large archive.
+    private func scheduleSearch(_ q: String) {
+        searchTask?.cancel()
+        searchTask = Task {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            let results = await NotesLibrary.search(q)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { hits = results }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -149,8 +187,7 @@ private struct SearchTab: View {
                 Image(systemName: "magnifyingglass").foregroundColor(.secondary)
                 TextField("Search all meeting notes…", text: $query)
                     .textFieldStyle(.plain)
-                    .onSubmit { hits = NotesLibrary.search(query) }
-                    .onChange(of: query) { _, q in hits = NotesLibrary.search(q) }
+                    .onChange(of: query) { _, q in scheduleSearch(q) }
             }
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
@@ -203,8 +240,12 @@ private struct AskTab: View {
             HStack {
                 Text("Meeting")
                 Picker("", selection: $selected) {
-                    ForEach(meetings) { meeting in
-                        Text(meeting.displayName).tag(Optional(meeting))
+                    ForEach(NotesLibrary.meetingsByDay(limit: 15), id: \.day) { group in
+                        Section(header: Text(group.day)) {
+                            ForEach(group.meetings) { meeting in
+                                Text(meeting.time).tag(Optional(meeting))
+                            }
+                        }
                     }
                 }
                 .labelsHidden()

@@ -12,7 +12,46 @@ final class MeetingNotesWriter {
     private(set) var lastCompletedFilePath: URL?
 
     /// Read live from settings so a folder change applies to the next session.
-    private var notesDirectory: URL { AppSettings.shared.notesFolder }
+    /// Includes the Year/Month subfolder when organization is enabled.
+    private var notesDirectory: URL { AppSettings.shared.meetingDestinationFolder() }
+
+    /// Every meeting notes file under the notes folder, searched recursively
+    /// (files may live in Year/Month/Day subfolders), newest first — the
+    /// filename encodes the full timestamp so name order is date order.
+    ///
+    /// The result is cached briefly: the menu, stats line, and Notes Assistant
+    /// all call this, and with years of notes a full tree walk + sort on every
+    /// menu open would add up. A new meeting invalidates the cache.
+    static func allMeetingFiles(under folder: URL) -> [URL] {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
+        if let cached = fileCache,
+           cached.folder == folder,
+           Date().timeIntervalSince(cached.at) < 10 {
+            return cached.files
+        }
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
+        let files = enumerator.compactMap { $0 as? URL }
+            .filter { $0.lastPathComponent.hasPrefix("Meeting_") && $0.pathExtension == "md" }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+        fileCache = (folder, files, Date())
+        return files
+    }
+
+    /// Forget the cached file list (call when a notes file is created).
+    static func invalidateFileCache() {
+        cacheLock.lock()
+        fileCache = nil
+        cacheLock.unlock()
+    }
+
+    private static var fileCache: (folder: URL, files: [URL], at: Date)?
+    private static let cacheLock = NSLock()
 
     // Formatters are expensive to create — build once. This class is only used
     // from the transcription Tasks one line at a time, so this is safe.
@@ -60,6 +99,7 @@ final class MeetingNotesWriter {
             try header.write(to: fileURL, atomically: true, encoding: .utf8)
 
             currentFilePath = fileURL
+            Self.invalidateFileCache()
             Log.meeting.info("📝 Meeting notes → \(fileURL.path)")
         } catch {
             Log.meeting.error("❌ Could not create meeting notes file: \(error.localizedDescription)")

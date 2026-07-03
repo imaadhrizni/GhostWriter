@@ -37,11 +37,7 @@ final class UsageStats: ObservableObject {
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let cutoff = Date().addingTimeInterval(-7 * 24 * 3600)
 
-        let files = (try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: nil)) ?? []
-        return files.filter { url in
-            guard url.pathExtension == "md",
-                  url.lastPathComponent.hasPrefix("Meeting_") else { return false }
+        return MeetingNotesWriter.allMeetingFiles(under: folder).filter { url in
             let stamp = url.deletingPathExtension().lastPathComponent
                 .replacingOccurrences(of: "Meeting_", with: "")
             guard let date = formatter.date(from: stamp) else { return false }

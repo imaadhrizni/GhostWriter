@@ -401,6 +401,20 @@ private struct MeetingPane: View {
                 }
                 Divider()
                 HStack {
+                    Text("Organize files")
+                    Spacer()
+                    Picker("", selection: $settings.notesOrganization) {
+                        ForEach(NotesOrganization.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 220)
+                }
+                Text("New meetings are saved into dated subfolders so the notes folder stays tidy. Existing files stay where they are — history, search, and stats find them either way.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                HStack {
                     Text("Your label")
                     Spacer()
                     TextField("", text: $settings.speakerLabelYou)
@@ -434,7 +448,7 @@ private struct MeetingPane: View {
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Label distinct speakers (experimental)", isOn: $settings.diarizationEnabled)
-                Text("Guesses speaker turns from pauses and loudness — labels remote voices Them / Them 2. Best effort, not true voice recognition.")
+                Text("Fingerprints each voice (pitch and timbre) and clusters segments, labeling remote voices Them / Them 2 / Them 3. On-device and lightweight — similar-sounding voices may still merge.")
                     .font(.caption).foregroundColor(.secondary)
             }
 

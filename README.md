@@ -16,10 +16,11 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 - **Custom Vocabulary & Replacements:** Feed Whisper your names, acronyms, and jargon, plus post-transcription find→replace rules — domain terms transcribe correctly.
 - **Offline Fallback:** If Groq is unreachable, transcription falls back to Apple's on-device speech recognition — dictation keeps working with zero network.
 - **Retry Queue:** Meeting segments that fail to transcribe (network blips) are retried automatically with backoff; anything unrecoverable becomes a visible `⚠️ transcription failed` marker in the notes instead of a silent gap.
-- **Notes Assistant:** One window to **search** every meeting transcript, **ask questions** about a meeting ("what did we decide about X?") answered from the transcript, and see aggregated **action items** across recent meetings.
+- **Notes Assistant:** One window to **search** meeting transcripts (debounced, background, scans the 200 most recent meetings), **ask questions** about a meeting ("what did we decide about X?") answered from the transcript, and see aggregated **action items** across recent meetings.
 - **Usage Stats:** Local-only counters — dictations, words typed, meetings recorded, meeting time — shown at the top of the menu and in Settings → Stats.
 - **Echo Suppression:** When you're on the built-in speaker instead of headphones, half-duplex gating stops the remote party's voice (picked up by your mic as echo) from being mislabeled as "You".
-- **Speaker Turns (experimental):** Optionally label distinct remote voices (Them / Them 2) using a pause + loudness heuristic.
+- **Voice Diarization (experimental):** Optionally label distinct remote voices (Them / Them 2 / Them 3) by fingerprinting each segment's voice — pitch via autocorrelation plus timbre — and clustering, fully on-device.
+- **Organized Notes:** Meeting files are filed into dated subfolders — `Notes/2026/2026-07/03/` by default; switch to year/month, year, or a single flat folder in Settings. History, search, and stats find files in any layout.
 - **Global Shortcuts:** Push-to-talk dictation (hold Right Option), Esc to cancel a dictation, ⌃⌥M to toggle Meeting Mode, ⌃⌥P to pause/resume transcription, ⌃⌥N to open the notes — all system-wide, from any app.
 - **Native macOS Integration:** Built entirely in Swift. CoreGraphics event taps for global hotkeys, Accessibility (`AXUIElement`) for text injection.
 - **Settings Window:** A System Settings-style sidebar UI — configurable AI models, push-to-talk key, meeting overlay mode, speech-detection thresholds, notes folder, and speaker labels. Everything persists and applies live.
@@ -66,7 +67,7 @@ A build-and-deploy script is provided:
 ### Menu bar
 - **Meeting Mode** (⌃⌥M) — start/stop meeting transcription.
 - **Pause Transcription** (⌃⌥P) — mute note-taking mid-meeting without ending the session (writes *paused/resumed* markers to the notes).
-- **Meeting Notes ▸** — open the current/latest notes (⌃⌥N), the last 10 meetings, and the notes folder.
+- **Meeting Notes ▸** — open the current/latest notes (⌃⌥N), the last 10 meetings grouped by day (mirroring the dated folder hierarchy), and the notes folder.
 - **Notes Assistant…** — search all transcripts, ask questions about a meeting, and review aggregated action items.
 - **Recent Dictations ▸** — the last 20 dictations with timestamp and duration; click to copy; Clear History at the bottom.
 - The menu header shows quick stats: meetings this week and total dictations.
@@ -93,7 +94,7 @@ A sidebar-style settings window with six panes:
 | --- | --- |
 | **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); prefer built-in microphone (**off** — uses the system default input; turn on to keep AirPods in high-quality audio); reset all settings |
 | **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn); dictation history (**on**, keep **20**); offline fallback (**on**); language (**en**); custom vocabulary; find→replace rules; per-app style overrides |
-| **Meeting Mode** | Overlay mode (**minimal pill** / live captions / hidden); notes folder (**~/Documents/Notes**); speaker labels (**You** / **Them**); AI summary (**on**); action items (**on**); saved notification (**on**); Obsidian front-matter (**off**); experimental speaker turns (**off**); echo suppression (**on**, gate **0.4 s**); caption fade delay (**6 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**), retry attempts (**3**), retry interval (**20 s**) |
+| **Meeting Mode** | Overlay mode (**minimal pill** / live captions / hidden); notes folder (**~/Documents/Notes**); file organization (**year/month/day** / year/month / year / single folder); speaker labels (**You** / **Them**); AI summary (**on**); action items (**on**); saved notification (**on**); Obsidian front-matter (**off**); voice diarization (**on**, experimental); echo suppression (**on**, gate **0.4 s**); caption fade delay (**6 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**), retry attempts (**3**), retry interval (**20 s**) |
 | **Shortcuts** | Reference card of all global shortcuts (push-to-talk, Esc, ⌃⌥V, ⌃⌥M / ⌃⌥P / ⌃⌥N) |
 | **Stats** | Local usage counters — dictations, words, time; meetings and meeting time — with their own reset |
 | **Permissions** | Live status of Microphone, System Audio Recording, and Accessibility with shortcuts to the relevant Settings panes, plus Reset All Permissions |
@@ -123,7 +124,8 @@ All values are stored in `UserDefaults` and take effect immediately — model an
 | `Sources/GroqService.swift` | Groq transcription + polishing API client |
 | `Sources/TextPolisher.swift` / `AppDetector.swift` | Context-aware formatting |
 | `Sources/TextInjector.swift` | Accessibility-based text injection |
-| `Sources/MeetingNotesWriter.swift` | Markdown transcript writer (front-matter, summaries) |
+| `Sources/MeetingNotesWriter.swift` | Markdown transcript writer (front-matter, summaries, dated subfolders) |
+| `Sources/SpeakerProfiler.swift` | Voice-fingerprint clustering for speaker diarization |
 | `Sources/OfflineTranscriber.swift` | On-device speech fallback (Apple Speech) |
 | `Sources/NotificationManager.swift` | Post-meeting notifications |
 | `Sources/NotesAssistant.swift` | Search / Ask / Action Items window |

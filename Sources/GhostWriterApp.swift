@@ -63,11 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var meetingStartTime: Date?
     private var meetingTimer: Timer?
 
-    // Experimental diarization (accessed on meetingQueue): a long pause plus a
-    // clearly different loudness profile suggests a different remote speaker.
-    private var lastThemProfileDBFS: Float?
-    private var lastThemSegmentEnd: Date?
-    private var themSpeakerIndex = 1
+    // Experimental diarization (accessed on meetingQueue): voice-fingerprint
+    // clustering (pitch + timbre) assigns remote segments to Them / Them 2 / …
+    private let speakerProfiler = SpeakerProfiler()
 
     // Retry queue (main thread): meeting segments whose transcription failed —
     // a network blip should not silently drop a piece of the meeting.
@@ -523,7 +521,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// ⌃⌥N: reveal the live meeting notes file, or the notes folder when idle.
     @objc private func openNotes() {
-        if let file = meetingNotes.currentFilePath {
+        if let file = meetingNotes.currentFilePath
+            ?? meetingNotes.lastCompletedFilePath
+            ?? MeetingNotesWriter.allMeetingFiles(under: settings.notesFolder).first {
             NSWorkspace.shared.open(file)
         } else {
             let folder = settings.notesFolder
@@ -719,11 +719,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingStartTime = Date()
         meetingNotes.beginSession()
 
-        // Reset the diarization heuristic for the new session (safe to touch
+        // Reset the speaker profiles for the new session (safe to touch
         // directly — the capture callbacks haven't started yet)
-        lastThemProfileDBFS = nil
-        lastThemSegmentEnd = nil
-        themSpeakerIndex = 1
+        speakerProfiler.reset()
 
         // Menu-bar elapsed timer — doubles as a "still recording" indicator
         startMeetingTimer()
@@ -1038,28 +1036,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Experimental speaker-turn heuristic for remote audio. True diarization
-    /// needs voice embeddings; this approximates turns: a pause of 2s+ combined
-    /// with a clearly different loudness profile (>6 dB) reads as a new speaker.
+    /// Experimental voice-based diarization for remote audio: each segment's
+    /// voice fingerprint (pitch, timbre) is clustered into speaker profiles,
+    /// so distinct voices get distinct labels (Them / Them 2 / …).
     /// Must be called on meetingQueue.
     private func diarizedSpeakerLabel(for audio: Data) -> String {
         guard settings.diarizationEnabled else { return "Them" }
-
-        let vad = VoiceActivityDetector()
-        let dbfs = vad.rmsToDBFS(vad.calculateRMS(from: audio))
-        let now = Date()
-        defer {
-            lastThemProfileDBFS = dbfs
-            lastThemSegmentEnd = now
-        }
-
-        if let lastProfile = lastThemProfileDBFS, let lastEnd = lastThemSegmentEnd {
-            let gap = now.timeIntervalSince(lastEnd)
-            if gap > 2.0, abs(dbfs - lastProfile) > 6.0 {
-                themSpeakerIndex = themSpeakerIndex == 1 ? 2 : 1
-            }
-        }
-        return themSpeakerIndex == 1 ? "Them" : "Them \(themSpeakerIndex)"
+        return speakerProfiler.label(for: audio)
     }
 
     // Whisper hallucinates these phrases on short/quiet audio — discard them
@@ -1196,22 +1179,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(openItem)
             menu.addItem(NSMenuItem.separator())
 
-            let files = (try? FileManager.default.contentsOfDirectory(
-                at: settings.notesFolder, includingPropertiesForKeys: nil))?
-                .filter { $0.lastPathComponent.hasPrefix("Meeting_") && $0.pathExtension == "md" }
-                .sorted { $0.lastPathComponent > $1.lastPathComponent }  // filename encodes the date
-                .prefix(10) ?? []
+            let files = MeetingNotesWriter.allMeetingFiles(under: settings.notesFolder).prefix(10)
 
             if files.isEmpty {
                 let empty = NSMenuItem(title: "No meetings yet", action: nil, keyEquivalent: "")
                 empty.isEnabled = false
                 menu.addItem(empty)
             }
+            // Group by day so the menu mirrors the notes-folder hierarchy.
+            var currentDay = ""
             for file in files {
-                let title = file.deletingPathExtension().lastPathComponent
-                    .replacingOccurrences(of: "Meeting_", with: "")
-                    .replacingOccurrences(of: "_", with: " ")
-                let item = NSMenuItem(title: title, action: #selector(openMeetingFile(_:)), keyEquivalent: "")
+                let stamp = file.deletingPathExtension().lastPathComponent
+                    .replacingOccurrences(of: "Meeting_", with: "")   // yyyy-MM-dd_HH-mm-ss
+                let day = String(stamp.prefix(10))
+                let time = stamp.count > 11
+                    ? String(stamp.dropFirst(11)).replacingOccurrences(of: "-", with: ":")
+                    : stamp
+                if day != currentDay {
+                    currentDay = day
+                    let header = NSMenuItem(title: day, action: nil, keyEquivalent: "")
+                    header.isEnabled = false
+                    menu.addItem(header)
+                }
+                let item = NSMenuItem(title: time, action: #selector(openMeetingFile(_:)), keyEquivalent: "")
+                item.indentationLevel = 1
                 item.target = self
                 item.representedObject = file
                 menu.addItem(item)

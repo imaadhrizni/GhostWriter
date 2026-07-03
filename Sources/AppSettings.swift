@@ -46,6 +46,7 @@ final class AppSettings: ObservableObject {
         static let captionLingerSeconds   = "meeting.captionLingerSeconds"
         static let retryMaxAttempts       = "meeting.retryMaxAttempts"
         static let retryIntervalSeconds   = "meeting.retryIntervalSeconds"
+        static let notesOrganization      = "meeting.notesOrganization"
 
         static let all = [transcriptionModel, polishingModel, pttKeyCode,
                           preferBuiltInMic,
@@ -57,7 +58,8 @@ final class AppSettings: ObservableObject {
                           diarizationEnabled, offlineFallback, transcriptionLanguage,
                           vocabulary, replacements, appProfiles,
                           dictationHistoryOn, dictationHistoryLimit,
-                          captionLingerSeconds, retryMaxAttempts, retryIntervalSeconds]
+                          captionLingerSeconds, retryMaxAttempts, retryIntervalSeconds,
+                          notesOrganization]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -80,7 +82,7 @@ final class AppSettings: ObservableObject {
         static let actionItemsEnabled              = true
         static let notifyOnMeetingEnd              = true
         static let frontMatterEnabled              = false
-        static let diarizationEnabled              = false
+        static let diarizationEnabled              = true
         static let offlineFallback                 = true
         static let transcriptionLanguage           = "en"
         static let dictationHistoryOn              = true
@@ -88,6 +90,7 @@ final class AppSettings: ObservableObject {
         static let captionLingerSeconds: Double    = 6.0
         static let retryMaxAttempts                = 3
         static let retryIntervalSeconds: Double    = 20.0
+        static let notesOrganization               = NotesOrganization.byDay
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -240,8 +243,43 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.frontMatterEnabled) }
     }
 
-    /// Experimental: label distinct remote speakers (Them 1 / Them 2) using an
-    /// energy + pause heuristic. No true voice fingerprinting — best effort.
+    /// How meeting notes files are organized under the notes folder.
+    var notesOrganization: NotesOrganization {
+        get {
+            guard let raw = defaults.string(forKey: Key.notesOrganization),
+                  let mode = NotesOrganization(rawValue: raw) else { return Default.notesOrganization }
+            return mode
+        }
+        set { set(newValue.rawValue, Key.notesOrganization) }
+    }
+
+    /// Folder a *new* meeting's notes file goes into, per the organization
+    /// setting (e.g. …/Notes/2026/2026-07/). Existing files are never moved.
+    func meetingDestinationFolder(for date: Date = Date()) -> URL {
+        let base = notesFolder
+        switch notesOrganization {
+        case .flat:
+            return base
+        case .byYear:
+            let f = DateFormatter(); f.dateFormat = "yyyy"
+            return base.appendingPathComponent(f.string(from: date), isDirectory: true)
+        case .byMonth:
+            let year = DateFormatter(); year.dateFormat = "yyyy"
+            let month = DateFormatter(); month.dateFormat = "yyyy-MM"
+            return base.appendingPathComponent(year.string(from: date), isDirectory: true)
+                       .appendingPathComponent(month.string(from: date), isDirectory: true)
+        case .byDay:
+            let year = DateFormatter(); year.dateFormat = "yyyy"
+            let month = DateFormatter(); month.dateFormat = "yyyy-MM"
+            let day = DateFormatter(); day.dateFormat = "dd"
+            return base.appendingPathComponent(year.string(from: date), isDirectory: true)
+                       .appendingPathComponent(month.string(from: date), isDirectory: true)
+                       .appendingPathComponent(day.string(from: date), isDirectory: true)
+        }
+    }
+
+    /// Experimental: label distinct remote speakers (Them / Them 2) by
+    /// clustering voice fingerprints (pitch + timbre) per segment.
     var diarizationEnabled: Bool {
         get { bool(Key.diarizationEnabled, Default.diarizationEnabled) }
         set { set(newValue, Key.diarizationEnabled) }
@@ -371,6 +409,28 @@ final class AppSettings: ObservableObject {
     }
     private func string(_ key: String, _ fallback: String) -> String {
         defaults.string(forKey: key) ?? fallback
+    }
+}
+
+// MARK: - Notes Organization
+
+/// Folder layout for meeting notes. Applies to new meetings only —
+/// existing files stay where they are (all lookups search recursively).
+enum NotesOrganization: String, CaseIterable, Identifiable {
+    case flat       // everything directly in the notes folder
+    case byDay      // Notes/2026/2026-07/03/
+    case byMonth    // Notes/2026/2026-07/
+    case byYear     // Notes/2026/
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .flat:    return "Single folder"
+        case .byDay:   return "Year / month / day (2026/2026-07/03/)"
+        case .byMonth: return "Year / month (2026/2026-07/)"
+        case .byYear:  return "Year (2026/)"
+        }
     }
 }
 

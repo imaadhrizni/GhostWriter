@@ -38,6 +38,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case dictation   = "Dictation"
     case meeting     = "Meeting Mode"
     case shortcuts   = "Shortcuts"
+    case stats       = "Stats"
     case permissions = "Permissions"
 
     var id: String { rawValue }
@@ -48,6 +49,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .dictation:   return "mic.fill"
         case .meeting:     return "person.2.wave.2.fill"
         case .shortcuts:   return "command"
+        case .stats:       return "chart.bar.fill"
         case .permissions: return "lock.shield.fill"
         }
     }
@@ -58,6 +60,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .dictation:   return .blue
         case .meeting:     return .purple
         case .shortcuts:   return .orange
+        case .stats:       return .teal
         case .permissions: return .green
         }
     }
@@ -91,6 +94,7 @@ struct SettingsView: View {
                     case .dictation:   DictationPane()
                     case .meeting:     MeetingPane()
                     case .shortcuts:   ShortcutsPane()
+                    case .stats:       StatsPane()
                     case .permissions: PermissionsPane()
                     }
                 }
@@ -222,6 +226,82 @@ private struct DictationPane: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+
+            SettingsGroup("History") {
+                Toggle("Keep recent dictations", isOn: $settings.dictationHistoryEnabled)
+                    .onChange(of: settings.dictationHistoryEnabled) { _, enabled in
+                        if !enabled {
+                            NotificationCenter.default.post(name: .dictationHistoryDisabled, object: nil)
+                        }
+                    }
+                Text("Shown in the menu bar for copy and ⌃⌥V recall. Kept in memory only — cleared when disabled or when the app quits.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.dictationHistoryEnabled {
+                    HStack {
+                        Text("Keep last")
+                        Spacer()
+                        Picker("", selection: $settings.dictationHistoryLimit) {
+                            ForEach([10, 20, 50], id: \.self) { Text("\($0) dictations").tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 150)
+                        DefaultResetButton(isDefault: settings.dictationHistoryLimit == AppSettings.Default.dictationHistoryLimit) {
+                            settings.dictationHistoryLimit = AppSettings.Default.dictationHistoryLimit
+                        }
+                    }
+                }
+            }
+
+            SettingsGroup("Transcription Quality") {
+                Toggle("Offline fallback (Apple on-device recognition)", isOn: $settings.offlineFallback)
+                Text("When Groq is unreachable, transcribe on-device instead of failing. Lower accuracy, zero network.")
+                    .font(.caption).foregroundColor(.secondary)
+
+                Divider()
+
+                HStack {
+                    Text("Language")
+                    Spacer()
+                    TextField("en", text: $settings.transcriptionLanguage)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                        .multilineTextAlignment(.trailing)
+                    DefaultResetButton(isDefault: settings.transcriptionLanguage == AppSettings.Default.transcriptionLanguage) {
+                        settings.transcriptionLanguage = AppSettings.Default.transcriptionLanguage
+                    }
+                }
+                Text("ISO 639-1 code hint for Whisper (en, de, ta, si, …). Leave as en unless you dictate in another language.")
+                    .font(.caption).foregroundColor(.secondary)
+
+                Divider()
+
+                Text("Custom vocabulary").font(.caption.bold())
+                TextEditor(text: $settings.vocabulary)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(height: 54)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                Text("Names, acronyms, jargon — comma or newline separated. Whisper biases toward these terms (e.g. WSO2, Sivanoly, Choreo).")
+                    .font(.caption).foregroundColor(.secondary)
+
+                Divider()
+
+                Text("Replacements").font(.caption.bold())
+                TextEditor(text: $settings.replacements)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(height: 54)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                Text("Applied after transcription, one rule per line: wrong => right (e.g. west of two => WSO2).")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Per-App Style Overrides") {
+                TextEditor(text: $settings.appProfiles)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(height: 54)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                Text("Force a polishing style per app, one per line: bundle.id: style — styles: messaging, email, code, browser, notes, general (e.g. com.tinyspeck.slackmacgap: casual → use messaging).")
+                    .font(.caption).foregroundColor(.secondary)
+            }
         }
     }
 }
@@ -240,6 +320,7 @@ private struct ShortcutsPane: View {
             SettingsGroup("Dictation") {
                 ShortcutRow(keys: "Hold \(pttKeyName)", detail: "Push-to-talk — record while held, type on release")
                 ShortcutRow(keys: "Esc", detail: "Cancel an in-progress dictation (types nothing)")
+                ShortcutRow(keys: "⌃⌥V", detail: "Type the most recent dictation again")
             }
 
             SettingsGroup("Meeting Mode") {
@@ -299,6 +380,13 @@ private struct MeetingPane: View {
                 Text(settings.overlayMode.help)
                     .font(.caption)
                     .foregroundColor(.secondary)
+                if settings.overlayMode == .captions {
+                    DurationSlider(
+                        title: "Caption fade delay",
+                        value: $settings.captionLingerSeconds, range: 2...15, step: 1, unit: "s",
+                        defaultValue: AppSettings.Default.captionLingerSeconds
+                    )
+                }
             }
 
             SettingsGroup("Notes") {
@@ -328,6 +416,26 @@ private struct MeetingPane: View {
                         .frame(width: 160)
                         .multilineTextAlignment(.trailing)
                 }
+            }
+
+            SettingsGroup("Intelligence") {
+                Toggle("Append AI summary when a meeting ends", isOn: $settings.summariesEnabled)
+                Text("Adds TL;DR and decisions to the notes file.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Append action items", isOn: $settings.actionItemsEnabled)
+                Text("Adds an Action Items section (with owners when identifiable). Also feeds the Notes Assistant's Action Items tab.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Notify when notes are saved", isOn: $settings.notifyOnMeetingEnd)
+                Divider()
+                Toggle("Obsidian/Notion front-matter", isOn: $settings.frontMatterEnabled)
+                Text("Prepends YAML metadata (title, date, tags) to each notes file.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Label distinct speakers (experimental)", isOn: $settings.diarizationEnabled)
+                Text("Guesses speaker turns from pauses and loudness — labels remote voices Them / Them 2. Best effort, not true voice recognition.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Echo Suppression") {
@@ -374,6 +482,28 @@ private struct MeetingPane: View {
                             defaultValue: AppSettings.Default.maxSegmentSeconds
                         )
                     }
+
+                    SettingsGroup("Failed-Segment Retry") {
+                        HStack {
+                            Text("Retry attempts")
+                            Spacer()
+                            Picker("", selection: $settings.retryMaxAttempts) {
+                                ForEach([1, 2, 3, 5], id: \.self) { Text("\($0)").tag($0) }
+                            }
+                            .labelsHidden()
+                            .frame(width: 80)
+                            DefaultResetButton(isDefault: settings.retryMaxAttempts == AppSettings.Default.retryMaxAttempts) {
+                                settings.retryMaxAttempts = AppSettings.Default.retryMaxAttempts
+                            }
+                        }
+                        DurationSlider(
+                            title: "Retry interval",
+                            value: $settings.retryIntervalSeconds, range: 5...60, step: 5, unit: "s",
+                            defaultValue: AppSettings.Default.retryIntervalSeconds
+                        )
+                        Text("Segments that fail to transcribe (network blips) are retried; exhausted ones become visible markers in the notes.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
                 }
                 .padding(.top, 8)
             } label: {
@@ -392,6 +522,58 @@ private struct MeetingPane: View {
         panel.prompt = "Choose"
         if panel.runModal() == .OK, let url = panel.url {
             settings.notesFolder = url
+        }
+    }
+}
+
+// MARK: - Stats
+
+private struct StatsPane: View {
+    @ObservedObject private var stats = UsageStats.shared
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var confirmingReset = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Dictation") {
+                StatRow(label: "Dictations", value: "\(stats.dictationCount)")
+                StatRow(label: "Words typed for you", value: "\(stats.wordsDictated)")
+                StatRow(label: "Time spent dictating", value: UsageStats.hoursMinutes(stats.dictationSeconds))
+            }
+
+            SettingsGroup("Meetings") {
+                StatRow(label: "Meetings recorded", value: "\(stats.meetingCount)")
+                StatRow(label: "This week", value: "\(stats.meetingsThisWeek(in: settings.notesFolder))")
+                StatRow(label: "Total meeting time", value: UsageStats.hoursMinutes(stats.meetingSeconds))
+            }
+
+            SettingsGroup("Maintenance") {
+                HStack {
+                    Text("Counters are stored locally and never leave this Mac.")
+                        .font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                    Button("Reset Stats…", role: .destructive) { confirmingReset = true }
+                        .confirmationDialog("Reset all usage statistics?", isPresented: $confirmingReset) {
+                            Button("Reset", role: .destructive) { stats.reset() }
+                            Button("Cancel", role: .cancel) {}
+                        }
+                }
+            }
+        }
+    }
+}
+
+private struct StatRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(value)
+                .monospacedDigit()
+                .foregroundColor(.secondary)
         }
     }
 }
@@ -613,6 +795,7 @@ extension Notification.Name {
     static let showAPIKeyWindow    = Notification.Name("ShowAPIKeyWindow")
     static let settingsDidReset    = Notification.Name("SettingsDidReset")
     static let resetAllPermissions = Notification.Name("ResetAllPermissions")
+    static let dictationHistoryDisabled = Notification.Name("DictationHistoryDisabled")
 }
 
 private extension String {

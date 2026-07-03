@@ -8,6 +8,8 @@ import Foundation
 final class MeetingNotesWriter {
 
     private(set) var currentFilePath: URL?
+    /// The most recently finished session's file (survives endSession).
+    private(set) var lastCompletedFilePath: URL?
 
     /// Read live from settings so a folder change applies to the next session.
     private var notesDirectory: URL { AppSettings.shared.notesFolder }
@@ -41,7 +43,20 @@ final class MeetingNotesWriter {
             displayFormatter.timeStyle = .short
             let displayDate = displayFormatter.string(from: Date())
 
-            let header = "# Meeting Notes\n**\(displayDate)**\n\n---\n\n"
+            var header = ""
+            if AppSettings.shared.frontMatterEnabled {
+                // Obsidian/Notion-friendly YAML front-matter
+                let isoFormatter = ISO8601DateFormatter()
+                header += """
+                ---
+                title: Meeting \(timestamp)
+                date: \(isoFormatter.string(from: Date()))
+                tags: [meeting, ghostwriter]
+                ---
+
+                """
+            }
+            header += "# Meeting Notes\n**\(displayDate)**\n\n---\n\n"
             try header.write(to: fileURL, atomically: true, encoding: .utf8)
 
             currentFilePath = fileURL
@@ -60,24 +75,45 @@ final class MeetingNotesWriter {
         let footer = "\n---\n*Meeting duration: \(duration)*\n"
 
         append(footer, to: fileURL)
+        lastCompletedFilePath = fileURL
         currentFilePath = nil
         Log.meeting.info("📝 Meeting notes saved")
+    }
+
+    /// Appends an AI-generated summary section to a finished notes file.
+    func appendSummary(_ summary: String, to fileURL: URL) {
+        append("\n# Summary\n\n\(summary)\n", to: fileURL)
+        Log.meeting.info("📝 Summary appended")
+    }
+
+    /// Full text of a notes file (for summarization).
+    func transcriptText(of fileURL: URL) -> String? {
+        try? String(contentsOf: fileURL, encoding: .utf8)
     }
 
     // MARK: - Appending Transcripts
 
     /// Appends a transcribed segment with a timestamp and optional speaker label.
-    func append(segment text: String, speaker: String = "Them") {
+    /// `at` allows retried segments to carry their original capture time.
+    func append(segment text: String, speaker: String = "Them", at date: Date = Date()) {
         guard let fileURL = currentFilePath else { return }
 
-        let timestamp = Self.timeFormatter.string(from: Date())
+        let timestamp = Self.timeFormatter.string(from: date)
 
         // "You"/"Them" are role keys — map them to the user's custom labels
         // (falling back to defaults if a label was left empty in Settings).
         let settings = AppSettings.shared
         let you  = settings.speakerLabelYou.isEmpty  ? AppSettings.Default.speakerLabelYou  : settings.speakerLabelYou
         let them = settings.speakerLabelThem.isEmpty ? AppSettings.Default.speakerLabelThem : settings.speakerLabelThem
-        let speakerTag = speaker == "You" ? "**\(you)**" : "_\(them)_"
+        // Diarization passes "Them 2", "Them 3", … — keep the numeric suffix
+        // while still honoring the custom label.
+        let speakerTag: String
+        if speaker == "You" {
+            speakerTag = "**\(you)**"
+        } else {
+            let suffix = speaker.hasPrefix("Them ") ? " \(speaker.dropFirst(5))" : ""
+            speakerTag = "_\(them)\(suffix)_"
+        }
         let line = "**[\(timestamp)]** \(speakerTag): \(text)\n\n"
         append(line, to: fileURL)
     }

@@ -47,9 +47,6 @@ private struct MeetingOverlayView: View {
     let caption: String
     let showCaptions: Bool
 
-    /// Captions fade out after this many seconds without a new line.
-    private static let captionLingerSeconds: UInt64 = 6
-
     @State private var captionOpacity: Double = 0
 
     var body: some View {
@@ -77,7 +74,8 @@ private struct MeetingOverlayView: View {
                     .task(id: caption) {
                         // New caption: show it, then fade after a quiet period.
                         withAnimation(.easeIn(duration: 0.2)) { captionOpacity = 1 }
-                        try? await Task.sleep(nanoseconds: Self.captionLingerSeconds * 1_000_000_000)
+                        let linger = max(1, AppSettings.shared.captionLingerSeconds)
+                        try? await Task.sleep(nanoseconds: UInt64(linger * 1_000_000_000))
                         withAnimation(.easeOut(duration: 1.0)) { captionOpacity = 0 }
                     }
             }

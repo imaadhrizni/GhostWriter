@@ -31,13 +31,33 @@ final class AppSettings: ObservableObject {
         static let speakerLabelThem       = "meeting.speakerLabelThem"
         static let notesFolderPath        = "meeting.notesFolderPath"
         static let overlayMode            = "meeting.overlayMode"
+        static let summariesEnabled       = "meeting.summariesEnabled"
+        static let actionItemsEnabled     = "meeting.actionItemsEnabled"
+        static let notifyOnMeetingEnd     = "meeting.notifyOnMeetingEnd"
+        static let frontMatterEnabled     = "meeting.frontMatterEnabled"
+        static let diarizationEnabled     = "meeting.diarizationEnabled"
+        static let offlineFallback        = "transcription.offlineFallback"
+        static let transcriptionLanguage  = "transcription.language"
+        static let vocabulary             = "transcription.vocabulary"
+        static let replacements           = "transcription.replacements"
+        static let appProfiles            = "polishing.appProfiles"
+        static let dictationHistoryOn     = "dictation.historyEnabled"
+        static let dictationHistoryLimit  = "dictation.historyLimit"
+        static let captionLingerSeconds   = "meeting.captionLingerSeconds"
+        static let retryMaxAttempts       = "meeting.retryMaxAttempts"
+        static let retryIntervalSeconds   = "meeting.retryIntervalSeconds"
 
         static let all = [transcriptionModel, polishingModel, pttKeyCode,
                           preferBuiltInMic,
                           meetingMicThreshold, systemAudioThreshold,
                           silenceDebounce, maxSegmentSeconds, echoGateWindow,
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
-                          notesFolderPath, overlayMode]
+                          notesFolderPath, overlayMode,
+                          summariesEnabled, actionItemsEnabled, notifyOnMeetingEnd, frontMatterEnabled,
+                          diarizationEnabled, offlineFallback, transcriptionLanguage,
+                          vocabulary, replacements, appProfiles,
+                          dictationHistoryOn, dictationHistoryLimit,
+                          captionLingerSeconds, retryMaxAttempts, retryIntervalSeconds]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -56,6 +76,18 @@ final class AppSettings: ObservableObject {
         static let speakerLabelYou                 = "You"
         static let speakerLabelThem                = "Them"
         static let overlayMode                     = MeetingOverlayMode.minimal
+        static let summariesEnabled                = true
+        static let actionItemsEnabled              = true
+        static let notifyOnMeetingEnd              = true
+        static let frontMatterEnabled              = false
+        static let diarizationEnabled              = false
+        static let offlineFallback                 = true
+        static let transcriptionLanguage           = "en"
+        static let dictationHistoryOn              = true
+        static let dictationHistoryLimit           = 20
+        static let captionLingerSeconds: Double    = 6.0
+        static let retryMaxAttempts                = 3
+        static let retryIntervalSeconds: Double    = 20.0
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -162,6 +194,153 @@ final class AppSettings: ObservableObject {
             return mode
         }
         set { set(newValue.rawValue, Key.overlayMode) }
+    }
+
+    /// Seconds a live caption stays on screen after the last transcript line.
+    var captionLingerSeconds: Double {
+        get { double(Key.captionLingerSeconds, Default.captionLingerSeconds) }
+        set { set(newValue, Key.captionLingerSeconds) }
+    }
+
+    /// How many times a failed meeting segment is retried before a failure marker.
+    var retryMaxAttempts: Int {
+        get { int(Key.retryMaxAttempts, Default.retryMaxAttempts) }
+        set { set(newValue, Key.retryMaxAttempts) }
+    }
+
+    /// Seconds between retry passes for failed segments.
+    var retryIntervalSeconds: Double {
+        get { double(Key.retryIntervalSeconds, Default.retryIntervalSeconds) }
+        set { set(newValue, Key.retryIntervalSeconds) }
+    }
+
+    // MARK: - Meeting Intelligence
+
+    /// Append an AI summary (TL;DR, decisions, action items) when a meeting ends.
+    var summariesEnabled: Bool {
+        get { bool(Key.summariesEnabled, Default.summariesEnabled) }
+        set { set(newValue, Key.summariesEnabled) }
+    }
+
+    /// Include an Action Items section in the end-of-meeting summary.
+    var actionItemsEnabled: Bool {
+        get { bool(Key.actionItemsEnabled, Default.actionItemsEnabled) }
+        set { set(newValue, Key.actionItemsEnabled) }
+    }
+
+    /// Show a notification when meeting notes are saved.
+    var notifyOnMeetingEnd: Bool {
+        get { bool(Key.notifyOnMeetingEnd, Default.notifyOnMeetingEnd) }
+        set { set(newValue, Key.notifyOnMeetingEnd) }
+    }
+
+    /// Prepend YAML front-matter (Obsidian/Notion friendly) to notes files.
+    var frontMatterEnabled: Bool {
+        get { bool(Key.frontMatterEnabled, Default.frontMatterEnabled) }
+        set { set(newValue, Key.frontMatterEnabled) }
+    }
+
+    /// Experimental: label distinct remote speakers (Them 1 / Them 2) using an
+    /// energy + pause heuristic. No true voice fingerprinting — best effort.
+    var diarizationEnabled: Bool {
+        get { bool(Key.diarizationEnabled, Default.diarizationEnabled) }
+        set { set(newValue, Key.diarizationEnabled) }
+    }
+
+    // MARK: - Transcription Quality
+
+    /// Fall back to Apple's on-device speech recognition when Groq is unreachable.
+    var offlineFallback: Bool {
+        get { bool(Key.offlineFallback, Default.offlineFallback) }
+        set { set(newValue, Key.offlineFallback) }
+    }
+
+    /// ISO 639-1 language hint for Whisper (e.g. "en", "de", "ta").
+    var transcriptionLanguage: String {
+        get { string(Key.transcriptionLanguage, Default.transcriptionLanguage) }
+        set { set(newValue, Key.transcriptionLanguage) }
+    }
+
+    /// Keep an in-memory list of recent dictations (for recall / ⌃⌥V).
+    var dictationHistoryEnabled: Bool {
+        get { bool(Key.dictationHistoryOn, Default.dictationHistoryOn) }
+        set { set(newValue, Key.dictationHistoryOn) }
+    }
+
+    /// How many recent dictations to keep.
+    var dictationHistoryLimit: Int {
+        get { int(Key.dictationHistoryLimit, Default.dictationHistoryLimit) }
+        set { set(newValue, Key.dictationHistoryLimit) }
+    }
+
+    /// Domain terms fed to Whisper as a prompt hint (names, acronyms, jargon).
+    /// Comma- or newline-separated.
+    var vocabulary: String {
+        get { string(Key.vocabulary, "") }
+        set { set(newValue, Key.vocabulary) }
+    }
+
+    /// Post-transcription find→replace rules, one per line: `wrong => right`.
+    var replacements: String {
+        get { string(Key.replacements, "") }
+        set { set(newValue, Key.replacements) }
+    }
+
+    /// Per-app polishing style overrides, one per line: `bundle.id: style`
+    /// where style ∈ messaging|email|code|browser|notes|general.
+    var appProfiles: String {
+        get { string(Key.appProfiles, "") }
+        set { set(newValue, Key.appProfiles) }
+    }
+
+    // MARK: - Derived helpers
+
+    /// Parsed replacement rules in declaration order.
+    var replacementRules: [(find: String, replace: String)] {
+        replacements.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.components(separatedBy: "=>")
+            guard parts.count == 2 else { return nil }
+            let find = parts[0].trimmingCharacters(in: .whitespaces)
+            let replace = parts[1].trimmingCharacters(in: .whitespaces)
+            guard !find.isEmpty else { return nil }
+            return (find, replace)
+        }
+    }
+
+    /// Applies the user's replacement rules (case-insensitive find).
+    func applyReplacements(to text: String) -> String {
+        var result = text
+        for rule in replacementRules {
+            result = result.replacingOccurrences(
+                of: rule.find, with: rule.replace,
+                options: [.caseInsensitive])
+        }
+        return result
+    }
+
+    /// Vocabulary flattened to a single Whisper prompt hint (≤200 chars kept).
+    var vocabularyPrompt: String {
+        let terms = vocabulary
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !terms.isEmpty else { return "" }
+        return String("Glossary: " + terms.joined(separator: ", ")).prefix(400).description
+    }
+
+    /// Parsed per-app style overrides: bundleID → category.
+    var appProfileOverrides: [String: AppCategory] {
+        var result: [String: AppCategory] = [:]
+        for line in appProfiles.split(whereSeparator: \.isNewline) {
+            let parts = line.components(separatedBy: ":")
+            guard parts.count == 2,
+                  let category = AppCategory(rawValue: parts[1].trimmingCharacters(in: .whitespaces).lowercased())
+            else { continue }
+            let bundleID = parts[0].trimmingCharacters(in: .whitespaces).lowercased()
+            guard !bundleID.isEmpty else { continue }
+            result[bundleID] = category
+        }
+        return result
     }
 
     // MARK: - Reset

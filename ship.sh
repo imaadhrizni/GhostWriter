@@ -105,6 +105,8 @@ cat <<EOF > "${APP_NAME}.app/Contents/Info.plist"
     <string>GhostWriter needs accessibility access to detect the Right Option key and inject text at your cursor.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>GhostWriter needs system audio recording access to transcribe the other participants in your meetings.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>GhostWriter uses on-device speech recognition as an offline fallback when the transcription service is unreachable.</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>

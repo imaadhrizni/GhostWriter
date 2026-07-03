@@ -69,6 +69,101 @@ final class TextPolisher {
         return result.choices.first?.message.content ?? rawText
     }
 
+    // MARK: - Meeting Summaries
+
+    /// Summarize a meeting transcript. Sections are driven by settings:
+    /// TL;DR + Decisions when summaries are on, Action Items when enabled.
+    func summarize(transcript: String, includeSummary: Bool = true, includeActionItems: Bool = true) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        guard includeSummary || includeActionItems else { throw GroqError.invalidResponse }
+
+        // Keep well under context limits — a long meeting can exceed them.
+        let clipped = String(transcript.suffix(24_000))
+
+        var sections: [String] = []
+        if includeSummary {
+            sections.append("## TL;DR — 2-3 sentences.")
+            sections.append("## Decisions — bullet list (omit section if none).")
+        }
+        if includeActionItems {
+            sections.append("## Action Items — bullet list with owners when identifiable (omit section if none).")
+        }
+
+        let requestBody = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                You summarize meeting transcripts. Produce concise Markdown with exactly these sections:
+                \(sections.joined(separator: "\n"))
+                Rules:
+                - Do not invent content that is not in the transcript.
+                - Never output an empty section — omit a section entirely when there is nothing for it.
+                - Never repeat a heading.
+                - If the transcript has too little substantive discussion to summarize, output exactly NOT_ENOUGH_CONTENT and nothing else.
+                """),
+                .init(role: "user", content: "Summarize this meeting transcript:\n\n\(clipped)")
+            ],
+            temperature: 0.2,
+            max_tokens: 1024
+        )
+
+        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
+        request.httpBody = try JSONEncoder().encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw GroqError.invalidResponse
+        }
+        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        guard let content = result.choices.first?.message.content, !content.isEmpty else {
+            throw GroqError.invalidResponse
+        }
+        return content
+    }
+
+    // MARK: - Meeting Q&A
+
+    /// Answer a question about a meeting transcript.
+    func answer(question: String, transcript: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+
+        let clipped = String(transcript.suffix(24_000))
+        let requestBody = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                You answer questions about a meeting using ONLY the transcript provided.
+                Be concise. Quote the relevant transcript line (with its timestamp) when helpful.
+                If the transcript does not contain the answer, say so plainly — never guess.
+                """),
+                .init(role: "user", content: "Transcript:\n\n\(clipped)\n\nQuestion: \(question)")
+            ],
+            temperature: 0.2,
+            max_tokens: 1024
+        )
+
+        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
+        request.httpBody = try JSONEncoder().encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw GroqError.invalidResponse
+        }
+        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        guard let content = result.choices.first?.message.content, !content.isEmpty else {
+            throw GroqError.invalidResponse
+        }
+        return content
+    }
+
     // MARK: - Context-Aware Prompts
 
     /// Build a system prompt tailored to the active application.
@@ -79,8 +174,12 @@ final class TextPolisher {
         Maintain the speaker's intent and meaning exactly.
         """
 
+        // Per-app override from Settings wins over the automatic categorization.
+        let category = AppSettings.shared.appProfileOverrides[context.bundleID.lowercased()]
+            ?? context.category
+
         let contextPrompt: String
-        switch context.category {
+        switch category {
         case .messaging:
             contextPrompt = """
             The user is typing in a messaging app (\(context.appName)).

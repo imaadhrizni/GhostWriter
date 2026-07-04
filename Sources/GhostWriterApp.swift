@@ -882,6 +882,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func flushMicMeetingSegment() {
         let captured = micMeetingSpeechBuffer
+        // Stamp lines with when the speech was captured, not when the API
+        // returns — keeps interleaved You/Them lines in true order.
+        let capturedAt = micMeetingSegmentStart ?? Date()
         micMeetingSpeechBuffer = Data()
         micMeetingLastVoiceTime = nil
         micMeetingSegmentStart = nil
@@ -898,11 +901,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard !trimmed.isEmpty,
                       !self.whisperHallucinations.contains(trimmed.lowercased()) else { return }
                 Log.meeting.debug("🎤 You: \(trimmed)")
-                self.meetingNotes.append(segment: trimmed, speaker: "You")
+                self.meetingNotes.append(segment: trimmed, speaker: "You", at: capturedAt)
             } catch {
                 Log.meeting.error("❌ Mic transcription error: \(error.localizedDescription)")
                 await MainActor.run { [weak self] in
-                    self?.enqueueFailedSegment(audio: captured, speaker: "You", capturedAt: Date())
+                    self?.enqueueFailedSegment(audio: captured, speaker: "You", capturedAt: capturedAt)
                 }
             }
         }
@@ -1055,6 +1058,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func flushMeetingSegment() {
         // Must be called on meetingQueue
         let capturedAudio = meetingSpeechBuffer
+        let capturedAt = meetingSegmentStart ?? Date()
         meetingSpeechBuffer = Data()
         meetingLastVoiceTime = nil
         meetingSegmentStart = nil
@@ -1086,7 +1090,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
 
                 Log.meeting.debug("📡 Meeting transcript: \(trimmed)")
-                self.meetingNotes.append(segment: trimmed, speaker: speakerLabel)
+                self.meetingNotes.append(segment: trimmed, speaker: speakerLabel, at: capturedAt)
                 if self.settings.overlayMode == .captions {
                     await MainActor.run { [weak self] in
                         self?.appState.meetingCaption = trimmed
@@ -1095,7 +1099,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 Log.meeting.error("❌ Meeting transcription error: \(error.localizedDescription)")
                 await MainActor.run { [weak self] in
-                    self?.enqueueFailedSegment(audio: capturedAudio, speaker: speakerLabel, capturedAt: Date())
+                    self?.enqueueFailedSegment(audio: capturedAudio, speaker: speakerLabel, capturedAt: capturedAt)
                 }
             }
         }

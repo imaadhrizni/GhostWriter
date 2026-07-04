@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 // MARK: - Usage Stats
 //
@@ -34,6 +35,7 @@ final class UsageStats: ObservableObject {
     /// (Meeting_yyyy-MM-dd_HH-mm-ss.md) — no extra bookkeeping needed.
     func meetingsThisWeek(in folder: URL) -> Int {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let cutoff = Date().addingTimeInterval(-7 * 24 * 3600)
 

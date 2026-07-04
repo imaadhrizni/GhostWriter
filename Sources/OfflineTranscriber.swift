@@ -20,10 +20,21 @@ final class OfflineTranscriber {
         }
     }
 
-    /// Transcribe 16kHz/16-bit/mono PCM data on-device.
+    /// Transcribe 16kHz/16-bit/mono PCM data on-device, honoring the
+    /// configured transcription language (falling back to en-US when the
+    /// language has no on-device recognizer).
     func transcribe(audioData: Data) async throws -> String {
-        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
-              recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else {
+        let language = AppSettings.shared.transcriptionLanguage
+            .trimmingCharacters(in: .whitespaces)
+        let preferred = SFSpeechRecognizer(locale: Locale(identifier: language))
+        let recognizer: SFSpeechRecognizer
+        if let preferred, preferred.isAvailable, preferred.supportsOnDeviceRecognition {
+            recognizer = preferred
+        } else if let fallback = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
+                  fallback.isAvailable, fallback.supportsOnDeviceRecognition {
+            Log.api.warning("⚠️ No on-device recognizer for '\(language)' — falling back to en-US")
+            recognizer = fallback
+        } else {
             throw OfflineError.unavailable
         }
 

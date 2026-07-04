@@ -256,25 +256,26 @@ final class AppSettings: ObservableObject {
     /// Folder a *new* meeting's notes file goes into, per the organization
     /// setting (e.g. …/Notes/2026/2026-07/). Existing files are never moved.
     func meetingDestinationFolder(for date: Date = Date()) -> URL {
+        // Folder names must be stable across user locales/calendars.
+        func stamp(_ format: String) -> String {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.dateFormat = format
+            return f.string(from: date)
+        }
         let base = notesFolder
         switch notesOrganization {
         case .flat:
             return base
         case .byYear:
-            let f = DateFormatter(); f.dateFormat = "yyyy"
-            return base.appendingPathComponent(f.string(from: date), isDirectory: true)
+            return base.appendingPathComponent(stamp("yyyy"), isDirectory: true)
         case .byMonth:
-            let year = DateFormatter(); year.dateFormat = "yyyy"
-            let month = DateFormatter(); month.dateFormat = "yyyy-MM"
-            return base.appendingPathComponent(year.string(from: date), isDirectory: true)
-                       .appendingPathComponent(month.string(from: date), isDirectory: true)
+            return base.appendingPathComponent(stamp("yyyy"), isDirectory: true)
+                       .appendingPathComponent(stamp("yyyy-MM"), isDirectory: true)
         case .byDay:
-            let year = DateFormatter(); year.dateFormat = "yyyy"
-            let month = DateFormatter(); month.dateFormat = "yyyy-MM"
-            let day = DateFormatter(); day.dateFormat = "dd"
-            return base.appendingPathComponent(year.string(from: date), isDirectory: true)
-                       .appendingPathComponent(month.string(from: date), isDirectory: true)
-                       .appendingPathComponent(day.string(from: date), isDirectory: true)
+            return base.appendingPathComponent(stamp("yyyy"), isDirectory: true)
+                       .appendingPathComponent(stamp("yyyy-MM"), isDirectory: true)
+                       .appendingPathComponent(stamp("dd"), isDirectory: true)
         }
     }
 
@@ -356,7 +357,7 @@ final class AppSettings: ObservableObject {
         return result
     }
 
-    /// Vocabulary flattened to a single Whisper prompt hint (≤200 chars kept).
+    /// Vocabulary flattened to a single Whisper prompt hint (≤400 chars kept).
     var vocabularyPrompt: String {
         let terms = vocabulary
             .components(separatedBy: CharacterSet(charactersIn: ",\n"))

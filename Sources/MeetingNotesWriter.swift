@@ -55,13 +55,17 @@ final class MeetingNotesWriter {
 
     // Formatters are expensive to create — build once. This class is only used
     // from the transcription Tasks one line at a time, so this is safe.
+    // en_US_POSIX pins the Gregorian calendar and 0-23 hours regardless of the
+    // user's locale — these strings are file/folder names and parsed back later.
     private static let fileNameFormatter: DateFormatter = {
         let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         return f
     }()
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "HH:mm:ss"
         return f
     }()

@@ -22,13 +22,13 @@ final class PermissionGuard {
     /// Requests microphone permission. Returns true if granted.
     func requestMicrophonePermission() async -> Bool {
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
-        print("🎙️ Current Microphone Status: \(status.rawValue)")
+        Log.permissions.debug("🎙️ Current Microphone Status: \(status.rawValue)")
 
         switch status {
         case .authorized:
             return true
         case .notDetermined:
-            print("🎙️ Requesting Mic — Attempting to force prompt...")
+            Log.permissions.debug("🎙️ Requesting Mic — Attempting to force prompt...")
             await NSApplication.shared.activate(ignoringOtherApps: true)
             
             // First try the polite way
@@ -45,7 +45,7 @@ final class PermissionGuard {
             try? await Task.sleep(for: .seconds(2))
             return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         case .denied, .restricted:
-            print("🎤 Microphone permission denied in System Settings. Opening Settings...")
+            Log.permissions.info("🎤 Microphone permission denied in System Settings. Opening Settings...")
             openMicrophoneSettings()
             return false
         @unknown default:
@@ -53,9 +53,41 @@ final class PermissionGuard {
         }
     }
 
-    private func openMicrophoneSettings() {
+    func openMicrophoneSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: - System Audio Recording
+
+    /// Best-effort status of the System Audio Recording permission.
+    /// There is no public query API for this TCC category, so we preflight via
+    /// the TCC framework (same approach as AudioCap). Returns nil if unavailable.
+    var hasSystemAudioPermission: Bool? {
+        typealias PreflightFunc = @convention(c) (CFString, CFDictionary?) -> Int32
+        guard let handle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC", RTLD_NOW),
+              let sym = dlsym(handle, "TCCAccessPreflight") else { return nil }
+        let preflight = unsafeBitCast(sym, to: PreflightFunc.self)
+        // 0 = granted, 1 = denied, 2 = prompt required (not yet determined)
+        let result = preflight("kTCCServiceAudioCapture" as CFString, nil)
+        dlclose(handle)
+        return result == 0
+    }
+
+    /// Opens System Settings → Privacy & Security → Screen & System Audio Recording.
+    /// This is where the "System Audio Recording Only" (CoreAudio process tap) permission lives.
+    func openSystemAudioSettings() {
+        // macOS 15+ groups the audio-recording toggle under the Screen Recording pane.
+        let candidates = [
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy",
+        ]
+        for string in candidates {
+            if let url = URL(string: string), NSWorkspace.shared.open(url) {
+                return
+            }
         }
     }
 
@@ -78,7 +110,7 @@ final class PermissionGuard {
         let trusted = AXIsProcessTrustedWithOptions(options)
 
         if !trusted {
-            print("♿ Accessibility permission not granted — prompting user")
+            Log.permissions.info("♿ Accessibility permission not granted — prompting user")
         }
 
         return trusted
@@ -96,5 +128,37 @@ final class PermissionGuard {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    // MARK: - Reset
+
+    /// Revokes all of GhostWriter's TCC permissions via `tccutil`, so macOS will
+    /// prompt fresh next time each is requested. The running process keeps its
+    /// current grants until relaunched, so callers should relaunch afterward.
+    @discardableResult
+    func resetAllPermissions() -> Bool {
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.ghostwriter.dictation"
+        // Microphone + Accessibility, plus the CoreAudio system-audio services
+        // (AudioCapture is the process-tap service; ScreenCapture covers older paths).
+        let services = ["Microphone", "Accessibility", "AudioCapture", "ScreenCapture"]
+
+        var allOK = true
+        for service in services {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            task.arguments = ["reset", service, bundleID]
+            do {
+                try task.run()
+                task.waitUntilExit()
+                if task.terminationStatus != 0 {
+                    // Non-zero is expected when the app has no entry for that service yet.
+                    Log.permissions.info("ℹ️ tccutil reset \(service) exited \(task.terminationStatus)")
+                }
+            } catch {
+                Log.permissions.error("❌ tccutil reset \(service) failed: \(error.localizedDescription)")
+                allOK = false
+            }
+        }
+        return allOK
     }
 }

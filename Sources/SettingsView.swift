@@ -679,22 +679,7 @@ private struct MeetingNotesPane: View {
             }
 
             SettingsGroup("Intelligence") {
-                HStack {
-                    Text("Meeting template")
-                    Spacer()
-                    Picker("", selection: $settings.meetingTemplate) {
-                        ForEach(MeetingTemplate.allCases) { template in
-                            Text(template.displayName).tag(template)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 180)
-                    DefaultResetButton(isDefault: settings.meetingTemplate == AppSettings.Default.meetingTemplate) {
-                        settings.meetingTemplate = AppSettings.Default.meetingTemplate
-                    }
-                }
-                Text("Shapes what the summary extracts — Standup gets Updates/Blockers, Customer Call gets Needs/Objections/Commitments, Retrospective gets Went Well/Didn't/Improvements, and so on. Also switchable per meeting from the menu bar.")
-                    .font(.caption).foregroundColor(.secondary)
+                TemplateManager()
                 Divider()
                 Toggle("Append AI summary when a meeting ends", isOn: $settings.summariesEnabled)
                 Text("Adds the template's sections to the notes file.")
@@ -742,6 +727,135 @@ private struct MeetingNotesPane: View {
     private func pickNotesFolder() {
         if let url = chooseFolder(startingAt: settings.notesFolder) {
             settings.notesFolder = url
+        }
+    }
+}
+
+/// Manages meeting templates: pick the default, add/rename/delete your own,
+/// and edit the section list of whichever is selected. Built-in templates are
+/// curated starting points (their sections are editable, resettable); user
+/// templates are fully yours (renamable, deletable).
+private struct TemplateManager: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var confirmingDelete = false
+
+    private var selected: SummaryTemplate { settings.selectedTemplate }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Meeting template")
+                Spacer()
+                Picker("", selection: $settings.selectedTemplateID) {
+                    ForEach(settings.allTemplates) { template in
+                        Text(template.displayName).tag(template.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 180)
+                Button {
+                    settings.selectedTemplateID = settings.addUserTemplate(name: "New Template")
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .help("Add a new template")
+                if !selected.isBuiltIn {
+                    Button(role: .destructive) {
+                        confirmingDelete = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .help("Delete this template")
+                }
+            }
+            Text("Shapes what the summary extracts — Standup gets Updates/Blockers, Customer Call gets Needs/Objections/Commitments, and so on. Also switchable per meeting from the menu bar.")
+                .font(.caption).foregroundColor(.secondary)
+
+            // Name field for user templates (built-in names are fixed).
+            if !selected.isBuiltIn {
+                TemplateNameField(id: selected.id, name: selected.displayName)
+            }
+
+            TemplateSectionsEditor(template: selected)
+        }
+        .alert("Delete “\(selected.displayName)”?", isPresented: $confirmingDelete) {
+            Button("Delete", role: .destructive) { settings.deleteUserTemplate(id: selected.id) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This template will be removed. Meeting notes already saved are unaffected.")
+        }
+    }
+}
+
+/// Rename field for a user template, committing on change.
+private struct TemplateNameField: View {
+    let id: String
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var name: String
+
+    init(id: String, name: String) {
+        self.id = id
+        _name = State(initialValue: name)
+    }
+
+    var body: some View {
+        HStack {
+            Text("Name")
+            TextField("Template name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: name) { _, newValue in
+                    settings.updateUserTemplate(id: id, name: newValue)
+                }
+        }
+        // Re-seed when the picker moves to a different user template.
+        .onChange(of: id) { _, _ in name = settings.template(withID: id)?.displayName ?? "" }
+    }
+}
+
+/// Editor for the summary sections of the selected template. Sections are
+/// `Heading: instruction` lines. Built-in overrides can be reset to defaults;
+/// user templates just save their text.
+private struct TemplateSectionsEditor: View {
+    let template: SummaryTemplate
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var text: String = ""
+
+    /// Built-in with no saved override → already at default.
+    private var isBuiltInDefault: Bool {
+        if case .builtIn(let t) = template {
+            return settings.customTemplateSections(for: t) == nil
+        }
+        return true
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Sections — one \"Heading: what to extract\" per line.")
+                    .font(.caption).foregroundColor(.secondary)
+                Spacer()
+                if case .builtIn(let t) = template {
+                    DefaultResetButton(isDefault: isBuiltInDefault) {
+                        settings.setCustomTemplateSections("", for: t)
+                        text = t.defaultSectionsText
+                    }
+                }
+            }
+            TextEditor(text: $text)
+                .font(.system(.caption, design: .monospaced))
+                .frame(height: 90)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                .onChange(of: text) { _, newValue in save(newValue) }
+        }
+        .onAppear { text = template.sectionsText }
+        // Switching the picker re-points this editor at another template.
+        .onChange(of: template.id) { _, _ in text = template.sectionsText }
+    }
+
+    private func save(_ newValue: String) {
+        switch template {
+        case .builtIn(let t): settings.setCustomTemplateSections(newValue, for: t)
+        case .user(let t):    settings.updateUserTemplate(id: t.id, sections: newValue)
         }
     }
 }

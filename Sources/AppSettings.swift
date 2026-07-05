@@ -56,6 +56,8 @@ final class AppSettings: ObservableObject {
         static let actionItemsLookback    = "assistant.actionItemsLookback"
         static let searchDepth            = "assistant.searchDepth"
         static let meetingTemplate        = "meeting.template"
+        static let customTemplateSections = "meeting.customTemplateSections"
+        static let userTemplates          = "meeting.userTemplates"
         static let quickNotesFolderPath   = "quicknotes.folderPath"
         static let quickNoteNotify        = "quicknotes.notifyOnSave"
 
@@ -74,6 +76,7 @@ final class AppSettings: ObservableObject {
                           voiceCommandsEnabled, voiceCommandRules, streamingDictation,
                           streamChunkSeconds, maxSpeakers,
                           actionItemsLookback, searchDepth, meetingTemplate,
+                          customTemplateSections, userTemplates,
                           quickNotesFolderPath, quickNoteNotify]
     }
 
@@ -120,7 +123,7 @@ final class AppSettings: ObservableObject {
         static let maxSpeakers                     = 4
         static let actionItemsLookback             = 10
         static let searchDepth                     = 200
-        static let meetingTemplate                 = MeetingTemplate.general
+        static let meetingTemplate                 = MeetingTemplate.customerCall
         static let quickNoteNotify                 = true
 
         static var notesFolder: URL {
@@ -385,16 +388,120 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.quickNoteNotify) }
     }
 
-    /// The meeting template shaping the end-of-meeting summary sections.
-    /// Changeable per meeting from the menu; the choice persists as the
-    /// default for the next meeting.
-    var meetingTemplate: MeetingTemplate {
+    // MARK: - Meeting Templates
+
+    /// The id of the template shaping the end-of-meeting summary. Either a
+    /// built-in rawValue ("general") or a user template id ("user:UUID").
+    /// Changeable per meeting from the menu; persists as the next default.
+    /// Falls back to the built-in default if the stored id no longer exists
+    /// (e.g. a user template was deleted).
+    var selectedTemplateID: String {
         get {
-            guard let raw = defaults.string(forKey: Key.meetingTemplate),
-                  let template = MeetingTemplate(rawValue: raw) else { return Default.meetingTemplate }
-            return template
+            let stored = defaults.string(forKey: Key.meetingTemplate) ?? Default.meetingTemplate.rawValue
+            return allTemplates.contains(where: { $0.id == stored }) ? stored : Default.meetingTemplate.rawValue
         }
-        set { set(newValue.rawValue, Key.meetingTemplate) }
+        set { set(newValue, Key.meetingTemplate) }
+    }
+
+    /// The resolved template currently selected.
+    var selectedTemplate: SummaryTemplate {
+        template(withID: selectedTemplateID) ?? .builtIn(Default.meetingTemplate)
+    }
+
+    /// Every template — the built-in nine (with any section overrides applied)
+    /// followed by the user's own, in creation order.
+    var allTemplates: [SummaryTemplate] {
+        MeetingTemplate.allCases.map { .builtIn($0) } + userTemplates.map { .user($0) }
+    }
+
+    /// Resolve a template by id.
+    func template(withID id: String) -> SummaryTemplate? {
+        allTemplates.first { $0.id == id }
+    }
+
+    // MARK: Built-in section overrides
+
+    /// Per-built-in-template section overrides, keyed by rawValue. A value is
+    /// the editable `Heading: instruction` text the user saved. Absent → the
+    /// template uses its built-in defaults.
+    private var templateOverrides: [String: String] {
+        get {
+            guard let data = defaults.data(forKey: Key.customTemplateSections),
+                  let dict = try? JSONDecoder().decode([String: String].self, from: data)
+            else { return [:] }
+            return dict
+        }
+        set {
+            let data = try? JSONEncoder().encode(newValue)
+            set(data as Any, Key.customTemplateSections)
+        }
+    }
+
+    /// The user's custom section text for a built-in template, or nil if none
+    /// saved (meaning: use the built-in defaults).
+    func customTemplateSections(for template: MeetingTemplate) -> String? {
+        templateOverrides[template.rawValue]
+    }
+
+    /// Save a custom section list for a built-in template. Passing text equal
+    /// to the defaults (or empty) clears the override so the template tracks
+    /// any future default changes.
+    func setCustomTemplateSections(_ text: String, for template: MeetingTemplate) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var dict = templateOverrides
+        if trimmed.isEmpty || trimmed == template.defaultSectionsText {
+            dict[template.rawValue] = nil
+        } else {
+            dict[template.rawValue] = text
+        }
+        templateOverrides = dict
+    }
+
+    // MARK: User templates
+
+    /// The user's own templates, persisted as JSON in creation order.
+    private(set) var userTemplates: [UserTemplate] {
+        get {
+            guard let data = defaults.data(forKey: Key.userTemplates),
+                  let list = try? JSONDecoder().decode([UserTemplate].self, from: data)
+            else { return [] }
+            return list
+        }
+        set {
+            let data = try? JSONEncoder().encode(newValue)
+            set(data as Any, Key.userTemplates)
+        }
+    }
+
+    /// Create a new user template (with one starter section) and return its id.
+    @discardableResult
+    func addUserTemplate(name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        let template = UserTemplate(
+            id: "user:\(UUID().uuidString)",
+            name: trimmed.isEmpty ? "Untitled" : trimmed,
+            sections: "Summary: 2-3 sentences.\nKey Points: bullet list of the main points."
+        )
+        userTemplates.append(template)
+        return template.id
+    }
+
+    /// Update a user template's name and/or sections.
+    func updateUserTemplate(id: String, name: String? = nil, sections: String? = nil) {
+        var list = userTemplates
+        guard let i = list.firstIndex(where: { $0.id == id }) else { return }
+        if let name = name {
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            list[i].name = trimmed.isEmpty ? "Untitled" : trimmed
+        }
+        if let sections = sections { list[i].sections = sections }
+        userTemplates = list
+    }
+
+    /// Delete a user template. If it was the selected default, selection
+    /// falls back to the built-in default automatically (id no longer exists).
+    func deleteUserTemplate(id: String) {
+        userTemplates = userTemplates.filter { $0.id != id }
     }
 
     // MARK: - Transcription Quality
@@ -548,57 +655,149 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Summary section specs (exact heading + what goes in it), excluding
-    /// Action Items which is controlled by its own toggle.
-    var summarySections: [String] {
+    /// The built-in sections for this template, as (heading, instruction)
+    /// pairs. Action Items is excluded — it has its own toggle.
+    var defaultSections: [(heading: String, instruction: String)] {
         switch self {
         case .general: return [
-            sect("TL;DR", "2-3 sentences."),
-            sect("Decisions", "bullet list of decisions made (omit the section if none)."),
+            ("TL;DR", "2-3 sentences."),
+            ("Decisions", "bullet list of decisions made (omit the section if none)."),
         ]
         case .standup: return [
-            sect("Updates", "one bullet per person: what they did / are doing (use speaker labels when names are unknown)."),
-            sect("Blockers", "bullet list of blockers raised and who owns unblocking (omit if none)."),
+            ("Updates", "one bullet per person: what they did / are doing (use speaker labels when names are unknown)."),
+            ("Blockers", "bullet list of blockers raised and who owns unblocking (omit if none)."),
         ]
         case .oneOnOne: return [
-            sect("Topics", "bullet list of topics discussed."),
-            sect("Feedback", "feedback exchanged, in either direction (omit if none)."),
-            sect("Growth & Career", "career/growth notes (omit if none)."),
+            ("Topics", "bullet list of topics discussed."),
+            ("Feedback", "feedback exchanged, in either direction (omit if none)."),
+            ("Growth & Career", "career/growth notes (omit if none)."),
         ]
         case .customerCall: return [
-            sect("Customer Needs", "pain points and needs the customer expressed."),
-            sect("Objections & Concerns", "hesitations or objections raised (omit if none)."),
-            sect("Commitments", "what was promised to the customer, by whom (omit if none)."),
+            ("Customer Needs", "pain points and needs the customer expressed."),
+            ("Objections & Concerns", "hesitations or objections raised (omit if none)."),
+            ("Commitments", "what was promised to the customer, by whom (omit if none)."),
         ]
         case .interview: return [
-            sect("Background", "candidate's relevant background as discussed."),
-            sect("Strengths", "strengths demonstrated, with supporting evidence from answers."),
-            sect("Concerns", "gaps or concerns observed (omit if none)."),
+            ("Background", "candidate's relevant background as discussed."),
+            ("Strengths", "strengths demonstrated, with supporting evidence from answers."),
+            ("Concerns", "gaps or concerns observed (omit if none)."),
         ]
         case .planning: return [
-            sect("Scope", "what was agreed to be in and out of scope."),
-            sect("Estimates & Commitments", "sizes, dates, owners agreed (omit if none)."),
-            sect("Risks", "risks and dependencies raised (omit if none)."),
+            ("Scope", "what was agreed to be in and out of scope."),
+            ("Estimates & Commitments", "sizes, dates, owners agreed (omit if none)."),
+            ("Risks", "risks and dependencies raised (omit if none)."),
         ]
         case .retrospective: return [
-            sect("Went Well", "bullet list."),
-            sect("Didn't Go Well", "bullet list."),
-            sect("Improvements", "concrete process changes agreed (omit if none)."),
+            ("Went Well", "bullet list."),
+            ("Didn't Go Well", "bullet list."),
+            ("Improvements", "concrete process changes agreed (omit if none)."),
         ]
         case .lecture: return [
-            sect("Key Concepts", "the main ideas presented, briefly explained."),
-            sect("Takeaways", "practical takeaways."),
-            sect("Follow-ups", "questions or topics to research afterward (omit if none)."),
+            ("Key Concepts", "the main ideas presented, briefly explained."),
+            ("Takeaways", "practical takeaways."),
+            ("Follow-ups", "questions or topics to research afterward (omit if none)."),
         ]
         case .brainstorm: return [
-            sect("Ideas", "every distinct idea raised, one bullet each."),
-            sect("Promising Directions", "the ideas that got traction and why."),
+            ("Ideas", "every distinct idea raised, one bullet each."),
+            ("Promising Directions", "the ideas that got traction and why."),
         ]
         }
     }
 
-    private func sect(_ heading: String, _ instruction: String) -> String {
+    /// The default sections as editable text — one `Heading: instruction`
+    /// line per section. This is what the Settings editor pre-fills and
+    /// resets to.
+    var defaultSectionsText: String {
+        defaultSections.map { "\($0.heading): \($0.instruction)" }.joined(separator: "\n")
+    }
+
+    /// Summary section specs (exact heading + what goes in it) fed to the
+    /// model, excluding Action Items. Honors a user override from Settings
+    /// when one exists; otherwise uses the built-in defaults.
+    var summarySections: [String] {
+        if let custom = AppSettings.shared.customTemplateSections(for: self) {
+            return Self.parseSections(custom)
+        }
+        return defaultSections.map { sect($0.heading, $0.instruction) }
+    }
+
+    /// Parse `Heading: instruction` lines (the Settings editor format) into
+    /// model-facing section specs. Blank lines and lines without a heading
+    /// are skipped; a line with no colon is treated as a heading with a
+    /// generic instruction.
+    static func parseSections(_ text: String) -> [String] {
+        text.split(whereSeparator: \.isNewline).compactMap { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { return nil }
+            if let colon = line.firstIndex(of: ":") {
+                let heading = line[..<colon].trimmingCharacters(in: .whitespaces)
+                let instruction = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                guard !heading.isEmpty else { return nil }
+                return sect(heading, instruction.isEmpty ? "the relevant content (omit if none)." : instruction)
+            }
+            return sect(line, "the relevant content (omit if none).")
+        }
+    }
+
+    private static func sect(_ heading: String, _ instruction: String) -> String {
         "A section with the exact heading \"## \(heading)\" containing \(instruction)"
+    }
+
+    private func sect(_ heading: String, _ instruction: String) -> String {
+        Self.sect(heading, instruction)
+    }
+}
+
+// MARK: - User Templates
+
+/// A user-created template: a name plus its editable section text
+/// (`Heading: instruction` lines). Persisted as JSON in AppSettings.
+struct UserTemplate: Codable, Identifiable, Hashable {
+    var id: String        // "user:UUID"
+    var name: String
+    var sections: String
+}
+
+/// A resolved template — built-in or user-defined — that the pickers, the
+/// summary prompt, and the section editor all consume uniformly.
+enum SummaryTemplate: Identifiable, Hashable {
+    case builtIn(MeetingTemplate)
+    case user(UserTemplate)
+
+    var id: String {
+        switch self {
+        case .builtIn(let t): return t.rawValue
+        case .user(let t):    return t.id
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .builtIn(let t): return t.displayName
+        case .user(let t):    return t.name
+        }
+    }
+
+    var isBuiltIn: Bool {
+        if case .builtIn = self { return true }
+        return false
+    }
+
+    /// The editable `Heading: instruction` text — a built-in's override or
+    /// defaults, or the user template's own sections.
+    var sectionsText: String {
+        switch self {
+        case .builtIn(let t): return AppSettings.shared.customTemplateSections(for: t) ?? t.defaultSectionsText
+        case .user(let t):    return t.sections
+        }
+    }
+
+    /// The model-facing section specs fed to the summarizer.
+    var summarySections: [String] {
+        switch self {
+        case .builtIn(let t): return t.summarySections
+        case .user(let t):    return MeetingTemplate.parseSections(t.sections)
+        }
     }
 }
 

@@ -74,7 +74,7 @@ final class TextPolisher {
     /// Summarize a meeting transcript. Sections come from the meeting
     /// template; Action Items is appended when enabled.
     func summarize(transcript: String,
-                   template: MeetingTemplate = .general,
+                   template: SummaryTemplate = .builtIn(.general),
                    includeSummary: Bool = true,
                    includeActionItems: Bool = true) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }

@@ -631,7 +631,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 do {
                     let raw = try await self.textPolisher.summarize(
                         transcript: transcript,
-                        template: self.settings.meetingTemplate,
+                        template: self.settings.selectedTemplate,
                         includeSummary: wantsSummary,
                         includeActionItems: wantsActions)
                     if let summary = Self.sanitizedSummary(raw) {
@@ -896,7 +896,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.alertStyle = .informational
 
         // Template picker inline — what kind of meeting shapes the summary.
-        let picker = Self.makeTemplatePicker(selected: settings.meetingTemplate)
+        let picker = Self.makeTemplatePicker(selectedID: settings.selectedTemplateID)
         alert.accessoryView = picker
 
         NSApp.activate(ignoringOtherApps: true)
@@ -916,22 +916,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// A framed popup of meeting templates (an accessory view without an
     /// explicit frame renders but doesn't receive clicks in NSAlert).
-    private static func makeTemplatePicker(selected: MeetingTemplate) -> NSPopUpButton {
+    private static func makeTemplatePicker(selectedID: String) -> NSPopUpButton {
         let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 26), pullsDown: false)
-        for template in MeetingTemplate.allCases {
+        let templates = AppSettings.shared.allTemplates
+        for template in templates {
             picker.addItem(withTitle: template.displayName)
-            picker.lastItem?.representedObject = template.rawValue
+            picker.lastItem?.representedObject = template.id
         }
-        if let index = MeetingTemplate.allCases.firstIndex(of: selected) {
+        if let index = templates.firstIndex(where: { $0.id == selectedID }) {
             picker.selectItem(at: index)
         }
         return picker
     }
 
     private func applyTemplateSelection(from picker: NSPopUpButton) {
-        guard let raw = picker.selectedItem?.representedObject as? String,
-              let template = MeetingTemplate(rawValue: raw) else { return }
-        settings.meetingTemplate = template
+        guard let id = picker.selectedItem?.representedObject as? String else { return }
+        settings.selectedTemplateID = id
     }
 
     /// The tracked call released the mic while Meeting Mode is still running —

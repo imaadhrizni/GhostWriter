@@ -69,6 +69,67 @@ final class MeetingNotesWriter {
         f.dateFormat = "HH:mm:ss"
         return f
     }()
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+    private static let displayDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .long
+        return f
+    }()
+
+    // MARK: - Quick Notes
+
+    /// Append a dictated quick note to today's QuickNotes file (created on
+    /// first use) in the dedicated quick-notes folder — kept separate from
+    /// meeting notes so history/search/assistant stay meetings-only.
+    @discardableResult
+    static func appendQuickNote(_ text: String) -> URL? {
+        let folder = AppSettings.shared.quickNotesFolder
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            Log.meeting.error("❌ Could not create quick-notes folder: \(error.localizedDescription)")
+            return nil
+        }
+
+        let fileURL = todaysQuickNotesURL()
+        if !FileManager.default.fileExists(atPath: fileURL.path) {
+            let header = "# Quick Notes\n**\(displayDateFormatter.string(from: Date()))**\n\n---\n\n"
+            try? header.write(to: fileURL, atomically: true, encoding: .utf8)
+        }
+
+        let time = timeFormatter.string(from: Date())
+        guard let data = "**[\(time)]** \(text)\n\n".data(using: .utf8),
+              let handle = try? FileHandle(forWritingTo: fileURL) else { return nil }
+        handle.seekToEndOfFile()
+        handle.write(data)
+        try? handle.close()
+        Log.meeting.info("📝 Quick note saved")
+        return fileURL
+    }
+
+    /// Where today's quick notes live (whether or not the file exists yet).
+    static func todaysQuickNotesURL() -> URL {
+        AppSettings.shared.quickNotesFolder
+            .appendingPathComponent("QuickNotes_\(dayFormatter.string(from: Date())).md")
+    }
+
+    /// Today's QuickNotes file if it exists, else the most recent one.
+    static func latestQuickNotesFile() -> URL? {
+        let today = todaysQuickNotesURL()
+        if FileManager.default.fileExists(atPath: today.path) { return today }
+
+        let folder = AppSettings.shared.quickNotesFolder
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil)) ?? []
+        return files
+            .filter { $0.lastPathComponent.hasPrefix("QuickNotes_") && $0.pathExtension == "md" }
+            .max { $0.lastPathComponent < $1.lastPathComponent }
+    }
 
     // MARK: - Speaker Names
 

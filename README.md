@@ -11,6 +11,8 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 - **Zero-Latency Dictation:** Powered by Groq's `whisper-large-v3` for near-instant speech-to-text. Long dictations stream — chunks are transcribed while you're still speaking, so releasing the key types almost instantly.
 - **Voice Commands:** Say "new paragraph", spoken punctuation ("comma", "question mark"), "scratch that", or "all caps … end caps" while dictating — the rule list is editable in Settings.
 - **Call Detection:** When Zoom, Teams, Webex, Slack, or a browser call (Google Meet) starts using your microphone, GhostWriter offers to start Meeting Mode — and offers to stop and save the notes when the call ends.
+- **Quick Notes (⌃⌥J):** Toggle-dictate a thought from anywhere into a per-day notes file — transcribed, polished, timestamped, with click-to-open notifications.
+- **Meeting Templates:** Nine meeting types (Standup, 1:1, Customer Call, Interview, Planning, Retrospective, Lecture, Brainstorm, General) each extract their own summary sections — chosen right in the start-meeting dialog.
 - **Context-Aware Polishing:** Detects the app you're typing in (e.g. Slack, Mail, Xcode) and uses `llama-3.3-70b-versatile` to format dictation appropriately — casual for Slack, formal for Mail, code-friendly for IDEs.
 - **Meeting Mode:** Captures system audio via CoreAudio **process taps** (no screen-recording permission required) alongside your microphone, producing a timestamped, speaker-labeled (**You** / _Them_) transcript.
 - **Meeting Summaries:** When a meeting ends, an AI summary (TL;DR, decisions, action items) is appended to the notes automatically, and a notification lets you click straight into the file.
@@ -49,7 +51,7 @@ A build-and-deploy script is provided:
 ## ⚙️ Setup & Usage
 
 ### First launch
-1. **API Key:** GhostWriter prompts for a [Groq API Key](https://console.groq.com/keys) — enter your key starting with `gsk_`. The key is verified live against the Groq API before saving and stored in the macOS Keychain (change it later via menu bar → Set API Key…).
+1. **API Key:** GhostWriter prompts for a [Groq API Key](https://console.groq.com/keys) — enter your key starting with `gsk_`. The key is verified live against the Groq API before saving and stored in the macOS Keychain (change it later in Settings → General).
 2. **Permissions:** macOS presents native prompts for **Microphone**, **System Audio Recording**, and **Accessibility**. Grant all three. (Accessibility must be toggled on in System Settings — that's a macOS requirement; the app detects the grant and starts the hotkey without needing a relaunch.)
 
 ### Dictation
@@ -59,24 +61,25 @@ A build-and-deploy script is provided:
 4. Release the key. GhostWriter transcribes, polishes, and types the result at your cursor.
 
 ### Meeting Mode
-1. Open the menu-bar icon and choose **Meeting Mode**, or press **⌃⌥M** from anywhere.
-2. GhostWriter listens to both your mic and the system audio and writes a live Markdown transcript, tagging each line as **You** or _Them_ (labels customizable).
+1. Choose **Start Meeting** in the menu (or press **⌃⌥M**) — a dialog asks what kind of meeting it is (**template**: General, Standup, 1:1, Customer Call, Interview, Planning, Retrospective, Lecture, Brainstorm), which shapes what the summary extracts. When a conferencing app or browser call starts using your mic, GhostWriter offers to start on its own.
+2. GhostWriter listens to both your mic and the system audio and writes a live Markdown transcript, tagging each line as **You** or _Them_ (labels customizable; **Rename Speakers…** gives voices real names per meeting).
 3. A small pill overlay indicates recording is active — switch it to live captions or hide it entirely in Settings.
-4. The menu-bar icon shows the elapsed recording time while a meeting is running (dictation shows a 🎤 timer too).
-5. Choose **Meeting Mode** again to stop; the last in-flight segments are flushed and transcribed before the file is finalized, an AI summary is appended (toggleable, and skipped automatically when a short call has too little dialogue to summarize), and a notification links to the file.
+4. The menu-bar icon shows the elapsed recording time while a meeting is running (dictation shows a 🎤 timer, quick notes a 📝 timer).
+5. Choose **End Meeting** to stop — and when the call's mic is released, GhostWriter offers to stop for you. The last in-flight segments are flushed and transcribed before the file is finalized, the template's AI summary is appended (toggleable, and skipped automatically when a short call has too little dialogue), and a notification links to the file.
+
+### Quick Notes
+Press **⌃⌥J** anywhere to dictate a thought — press again to save, Esc to discard. The note is transcribed, lightly polished, and timestamped into one file per day (`QuickNotes_2026-07-05.md`) in a dedicated Quick Notes folder, with an optional "saved" notification that opens the file. Kept apart from meeting notes so history and the Notes Assistant stay meetings-only.
 
 > **Bluetooth headsets (AirPods):** using a Bluetooth microphone forces AirPods from the high-quality A2DP profile into the HFP call profile — output quality drops and volume shifts (all conferencing apps have this). GhostWriter uses the system default input, and fully releases the mic after each use so AirPods return to full quality immediately. If the profile switch bothers you, enable **"Prefer built-in microphone"** (Settings → General) to capture from the Mac's built-in mic instead — AirPods then stay in full quality throughout.
 
 ### Menu bar
-- **Meeting Mode** (⌃⌥M) — start/stop meeting transcription.
-- **Pause Transcription** (⌃⌥P) — mute note-taking mid-meeting without ending the session (writes *paused/resumed* markers to the notes).
-- **Meeting Notes ▸** — open the current/latest notes (⌃⌥N), the last 10 meetings grouped by day (mirroring the dated folder hierarchy), **Rename Speakers…**, and the notes folder.
+Organized act → find → configure; the header shows the version and quick stats (meetings this week, total dictations).
+- **Start Meeting** (⌃⌥M) — becomes **End Meeting** while recording; **Pause Meeting** (⌃⌥P) appears only mid-meeting (writes *paused/resumed* markers).
+- **Quick Note** (⌃⌥J) — toggle-dictate into today's quick-notes file.
+- **Notes ▸** — open the current/latest meeting notes (⌃⌥N), today's quick notes, the last 10 meetings grouped by day, **Rename Speakers…**, and the notes folder.
 - **Notes Assistant…** — search all transcripts, ask questions about one meeting or across all of them (with cited sources), and review action items grouped by meeting.
 - **Recent Dictations ▸** — the last 20 dictations with timestamp and duration; click to copy; Clear History at the bottom.
-- The menu header shows quick stats: meetings this week and total dictations.
-- **Settings…** — the settings window (see below).
-- **Set API Key…**
-- **Permissions ▸** — authorize Microphone / System Audio Recording / Accessibility, and **Reset All Permissions…** to revoke the TCC grants and relaunch for a fresh prompt.
+- **Settings…** — everything else lives here, including the API key (General) and permissions (Permissions pane).
 
 ### Global shortcuts
 These work system-wide, from any app (they ride the same Accessibility event tap as the push-to-talk key):
@@ -86,22 +89,25 @@ These work system-wide, from any app (they ride the same Accessibility event tap
 | Hold **Right Option** (configurable) | Push-to-talk dictation |
 | **Esc** (while dictating) | Cancel the recording — nothing is typed |
 | **⌃⌥V** | Type the most recent dictation again |
+| **⌃⌥J** | Quick note — dictate into today's notes file (press again to save, Esc to cancel) |
 | **⌃⌥M** | Start / stop Meeting Mode |
 | **⌃⌥P** | Pause / resume meeting transcription |
 | **⌃⌥N** | Open meeting notes |
 
 ### Settings
-A sidebar-style settings window with seven panes:
+A System Settings-style sidebar, grouped into **Capture**, **Meetings**, and **App**:
 
-| Pane | Options (defaults in bold) |
+| Group / Pane | Options (defaults in bold) |
 | --- | --- |
 | **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); prefer built-in microphone (**off** — uses the system default input; turn on to keep AirPods in high-quality audio); reset all settings |
-| **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn); dictation history (**on**, keep **20**); streaming dictation (**on**, chunk **10 s**); voice commands (**on**, editable rule list); offline fallback (**on**); language (**en**); custom vocabulary; find→replace rules; per-app style overrides |
-| **Meeting Mode** | Call detection — offer to start/stop with the call (**on**); overlay mode (**minimal pill** / live captions / hidden); caption fade delay (**6 s**); echo suppression (**on**, gate **0.4 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**), retry attempts (**3**), retry interval (**20 s**) |
-| **Meeting Notes** | Notes folder (**~/Documents/Notes**); file organization (**year/month/day** / year/month / year / single folder); Obsidian front-matter (**off**); speaker labels (**You** / **Them**); voice diarization (**on**, experimental; max speakers **4**); AI summary (**on**); action items (**on**); saved notification (**on**); Assistant search depth (**200** recent meetings); action items from last (**10** meetings) |
-| **Shortcuts** | Reference card of all global shortcuts (push-to-talk, Esc, ⌃⌥V, ⌃⌥M / ⌃⌥P / ⌃⌥N) |
-| **Stats** | Local usage counters — dictations, words, time; meetings and meeting time — with their own reset |
-| **Permissions** | Live status of Microphone, System Audio Recording, and Accessibility with shortcuts to the relevant Settings panes, plus Reset All Permissions |
+| Capture · **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn); dictation history (**on**, keep **20**); streaming dictation (**on**, chunk **10 s**); voice commands (**on**, editable rule list); offline fallback (**on**); language (**en**); custom vocabulary; find→replace rules; per-app style overrides |
+| Capture · **Quick Notes** | Save-to folder (**…/Notes/Quick Notes**); saved notification (**on**) |
+| Meetings · **Recording** | Call detection — offer to start/stop with the call (**on**); overlay mode (**minimal pill** / live captions / hidden); caption fade delay (**6 s**); echo suppression (**on**, gate **0.4 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**), retry attempts (**3**), retry interval (**20 s**) |
+| Meetings · **Notes & Summaries** | Notes folder (**~/Documents/Notes**); file organization (**year/month/day** / year/month / year / single folder); Obsidian front-matter (**off**); speaker labels (**You** / **Them**); voice diarization (**on**, experimental; max speakers **4**); meeting template (**General**, 9 types); AI summary (**on**); action items (**on**); saved notification (**on**); Assistant search depth (**200** recent meetings); action items from last (**10** meetings) |
+| App · **Shortcuts** | Reference card of all global shortcuts (push-to-talk, Esc, ⌃⌥V, ⌃⌥J, ⌃⌥M / ⌃⌥P / ⌃⌥N) |
+| App · **Stats** | Local usage counters — dictations, words, time; meetings and meeting time — with their own reset |
+| App · **Permissions** | Live status of Microphone, System Audio Recording, and Accessibility with shortcuts to the relevant Settings panes, plus Reset All Permissions |
+| App · **About** | Version and build, description, privacy note |
 
 All values are stored in `UserDefaults` and take effect immediately — model and hotkey changes apply to the very next request/keypress, no restart needed. Every control has a per-item reset, plus a global "Reset All Settings".
 

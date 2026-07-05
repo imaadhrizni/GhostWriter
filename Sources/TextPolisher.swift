@@ -71,9 +71,12 @@ final class TextPolisher {
 
     // MARK: - Meeting Summaries
 
-    /// Summarize a meeting transcript. Sections are driven by settings:
-    /// TL;DR + Decisions when summaries are on, Action Items when enabled.
-    func summarize(transcript: String, includeSummary: Bool = true, includeActionItems: Bool = true) async throws -> String {
+    /// Summarize a meeting transcript. Sections come from the meeting
+    /// template; Action Items is appended when enabled.
+    func summarize(transcript: String,
+                   template: MeetingTemplate = .general,
+                   includeSummary: Bool = true,
+                   includeActionItems: Bool = true) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         guard includeSummary || includeActionItems else { throw GroqError.invalidResponse }
 
@@ -82,8 +85,7 @@ final class TextPolisher {
 
         var sections: [String] = []
         if includeSummary {
-            sections.append("A section with the exact heading \"## TL;DR\" containing 2-3 sentences.")
-            sections.append("A section with the exact heading \"## Decisions\" containing a bullet list (omit the section if none).")
+            sections.append(contentsOf: template.summarySections)
         }
         if includeActionItems {
             sections.append("A section with the exact heading \"## Action Items\" containing a Markdown task list (\"- [ ] item\") with owners when identifiable (omit the section if none).")

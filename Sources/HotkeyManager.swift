@@ -26,6 +26,8 @@ final class HotkeyManager {
     var onPauseMeetingHotkey: (() -> Void)?
     /// Fired on ⌃⌥V — re-inject the most recent dictation at the cursor.
     var onReinjectHotkey: (() -> Void)?
+    /// Fired on ⌃⌥J — toggle a quick dictated note into today's notes file.
+    var onQuickNoteHotkey: (() -> Void)?
     /// Fired on Escape while a dictation recording is active — cancel it.
     var onCancelDictation: (() -> Void)?
     /// Asked before swallowing Escape; return true only while dictation is recording.
@@ -38,6 +40,7 @@ final class HotkeyManager {
         static let n: Int64      = 45
         static let p: Int64      = 35
         static let v: Int64      = 9
+        static let j: Int64      = 38
         static let escape: Int64 = 53
     }
 
@@ -109,6 +112,7 @@ final class HotkeyManager {
                 case KeyCode.n: handler = onOpenNotesHotkey
                 case KeyCode.p: handler = onPauseMeetingHotkey
                 case KeyCode.v: handler = onReinjectHotkey
+                case KeyCode.j: handler = onQuickNoteHotkey
                 default:        handler = nil
                 }
                 if let handler {

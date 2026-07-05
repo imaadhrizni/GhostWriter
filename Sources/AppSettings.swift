@@ -55,6 +55,9 @@ final class AppSettings: ObservableObject {
         static let maxSpeakers            = "meeting.maxSpeakers"
         static let actionItemsLookback    = "assistant.actionItemsLookback"
         static let searchDepth            = "assistant.searchDepth"
+        static let meetingTemplate        = "meeting.template"
+        static let quickNotesFolderPath   = "quicknotes.folderPath"
+        static let quickNoteNotify        = "quicknotes.notifyOnSave"
 
         static let all = [transcriptionModel, polishingModel, pttKeyCode,
                           preferBuiltInMic,
@@ -70,7 +73,8 @@ final class AppSettings: ObservableObject {
                           notesOrganization, meetingAutoDetect,
                           voiceCommandsEnabled, voiceCommandRules, streamingDictation,
                           streamChunkSeconds, maxSpeakers,
-                          actionItemsLookback, searchDepth]
+                          actionItemsLookback, searchDepth, meetingTemplate,
+                          quickNotesFolderPath, quickNoteNotify]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -116,6 +120,8 @@ final class AppSettings: ObservableObject {
         static let maxSpeakers                     = 4
         static let actionItemsLookback             = 10
         static let searchDepth                     = 200
+        static let meetingTemplate                 = MeetingTemplate.general
+        static let quickNoteNotify                 = true
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -360,6 +366,37 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.searchDepth) }
     }
 
+    /// Folder for dictated quick notes (⌃⌥J) — separate from meeting notes so
+    /// the meeting history and Notes Assistant stay meetings-only.
+    /// Defaults to "Quick Notes" beside the meeting notes, inside the same base.
+    var quickNotesFolder: URL {
+        get {
+            if let path = defaults.string(forKey: Key.quickNotesFolderPath), !path.isEmpty {
+                return URL(fileURLWithPath: path, isDirectory: true)
+            }
+            return notesFolder.appendingPathComponent("Quick Notes", isDirectory: true)
+        }
+        set { set(newValue.path, Key.quickNotesFolderPath) }
+    }
+
+    /// Show a notification (with the saved path, click to open) after a quick note.
+    var quickNoteNotify: Bool {
+        get { bool(Key.quickNoteNotify, Default.quickNoteNotify) }
+        set { set(newValue, Key.quickNoteNotify) }
+    }
+
+    /// The meeting template shaping the end-of-meeting summary sections.
+    /// Changeable per meeting from the menu; the choice persists as the
+    /// default for the next meeting.
+    var meetingTemplate: MeetingTemplate {
+        get {
+            guard let raw = defaults.string(forKey: Key.meetingTemplate),
+                  let template = MeetingTemplate(rawValue: raw) else { return Default.meetingTemplate }
+            return template
+        }
+        set { set(newValue.rawValue, Key.meetingTemplate) }
+    }
+
     // MARK: - Transcription Quality
 
     /// Fall back to Apple's on-device speech recognition when Groq is unreachable.
@@ -484,6 +521,84 @@ final class AppSettings: ObservableObject {
     }
     private func string(_ key: String, _ fallback: String) -> String {
         defaults.string(forKey: key) ?? fallback
+    }
+}
+
+// MARK: - Meeting Template
+
+/// Shapes what the end-of-meeting summary extracts. Each template defines its
+/// own Markdown sections; Action Items is appended separately when enabled.
+enum MeetingTemplate: String, CaseIterable, Identifiable {
+    case general, standup, oneOnOne, customerCall, interview,
+         planning, retrospective, lecture, brainstorm
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .general:       return "General"
+        case .standup:       return "Standup"
+        case .oneOnOne:      return "1:1"
+        case .customerCall:  return "Customer Call"
+        case .interview:     return "Interview"
+        case .planning:      return "Planning"
+        case .retrospective: return "Retrospective"
+        case .lecture:       return "Lecture / Webinar"
+        case .brainstorm:    return "Brainstorm"
+        }
+    }
+
+    /// Summary section specs (exact heading + what goes in it), excluding
+    /// Action Items which is controlled by its own toggle.
+    var summarySections: [String] {
+        switch self {
+        case .general: return [
+            sect("TL;DR", "2-3 sentences."),
+            sect("Decisions", "bullet list of decisions made (omit the section if none)."),
+        ]
+        case .standup: return [
+            sect("Updates", "one bullet per person: what they did / are doing (use speaker labels when names are unknown)."),
+            sect("Blockers", "bullet list of blockers raised and who owns unblocking (omit if none)."),
+        ]
+        case .oneOnOne: return [
+            sect("Topics", "bullet list of topics discussed."),
+            sect("Feedback", "feedback exchanged, in either direction (omit if none)."),
+            sect("Growth & Career", "career/growth notes (omit if none)."),
+        ]
+        case .customerCall: return [
+            sect("Customer Needs", "pain points and needs the customer expressed."),
+            sect("Objections & Concerns", "hesitations or objections raised (omit if none)."),
+            sect("Commitments", "what was promised to the customer, by whom (omit if none)."),
+        ]
+        case .interview: return [
+            sect("Background", "candidate's relevant background as discussed."),
+            sect("Strengths", "strengths demonstrated, with supporting evidence from answers."),
+            sect("Concerns", "gaps or concerns observed (omit if none)."),
+        ]
+        case .planning: return [
+            sect("Scope", "what was agreed to be in and out of scope."),
+            sect("Estimates & Commitments", "sizes, dates, owners agreed (omit if none)."),
+            sect("Risks", "risks and dependencies raised (omit if none)."),
+        ]
+        case .retrospective: return [
+            sect("Went Well", "bullet list."),
+            sect("Didn't Go Well", "bullet list."),
+            sect("Improvements", "concrete process changes agreed (omit if none)."),
+        ]
+        case .lecture: return [
+            sect("Key Concepts", "the main ideas presented, briefly explained."),
+            sect("Takeaways", "practical takeaways."),
+            sect("Follow-ups", "questions or topics to research afterward (omit if none)."),
+        ]
+        case .brainstorm: return [
+            sect("Ideas", "every distinct idea raised, one bullet each."),
+            sect("Promising Directions", "the ideas that got traction and why."),
+        ]
+        }
+    }
+
+    private func sect(_ heading: String, _ instruction: String) -> String {
+        "A section with the exact heading \"## \(heading)\" containing \(instruction)"
     }
 }
 

@@ -36,23 +36,36 @@ final class SettingsWindowController: NSWindowController {
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general     = "General"
     case dictation   = "Dictation"
-    case meeting     = "Meeting Mode"
-    case notes       = "Meeting Notes"
+    case quickNotes  = "Quick Notes"
+    case meeting     = "Recording"
+    case notes       = "Notes & Summaries"
     case shortcuts   = "Shortcuts"
     case stats       = "Stats"
     case permissions = "Permissions"
+    case about       = "About"
 
     var id: String { rawValue }
+
+    /// Sidebar layout: related panes grouped under headers, the way
+    /// System Settings clusters its domains.
+    static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
+        (nil,        [.general]),
+        ("Capture",  [.dictation, .quickNotes]),
+        ("Meetings", [.meeting, .notes]),
+        ("App",      [.shortcuts, .stats, .permissions, .about]),
+    ]
 
     var icon: String {
         switch self {
         case .general:     return "gearshape.fill"
         case .dictation:   return "mic.fill"
+        case .quickNotes:  return "square.and.pencil"
         case .meeting:     return "person.2.wave.2.fill"
         case .notes:       return "doc.text.fill"
         case .shortcuts:   return "command"
         case .stats:       return "chart.bar.fill"
         case .permissions: return "lock.shield.fill"
+        case .about:       return "info.circle.fill"
         }
     }
 
@@ -60,11 +73,13 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general:     return .gray
         case .dictation:   return .blue
+        case .quickNotes:  return .yellow
         case .meeting:     return .purple
         case .notes:       return .indigo
         case .shortcuts:   return .orange
         case .stats:       return .teal
         case .permissions: return .green
+        case .about:       return .secondary
         }
     }
 }
@@ -76,30 +91,40 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(SettingsSection.allCases, selection: $selection) { section in
-                Label {
-                    Text(section.rawValue)
-                } icon: {
-                    Image(systemName: section.icon)
-                        .foregroundColor(.white)
-                        .frame(width: 22, height: 22)
-                        .background(RoundedRectangle(cornerRadius: 5).fill(section.iconColor))
+            List(selection: $selection) {
+                ForEach(SettingsSection.sidebarGroups, id: \.sections.first!.id) { group in
+                    Section {
+                        ForEach(group.sections) { section in
+                            Label {
+                                Text(section.rawValue)
+                            } icon: {
+                                Image(systemName: section.icon)
+                                    .foregroundColor(.white)
+                                    .frame(width: 22, height: 22)
+                                    .background(RoundedRectangle(cornerRadius: 5).fill(section.iconColor))
+                            }
+                            .tag(section)
+                        }
+                    } header: {
+                        if let title = group.title { Text(title) }
+                    }
                 }
-                .tag(section)
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 190, max: 220)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 195, max: 230)
         } detail: {
             ScrollView {
                 Group {
                     switch selection {
                     case .general:     GeneralPane()
                     case .dictation:   DictationPane()
+                    case .quickNotes:  QuickNotesPane()
                     case .meeting:     MeetingPane()
                     case .notes:       MeetingNotesPane()
                     case .shortcuts:   ShortcutsPane()
                     case .stats:       StatsPane()
                     case .permissions: PermissionsPane()
+                    case .about:       AboutPane()
                     }
                 }
                 .padding(20)
@@ -337,6 +362,48 @@ private struct DictationPane: View {
             }
         }
     }
+
+}
+
+// MARK: - Quick Notes
+
+private struct QuickNotesPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Capture") {
+                Text("Press ⌃⌥J anywhere to dictate a thought — press again to save it, Esc to discard. Notes are transcribed, lightly polished, and timestamped into one file per day (QuickNotes_2026-07-05.md).")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Storage") {
+                HStack {
+                    Text("Save to")
+                    Spacer()
+                    Text(settings.quickNotesFolder.path.abbreviatingHome())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button("Choose…") { pickQuickNotesFolder() }
+                }
+                Text("Kept apart from meeting notes so meeting history and the Notes Assistant stay meetings-only. Open the latest file via menu bar → Notes → Open Today's Quick Notes.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Notifications") {
+                Toggle("Notify when a quick note is saved", isOn: $settings.quickNoteNotify)
+                Text("Shows the note and where it was saved — click the notification to open the file.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private func pickQuickNotesFolder() {
+        if let url = chooseFolder(startingAt: settings.quickNotesFolder) {
+            settings.quickNotesFolder = url
+        }
+    }
 }
 
 // MARK: - Shortcuts
@@ -354,6 +421,7 @@ private struct ShortcutsPane: View {
                 ShortcutRow(keys: "Hold \(pttKeyName)", detail: "Push-to-talk — record while held, type on release")
                 ShortcutRow(keys: "Esc", detail: "Cancel an in-progress dictation (types nothing)")
                 ShortcutRow(keys: "⌃⌥V", detail: "Type the most recent dictation again")
+                ShortcutRow(keys: "⌃⌥J", detail: "Quick note — dictate into today's notes file (press again to save, Esc to cancel)")
             }
 
             SettingsGroup("Meeting Mode") {
@@ -580,8 +648,25 @@ private struct MeetingNotesPane: View {
             }
 
             SettingsGroup("Intelligence") {
+                HStack {
+                    Text("Meeting template")
+                    Spacer()
+                    Picker("", selection: $settings.meetingTemplate) {
+                        ForEach(MeetingTemplate.allCases) { template in
+                            Text(template.displayName).tag(template)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 180)
+                    DefaultResetButton(isDefault: settings.meetingTemplate == AppSettings.Default.meetingTemplate) {
+                        settings.meetingTemplate = AppSettings.Default.meetingTemplate
+                    }
+                }
+                Text("Shapes what the summary extracts — Standup gets Updates/Blockers, Customer Call gets Needs/Objections/Commitments, Retrospective gets Went Well/Didn't/Improvements, and so on. Also switchable per meeting from the menu bar.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
                 Toggle("Append AI summary when a meeting ends", isOn: $settings.summariesEnabled)
-                Text("Adds TL;DR and decisions to the notes file.")
+                Text("Adds the template's sections to the notes file.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Append action items", isOn: $settings.actionItemsEnabled)
@@ -624,13 +709,7 @@ private struct MeetingNotesPane: View {
     }
 
     private func pickNotesFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.directoryURL = settings.notesFolder
-        panel.prompt = "Choose"
-        if panel.runModal() == .OK, let url = panel.url {
+        if let url = chooseFolder(startingAt: settings.notesFolder) {
             settings.notesFolder = url
         }
     }
@@ -908,8 +987,65 @@ extension Notification.Name {
     static let dictationHistoryDisabled = Notification.Name("DictationHistoryDisabled")
 }
 
-private extension String {
+// MARK: - About
+
+private struct AboutPane: View {
+    private var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+    private var build: String? {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("GhostWriter") {
+                HStack(spacing: 14) {
+                    Image(nsImage: NSApp.applicationIconImage ?? NSImage())
+                        .resizable()
+                        .frame(width: 56, height: 56)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("GhostWriter")
+                            .font(.title3.weight(.semibold))
+                        Text("Version \(version)\(build.map { " (\($0))" } ?? "")")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Text("A menu-bar dictation and meeting-transcription assistant. Hold a key to speak polished text into any app; Meeting Mode captures both sides of a call into speaker-labeled Markdown notes with AI summaries.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Powered By") {
+                Text("Transcription and polishing by Groq (Whisper + Llama). Offline fallback and diarization run fully on-device. Your API key stays in the macOS Keychain; audio never touches disk.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Text("© \(String(Calendar.current.component(.year, from: Date()))) GhostWriter. Built natively for Apple Silicon.")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 4)
+        }
+    }
+}
+
+// Shared with NotificationManager (quick-note "saved to" path display).
+extension String {
     func abbreviatingHome() -> String {
         (self as NSString).abbreviatingWithTildeInPath
     }
+}
+
+/// One folder chooser for every "Save to → Choose…" row.
+func chooseFolder(startingAt current: URL) -> URL? {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.canCreateDirectories = true
+    panel.directoryURL = current
+    panel.prompt = "Choose"
+    return panel.runModal() == .OK ? panel.url : nil
 }

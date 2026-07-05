@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import ServiceManagement
 
 // MARK: - Window Controller
 
@@ -141,6 +142,23 @@ struct SettingsView: View {
 private struct GeneralPane: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var hasAPIKey = KeychainService.groqAPIKey() != nil
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+
+    /// Registers/unregisters the app as a macOS login item. The system stores
+    /// this (System Settings → General → Login Items), so there is no
+    /// UserDefaults setting to keep in sync — status is re-read on appear.
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            Log.app.error("❌ Login item change failed: \(error.localizedDescription)")
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
 
     private static let transcriptionModels = [
         "whisper-large-v3",
@@ -192,11 +210,24 @@ private struct GeneralPane: View {
                     .foregroundColor(.secondary)
             }
 
+            SettingsGroup("Startup") {
+                Toggle("Start GhostWriter at login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, enabled in
+                        setLaunchAtLogin(enabled)
+                    }
+                Text("Automatically open GhostWriter in the menu bar when you log in to your Mac.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             SettingsGroup("Maintenance") {
                 ResetToDefaultsRow()
             }
         }
-        .onAppear { hasAPIKey = KeychainService.groqAPIKey() != nil }
+        .onAppear {
+            hasAPIKey = KeychainService.groqAPIKey() != nil
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
     }
 }
 

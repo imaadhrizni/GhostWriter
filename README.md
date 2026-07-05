@@ -99,7 +99,7 @@ A System Settings-style sidebar, grouped into **Capture**, **Meetings**, and **A
 
 | Group / Pane | Options (defaults in bold) |
 | --- | --- |
-| **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); prefer built-in microphone (**off** — uses the system default input; turn on to keep AirPods in high-quality audio); reset all settings |
+| **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); prefer built-in microphone (**off** — uses the system default input; turn on to keep AirPods in high-quality audio); start at login (**off** — registers as a macOS Login Item); reset all settings |
 | Capture · **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn); dictation history (**on**, keep **20**); streaming dictation (**on**, chunk **10 s**); voice commands (**on**, editable rule list); offline fallback (**on**); language (**en**); custom vocabulary; find→replace rules; per-app style overrides |
 | Capture · **Quick Notes** | Save-to folder (**…/Notes/Quick Notes**); saved notification (**on**) |
 | Meetings · **Recording** | Call detection — offer to start/stop with the call (**on**); overlay mode (**minimal pill** / live captions / hidden); caption fade delay (**6 s**); echo suppression (**on**, gate **0.4 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**), retry attempts (**3**), retry interval (**20 s**) |
@@ -109,7 +109,7 @@ A System Settings-style sidebar, grouped into **Capture**, **Meetings**, and **A
 | App · **Permissions** | Live status of Microphone, System Audio Recording, and Accessibility with shortcuts to the relevant Settings panes, plus Reset All Permissions |
 | App · **About** | Version and build, description, privacy note |
 
-All values are stored in `UserDefaults` and take effect immediately — model and hotkey changes apply to the very next request/keypress, no restart needed. Every control has a per-item reset, plus a global "Reset All Settings".
+All values are stored in `UserDefaults` (start-at-login lives in macOS Login Items) and take effect immediately — model and hotkey changes apply to the very next request/keypress, no restart needed. Every control has a per-item reset, plus a global "Reset All Settings".
 
 ## 🛠 Tech Stack & Architecture
 

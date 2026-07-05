@@ -28,7 +28,7 @@ final class SpeakerProfiler {
 
     private var profiles: [Profile] = []
     private let sampleRate: Float = 16_000
-    private let maxSpeakers = 4
+    private var maxSpeakers: Int { max(2, AppSettings.shared.maxSpeakers) }
 
     /// Start fresh for a new meeting.
     func reset() {

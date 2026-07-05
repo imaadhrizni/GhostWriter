@@ -70,10 +70,50 @@ final class MeetingNotesWriter {
         return f
     }()
 
+    // MARK: - Speaker Names
+
+    /// Session-scoped display names: default label ("Them 2") → chosen name
+    /// ("Alice"). Applied to every segment appended after the rename.
+    private var nameOverrides: [String: String] = [:]
+
+    /// Register a rename for the rest of the session. Renaming an
+    /// already-renamed speaker re-targets the same underlying label.
+    func setNameOverride(_ name: String, replacing oldLabel: String) {
+        if let original = nameOverrides.first(where: { $0.value == oldLabel })?.key {
+            nameOverrides[original] = name
+        } else {
+            nameOverrides[oldLabel] = name
+        }
+    }
+
+    /// Rewrite every occurrence of a speaker label in a finished notes file.
+    static func renameSpeaker(from old: String, to new: String, in file: URL) {
+        guard old != new, !new.isEmpty,
+              var content = try? String(contentsOf: file, encoding: .utf8) else { return }
+        content = content
+            .replacingOccurrences(of: "**\(old)**:", with: "**\(new)**:")
+            .replacingOccurrences(of: "_\(old)_:", with: "_\(new)_:")
+        try? content.write(to: file, atomically: true, encoding: .utf8)
+    }
+
+    /// Distinct speaker labels appearing in a notes file, in first-seen order.
+    static func speakerLabels(in file: URL) -> [String] {
+        guard let content = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+        var labels: [String] = []
+        let pattern = #/\*\*\[\d{2}:\d{2}:\d{2}\]\*\* (?:\*\*(.+?)\*\*|_(.+?)_):/#
+        for line in content.split(whereSeparator: \.isNewline) {
+            guard let match = line.firstMatch(of: pattern) else { continue }
+            let label = String(match.1 ?? match.2 ?? "")
+            if !label.isEmpty, !labels.contains(label) { labels.append(label) }
+        }
+        return labels
+    }
+
     // MARK: - Session Lifecycle
 
     /// Call when meeting mode starts. Creates the notes file and writes the header.
     func beginSession() {
+        nameOverrides.removeAll()
         do {
             try FileManager.default.createDirectory(at: notesDirectory, withIntermediateDirectories: true)
 
@@ -151,13 +191,17 @@ final class MeetingNotesWriter {
         let them = settings.speakerLabelThem.isEmpty ? AppSettings.Default.speakerLabelThem : settings.speakerLabelThem
         // Diarization passes "Them 2", "Them 3", … — keep the numeric suffix
         // while still honoring the custom label.
-        let speakerTag: String
-        if speaker == "You" {
-            speakerTag = "**\(you)**"
+        let isYou = speaker == "You"
+        let plainLabel: String
+        if isYou {
+            plainLabel = you
         } else {
             let suffix = speaker.hasPrefix("Them ") ? " \(speaker.dropFirst(5))" : ""
-            speakerTag = "_\(them)\(suffix)_"
+            plainLabel = "\(them)\(suffix)"
         }
+        // "Rename Speakers…" may have given this voice a real name.
+        let display = nameOverrides[plainLabel] ?? plainLabel
+        let speakerTag = isYou ? "**\(display)**" : "_\(display)_"
         let line = "**[\(timestamp)]** \(speakerTag): \(text)\n\n"
         append(line, to: fileURL)
     }

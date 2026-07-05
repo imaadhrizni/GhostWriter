@@ -8,7 +8,9 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 
 ## ✨ Features
 
-- **Zero-Latency Dictation:** Powered by Groq's `whisper-large-v3` for near-instant speech-to-text.
+- **Zero-Latency Dictation:** Powered by Groq's `whisper-large-v3` for near-instant speech-to-text. Long dictations stream — chunks are transcribed while you're still speaking, so releasing the key types almost instantly.
+- **Voice Commands:** Say "new paragraph", spoken punctuation ("comma", "question mark"), "scratch that", or "all caps … end caps" while dictating — the rule list is editable in Settings.
+- **Call Detection:** When Zoom, Teams, Webex, Slack, or a browser call (Google Meet) starts using your microphone, GhostWriter offers to start Meeting Mode — and offers to stop and save the notes when the call ends.
 - **Context-Aware Polishing:** Detects the app you're typing in (e.g. Slack, Mail, Xcode) and uses `llama-3.3-70b-versatile` to format dictation appropriately — casual for Slack, formal for Mail, code-friendly for IDEs.
 - **Meeting Mode:** Captures system audio via CoreAudio **process taps** (no screen-recording permission required) alongside your microphone, producing a timestamped, speaker-labeled (**You** / _Them_) transcript.
 - **Meeting Summaries:** When a meeting ends, an AI summary (TL;DR, decisions, action items) is appended to the notes automatically, and a notification lets you click straight into the file.
@@ -19,7 +21,8 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 - **Notes Assistant:** One window with three tools, all grouped by meeting with one-click file open. **Search** transcripts (debounced, background, scans the 200 most recent meetings). **Ask** a single meeting — or **All meetings**: the question is expanded into search terms, matching excerpts are retrieved across your whole archive, and the answer cites which meeting each point came from, with the source files listed under the answer. **Action Items** aggregates the last 10 meetings.
 - **Usage Stats:** Local-only counters — dictations, words typed, meetings recorded, meeting time — shown at the top of the menu and in Settings → Stats.
 - **Echo Suppression:** When you're on the built-in speaker instead of headphones, half-duplex gating stops the remote party's voice (picked up by your mic as echo) from being mislabeled as "You".
-- **Voice Diarization (experimental):** Optionally label distinct remote voices (Them / Them 2 / Them 3) by fingerprinting each segment's voice — pitch via autocorrelation plus timbre — and clustering, fully on-device.
+- **Voice Diarization (experimental):** Label distinct remote voices (Them / Them 2 / Them 3) by fingerprinting each segment's voice — pitch via autocorrelation plus timbre — and clustering, fully on-device. **Rename Speakers…** gives them real names per meeting: the notes file is rewritten, and a live meeting keeps using the new names.
+- **Action-Item Checklists:** End-of-meeting summaries emit Markdown task lists (`- [ ]`); the Notes Assistant shows them as clickable checkboxes — marking one done writes `- [x]` back into the notes file itself.
 - **Organized Notes:** Meeting files are filed into dated subfolders — `Notes/2026/2026-07/03/` by default; switch to year/month, year, or a single flat folder in Settings. History, search, and stats find files in any layout.
 - **Global Shortcuts:** Push-to-talk dictation (hold Right Option), Esc to cancel a dictation, ⌃⌥M to toggle Meeting Mode, ⌃⌥P to pause/resume transcription, ⌃⌥N to open the notes — all system-wide, from any app.
 - **Native macOS Integration:** Built entirely in Swift. CoreGraphics event taps for global hotkeys, Accessibility (`AXUIElement`) for text injection.
@@ -67,7 +70,7 @@ A build-and-deploy script is provided:
 ### Menu bar
 - **Meeting Mode** (⌃⌥M) — start/stop meeting transcription.
 - **Pause Transcription** (⌃⌥P) — mute note-taking mid-meeting without ending the session (writes *paused/resumed* markers to the notes).
-- **Meeting Notes ▸** — open the current/latest notes (⌃⌥N), the last 10 meetings grouped by day (mirroring the dated folder hierarchy), and the notes folder.
+- **Meeting Notes ▸** — open the current/latest notes (⌃⌥N), the last 10 meetings grouped by day (mirroring the dated folder hierarchy), **Rename Speakers…**, and the notes folder.
 - **Notes Assistant…** — search all transcripts, ask questions about one meeting or across all of them (with cited sources), and review action items grouped by meeting.
 - **Recent Dictations ▸** — the last 20 dictations with timestamp and duration; click to copy; Clear History at the bottom.
 - The menu header shows quick stats: meetings this week and total dictations.
@@ -88,13 +91,14 @@ These work system-wide, from any app (they ride the same Accessibility event tap
 | **⌃⌥N** | Open meeting notes |
 
 ### Settings
-A sidebar-style settings window with six panes:
+A sidebar-style settings window with seven panes:
 
 | Pane | Options (defaults in bold) |
 | --- | --- |
 | **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); prefer built-in microphone (**off** — uses the system default input; turn on to keep AirPods in high-quality audio); reset all settings |
-| **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn); dictation history (**on**, keep **20**); offline fallback (**on**); language (**en**); custom vocabulary; find→replace rules; per-app style overrides |
-| **Meeting Mode** | Overlay mode (**minimal pill** / live captions / hidden); notes folder (**~/Documents/Notes**); file organization (**year/month/day** / year/month / year / single folder); speaker labels (**You** / **Them**); AI summary (**on**); action items (**on**); saved notification (**on**); Obsidian front-matter (**off**); voice diarization (**on**, experimental); echo suppression (**on**, gate **0.4 s**); caption fade delay (**6 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**), retry attempts (**3**), retry interval (**20 s**) |
+| **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn); dictation history (**on**, keep **20**); streaming dictation (**on**, chunk **10 s**); voice commands (**on**, editable rule list); offline fallback (**on**); language (**en**); custom vocabulary; find→replace rules; per-app style overrides |
+| **Meeting Mode** | Call detection — offer to start/stop with the call (**on**); overlay mode (**minimal pill** / live captions / hidden); caption fade delay (**6 s**); echo suppression (**on**, gate **0.4 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**), retry attempts (**3**), retry interval (**20 s**) |
+| **Meeting Notes** | Notes folder (**~/Documents/Notes**); file organization (**year/month/day** / year/month / year / single folder); Obsidian front-matter (**off**); speaker labels (**You** / **Them**); voice diarization (**on**, experimental; max speakers **4**); AI summary (**on**); action items (**on**); saved notification (**on**); Assistant search depth (**200** recent meetings); action items from last (**10** meetings) |
 | **Shortcuts** | Reference card of all global shortcuts (push-to-talk, Esc, ⌃⌥V, ⌃⌥M / ⌃⌥P / ⌃⌥N) |
 | **Stats** | Local usage counters — dictations, words, time; meetings and meeting time — with their own reset |
 | **Permissions** | Live status of Microphone, System Audio Recording, and Accessibility with shortcuts to the relevant Settings panes, plus Reset All Permissions |
@@ -126,6 +130,8 @@ All values are stored in `UserDefaults` and take effect immediately — model an
 | `Sources/TextInjector.swift` | Accessibility-based text injection |
 | `Sources/MeetingNotesWriter.swift` | Markdown transcript writer (front-matter, summaries, dated subfolders) |
 | `Sources/SpeakerProfiler.swift` | Voice-fingerprint clustering for speaker diarization |
+| `Sources/MeetingDetector.swift` | Per-process mic inspection — call start/end detection |
+| `Sources/RenameSpeakersWindow.swift` | Per-meeting speaker renaming |
 | `Sources/OfflineTranscriber.swift` | On-device speech fallback (Apple Speech) |
 | `Sources/NotificationManager.swift` | Post-meeting notifications |
 | `Sources/NotesAssistant.swift` | Search / Ask / Action Items window |

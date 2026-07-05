@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotkeyManager = HotkeyManager()
     private let audioCapture = AudioCapture()
     private let systemAudioCapture = SystemAudioCapture()
+    private let meetingDetector = MeetingDetector()
     private let voiceActivityDetector = VoiceActivityDetector()
     private let groqService = GroqService()
     private let textPolisher = TextPolisher()
@@ -35,6 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // PTT audio buffer
     private var audioBuffer = Data()
+    // Streaming dictation: chunks transcribed while the PTT key is still held,
+    // in capture order. Joined with the tail on release.
+    private var streamTasks: [Task<String?, Never>] = []
 
     // Meeting mode state — system audio (others), accessed on meetingQueue
     private let meetingQueue = DispatchQueue(label: "com.ghostwriter.meeting", qos: .userInteractive)
@@ -135,6 +139,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             finishInitialization()
         }
+
+        meetingDetector.onMeetingDetected = { [weak self] appName in
+            self?.offerToStartMeeting(for: appName)
+        }
+        meetingDetector.onCallEnded = { [weak self] in
+            self?.offerToStopMeeting()
+        }
+        meetingDetector.start()
 
         Log.app.info("🎤 GhostWriter launched")
     }
@@ -576,7 +588,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         audioBuffer = Data()
+        streamTasks = []
         pttStartTime = Date()
+        meetingDetector.suppressed = true
         appState.recordingState = .listening
         overlayPanel?.orderFront(nil)
 
@@ -585,15 +599,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             timeInterval: 1, target: self, selector: #selector(updateDictationTimer),
             userInfo: nil, repeats: true)
 
+        let streaming = settings.streamingDictation
+        // Chunk length from settings: long enough for Whisper to have context,
+        // short enough that release-to-text feels instant on long dictations.
+        let chunkBytes = Int(16000 * 2 * max(3, settings.streamChunkSeconds))
         audioCapture.onAudioBuffer = { [weak self] buffer in
             guard let self else { return }
             let rms = self.voiceActivityDetector.calculateRMS(from: buffer)
             Task { @MainActor in self.appState.audioLevel = rms }
             self.audioBuffer.append(buffer)
+
+            // Streaming: transcribe in chunks while the key is still held,
+            // so a long dictation types almost immediately on release.
+            if streaming, self.audioBuffer.count >= chunkBytes {
+                let chunk = self.audioBuffer
+                self.audioBuffer = Data()
+                self.streamTasks.append(Task { [weak self] in
+                    try? await self?.transcribeWithFallback(chunk)
+                })
+            }
         }
 
         audioCapture.start()
     }
+
 
     @objc private func updateDictationTimer() {
         guard let start = pttStartTime else { return }
@@ -612,7 +641,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func cancelRecording() {
         guard appState.recordingState == .listening else { return }
         audioCapture.stop()
+        meetingDetector.suppressed = appState.isMeetingMode
         stopDictationTimer()
+        streamTasks.forEach { $0.cancel() }
+        streamTasks = []
         audioBuffer = Data()
         pttStartTime = nil
         appState.recordingState = .idle
@@ -622,11 +654,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func stopRecordingAndProcess() {
         audioCapture.stop()
+        meetingDetector.suppressed = appState.isMeetingMode
         stopDictationTimer()
         let dictationDuration = pttStartTime.map { Date().timeIntervalSince($0) } ?? 0
         pttStartTime = nil
 
-        guard !audioBuffer.isEmpty else {
+        let chunkTasks = streamTasks
+        streamTasks = []
+
+        guard !audioBuffer.isEmpty || !chunkTasks.isEmpty else {
             appState.recordingState = .idle
             if !appState.isMeetingMode { overlayPanel?.orderOut(nil) }
             return
@@ -638,7 +674,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         Task {
             do {
-                let rawText = try await transcribeWithFallback(capturedAudio)
+                // Streamed chunks were transcribed while the key was held —
+                // collect them in order, then transcribe only the tail.
+                var parts: [String] = []
+                for task in chunkTasks {
+                    if let piece = await task.value?
+                        .trimmingCharacters(in: .whitespacesAndNewlines), !piece.isEmpty {
+                        parts.append(piece)
+                    }
+                }
+                if !capturedAudio.isEmpty {
+                    let tail = try await transcribeWithFallback(capturedAudio)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !tail.isEmpty { parts.append(tail) }
+                }
+                let rawText = parts.joined(separator: " ")
                 guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     await MainActor.run {
                         appState.recordingState = .idle
@@ -681,6 +731,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // MARK: - Meeting Detection
+
+    /// A conferencing app started using the mic — offer to transcribe.
+    private func offerToStartMeeting(for appName: String) {
+        guard !appState.isMeetingMode else { return }
+
+        let alert = NSAlert()
+        alert.messageText = appName.hasPrefix("browser call")
+            ? "Browser call detected"
+            : "\(appName) call detected"
+        alert.informativeText = appName.hasPrefix("browser call")
+            ? "\(appName.replacingOccurrences(of: "browser call ", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "()"))) is using your microphone — likely Google Meet or another web call. Start Meeting Mode to transcribe it?"
+            : "Looks like a meeting is starting. Start Meeting Mode to transcribe it?"
+        alert.addButton(withTitle: "Start Meeting Mode")
+        alert.addButton(withTitle: "Not Now")
+        alert.alertStyle = .informational
+
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            Task { @MainActor in await startMeetingMode() }
+        } else {
+            meetingDetector.snooze()
+        }
+    }
+
+    /// The tracked call released the mic while Meeting Mode is still running —
+    /// offer to stop instead of transcribing an empty room.
+    private func offerToStopMeeting() {
+        guard appState.isMeetingMode else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Call ended"
+        alert.informativeText = "The call seems to be over, but Meeting Mode is still recording. Stop and finalize the notes?"
+        alert.addButton(withTitle: "Stop & Save Notes")
+        alert.addButton(withTitle: "Keep Recording")
+        alert.alertStyle = .informational
+
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            stopMeetingMode()
+        }
+    }
+
     // MARK: - Meeting Mode
 
     @objc private func toggleMeetingMode() {
@@ -717,6 +810,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pauseMenuItem?.title = "Pause Transcription"
         meetingModeMenuItem?.state = .on
         meetingStartTime = Date()
+        meetingDetector.suppressed = true
         meetingNotes.beginSession()
 
         // Reset the speaker profiles for the new session (safe to touch
@@ -767,6 +861,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         micCapture.stop()
         systemAudioCapture.stop()
+
+        // Don't immediately re-prompt "start Meeting Mode?" for the very call
+        // the user just chose to stop transcribing.
+        meetingDetector.suppressed = false
+        meetingDetector.snooze()
 
         // Flush the tail speech still sitting in the buffers — the last words of
         // a meeting must be transcribed, not discarded. (flush* resets the state.)
@@ -1212,6 +1311,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addItem(item)
             }
             menu.addItem(NSMenuItem.separator())
+            let renameItem = NSMenuItem(title: "Rename Speakers…", action: #selector(showRenameSpeakers), keyEquivalent: "")
+            renameItem.target = self
+            menu.addItem(renameItem)
             let folderItem = NSMenuItem(title: "Open Notes Folder…", action: #selector(openNotesFolder), keyEquivalent: "")
             folderItem.target = self
             menu.addItem(folderItem)
@@ -1258,6 +1360,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openMeetingFile(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    private var renameSpeakersWindowController: RenameSpeakersWindowController?
+
+    /// Rename Them / Them 2 to real names — per meeting. Opens with the live
+    /// meeting preselected when one is running; renames touch only the chosen
+    /// file, and live-session overrides apply only to the current meeting.
+    @objc private func showRenameSpeakers() {
+        renameSpeakersWindowController = RenameSpeakersWindowController(
+            liveFile: meetingNotes.currentFilePath,
+            onRename: { [weak self] old, new, file in
+                guard let self, self.meetingNotes.currentFilePath == file else { return }
+                self.meetingNotes.setNameOverride(new, replacing: old)
+            })
+        renameSpeakersWindowController?.showAndActivate()
     }
 
     @objc private func openNotesFolder() {

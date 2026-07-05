@@ -82,11 +82,11 @@ final class TextPolisher {
 
         var sections: [String] = []
         if includeSummary {
-            sections.append("## TL;DR — 2-3 sentences.")
-            sections.append("## Decisions — bullet list (omit section if none).")
+            sections.append("A section with the exact heading \"## TL;DR\" containing 2-3 sentences.")
+            sections.append("A section with the exact heading \"## Decisions\" containing a bullet list (omit the section if none).")
         }
         if includeActionItems {
-            sections.append("## Action Items — bullet list with owners when identifiable (omit section if none).")
+            sections.append("A section with the exact heading \"## Action Items\" containing a Markdown task list (\"- [ ] item\") with owners when identifiable (omit the section if none).")
         }
 
         let requestBody = ChatRequest(
@@ -252,11 +252,24 @@ final class TextPolisher {
 
     /// Build a system prompt tailored to the active application.
     private func buildSystemPrompt(for context: AppContext) -> String {
-        let basePrompt = """
+        var basePrompt = """
         You are a dictation polisher. Your job is to clean up speech-to-text output.
         Fix grammar, punctuation, capitalization. Remove filler words (um, uh, like).
         Maintain the speaker's intent and meaning exactly.
         """
+
+        let commandRules = AppSettings.shared.voiceCommandRules
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if AppSettings.shared.voiceCommandsEnabled, !commandRules.isEmpty {
+            basePrompt += """
+
+
+            Interpret spoken editing commands instead of transcribing them literally:
+            \(commandRules)
+            Only treat these as commands when clearly meant as commands, not as content \
+            (e.g. "the meeting ended on a question mark" stays as words).
+            """
+        }
 
         // Per-app override from Settings wins over the automatic categorization.
         let category = AppSettings.shared.appProfileOverrides[context.bundleID.lowercased()]

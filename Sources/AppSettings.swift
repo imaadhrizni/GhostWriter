@@ -47,6 +47,14 @@ final class AppSettings: ObservableObject {
         static let retryMaxAttempts       = "meeting.retryMaxAttempts"
         static let retryIntervalSeconds   = "meeting.retryIntervalSeconds"
         static let notesOrganization      = "meeting.notesOrganization"
+        static let meetingAutoDetect      = "meeting.autoDetect"
+        static let voiceCommandsEnabled   = "dictation.voiceCommands"
+        static let voiceCommandRules      = "dictation.voiceCommandRules"
+        static let streamingDictation     = "dictation.streaming"
+        static let streamChunkSeconds     = "dictation.streamChunkSeconds"
+        static let maxSpeakers            = "meeting.maxSpeakers"
+        static let actionItemsLookback    = "assistant.actionItemsLookback"
+        static let searchDepth            = "assistant.searchDepth"
 
         static let all = [transcriptionModel, polishingModel, pttKeyCode,
                           preferBuiltInMic,
@@ -59,7 +67,10 @@ final class AppSettings: ObservableObject {
                           vocabulary, replacements, appProfiles,
                           dictationHistoryOn, dictationHistoryLimit,
                           captionLingerSeconds, retryMaxAttempts, retryIntervalSeconds,
-                          notesOrganization]
+                          notesOrganization, meetingAutoDetect,
+                          voiceCommandsEnabled, voiceCommandRules, streamingDictation,
+                          streamChunkSeconds, maxSpeakers,
+                          actionItemsLookback, searchDepth]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -91,6 +102,20 @@ final class AppSettings: ObservableObject {
         static let retryMaxAttempts                = 3
         static let retryIntervalSeconds: Double    = 20.0
         static let notesOrganization               = NotesOrganization.byDay
+        static let meetingAutoDetect               = true
+        static let voiceCommandsEnabled            = true
+        static let voiceCommandRules = """
+        "new paragraph" or "new line" → insert a paragraph or line break
+        spoken punctuation ("comma", "period", "question mark", "exclamation mark", "colon", "semicolon") → that punctuation character
+        "open quote" / "close quote" → quotation marks
+        "scratch that" or "delete that" → remove the immediately preceding phrase or sentence
+        "all caps <words> end caps" → uppercase those words
+        """
+        static let streamingDictation              = true
+        static let streamChunkSeconds: Double      = 10.0
+        static let maxSpeakers                     = 4
+        static let actionItemsLookback             = 10
+        static let searchDepth                     = 200
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -284,6 +309,55 @@ final class AppSettings: ObservableObject {
     var diarizationEnabled: Bool {
         get { bool(Key.diarizationEnabled, Default.diarizationEnabled) }
         set { set(newValue, Key.diarizationEnabled) }
+    }
+
+    /// Offer to start Meeting Mode when a conferencing app starts using the mic.
+    var meetingAutoDetect: Bool {
+        get { bool(Key.meetingAutoDetect, Default.meetingAutoDetect) }
+        set { set(newValue, Key.meetingAutoDetect) }
+    }
+
+    /// Interpret spoken commands in dictation ("new paragraph", "scratch that").
+    var voiceCommandsEnabled: Bool {
+        get { bool(Key.voiceCommandsEnabled, Default.voiceCommandsEnabled) }
+        set { set(newValue, Key.voiceCommandsEnabled) }
+    }
+
+    /// Editable voice-command rules, one per line ("spoken phrase → effect").
+    /// Fed verbatim to the polishing model when voice commands are enabled.
+    var voiceCommandRules: String {
+        get { string(Key.voiceCommandRules, Default.voiceCommandRules) }
+        set { set(newValue, Key.voiceCommandRules) }
+    }
+
+    /// Transcribe long dictations in chunks while the key is still held.
+    var streamingDictation: Bool {
+        get { bool(Key.streamingDictation, Default.streamingDictation) }
+        set { set(newValue, Key.streamingDictation) }
+    }
+
+    /// Chunk length for streaming dictation, in seconds.
+    var streamChunkSeconds: Double {
+        get { double(Key.streamChunkSeconds, Default.streamChunkSeconds) }
+        set { set(newValue, Key.streamChunkSeconds) }
+    }
+
+    /// Maximum distinct remote speakers the diarizer will label.
+    var maxSpeakers: Int {
+        get { int(Key.maxSpeakers, Default.maxSpeakers) }
+        set { set(newValue, Key.maxSpeakers) }
+    }
+
+    /// How many recent meetings the Assistant's Action Items tab aggregates.
+    var actionItemsLookback: Int {
+        get { int(Key.actionItemsLookback, Default.actionItemsLookback) }
+        set { set(newValue, Key.actionItemsLookback) }
+    }
+
+    /// How many recent meetings full-text search and cross-meeting Ask scan.
+    var searchDepth: Int {
+        get { int(Key.searchDepth, Default.searchDepth) }
+        set { set(newValue, Key.searchDepth) }
     }
 
     // MARK: - Transcription Quality

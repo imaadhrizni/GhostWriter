@@ -37,6 +37,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case general     = "General"
     case dictation   = "Dictation"
     case meeting     = "Meeting Mode"
+    case notes       = "Meeting Notes"
     case shortcuts   = "Shortcuts"
     case stats       = "Stats"
     case permissions = "Permissions"
@@ -48,6 +49,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general:     return "gearshape.fill"
         case .dictation:   return "mic.fill"
         case .meeting:     return "person.2.wave.2.fill"
+        case .notes:       return "doc.text.fill"
         case .shortcuts:   return "command"
         case .stats:       return "chart.bar.fill"
         case .permissions: return "lock.shield.fill"
@@ -59,6 +61,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general:     return .gray
         case .dictation:   return .blue
         case .meeting:     return .purple
+        case .notes:       return .indigo
         case .shortcuts:   return .orange
         case .stats:       return .teal
         case .permissions: return .green
@@ -93,6 +96,7 @@ struct SettingsView: View {
                     case .general:     GeneralPane()
                     case .dictation:   DictationPane()
                     case .meeting:     MeetingPane()
+                    case .notes:       MeetingNotesPane()
                     case .shortcuts:   ShortcutsPane()
                     case .stats:       StatsPane()
                     case .permissions: PermissionsPane()
@@ -253,6 +257,35 @@ private struct DictationPane: View {
             }
 
             SettingsGroup("Transcription Quality") {
+                Toggle("Streaming dictation", isOn: $settings.streamingDictation)
+                Text("Long dictations are transcribed in chunks while you're still speaking, so the text appears almost instantly on release.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.streamingDictation {
+                    DurationSlider(
+                        title: "Chunk length",
+                        value: $settings.streamChunkSeconds, range: 5...20, step: 1, unit: "s",
+                        defaultValue: AppSettings.Default.streamChunkSeconds
+                    )
+                }
+                Divider()
+                HStack {
+                    Toggle("Voice commands", isOn: $settings.voiceCommandsEnabled)
+                    Spacer()
+                    DefaultResetButton(isDefault: settings.voiceCommandRules == AppSettings.Default.voiceCommandRules) {
+                        settings.voiceCommandRules = AppSettings.Default.voiceCommandRules
+                    }
+                }
+                Text("Say \"new paragraph\", \"comma\", \"scratch that\", or \"all caps … end caps\" while dictating.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.voiceCommandsEnabled {
+                    Text("Rules — one per line, \"spoken phrase → effect\". Edit freely; the polishing model follows them.")
+                        .font(.caption).foregroundColor(.secondary)
+                    TextEditor(text: $settings.voiceCommandRules)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(height: 90)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                }
+                Divider()
                 Toggle("Offline fallback (Apple on-device recognition)", isOn: $settings.offlineFallback)
                 Text("When Groq is unreachable, transcribe on-device instead of failing. Lower accuracy, zero network.")
                     .font(.caption).foregroundColor(.secondary)
@@ -362,6 +395,12 @@ private struct MeetingPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Call Detection") {
+                Toggle("Offer to start when a call is detected", isOn: $settings.meetingAutoDetect)
+                Text("When Zoom, Teams, Webex, Slack, a browser call (Google Meet), or another conferencing app starts using the microphone, GhostWriter asks whether to start Meeting Mode — and offers to stop when the call ends.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
             SettingsGroup("Overlay") {
                 HStack {
                     Text("During meetings show")
@@ -387,69 +426,6 @@ private struct MeetingPane: View {
                         defaultValue: AppSettings.Default.captionLingerSeconds
                     )
                 }
-            }
-
-            SettingsGroup("Notes") {
-                HStack {
-                    Text("Save to")
-                    Spacer()
-                    Text(settings.notesFolder.path.abbreviatingHome())
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Button("Choose…") { pickNotesFolder() }
-                }
-                Divider()
-                HStack {
-                    Text("Organize files")
-                    Spacer()
-                    Picker("", selection: $settings.notesOrganization) {
-                        ForEach(NotesOrganization.allCases) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 220)
-                }
-                Text("New meetings are saved into dated subfolders so the notes folder stays tidy. Existing files stay where they are — history, search, and stats find them either way.")
-                    .font(.caption).foregroundColor(.secondary)
-                Divider()
-                HStack {
-                    Text("Your label")
-                    Spacer()
-                    TextField("", text: $settings.speakerLabelYou)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 160)
-                        .multilineTextAlignment(.trailing)
-                }
-                HStack {
-                    Text("Others' label")
-                    Spacer()
-                    TextField("", text: $settings.speakerLabelThem)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 160)
-                        .multilineTextAlignment(.trailing)
-                }
-            }
-
-            SettingsGroup("Intelligence") {
-                Toggle("Append AI summary when a meeting ends", isOn: $settings.summariesEnabled)
-                Text("Adds TL;DR and decisions to the notes file.")
-                    .font(.caption).foregroundColor(.secondary)
-                Divider()
-                Toggle("Append action items", isOn: $settings.actionItemsEnabled)
-                Text("Adds an Action Items section (with owners when identifiable). Also feeds the Notes Assistant's Action Items tab.")
-                    .font(.caption).foregroundColor(.secondary)
-                Divider()
-                Toggle("Notify when notes are saved", isOn: $settings.notifyOnMeetingEnd)
-                Divider()
-                Toggle("Obsidian/Notion front-matter", isOn: $settings.frontMatterEnabled)
-                Text("Prepends YAML metadata (title, date, tags) to each notes file.")
-                    .font(.caption).foregroundColor(.secondary)
-                Divider()
-                Toggle("Label distinct speakers (experimental)", isOn: $settings.diarizationEnabled)
-                Text("Fingerprints each voice (pitch and timbre) and clusters segments, labeling remote voices Them / Them 2 / Them 3. On-device and lightweight — similar-sounding voices may still merge.")
-                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Echo Suppression") {
@@ -523,6 +499,126 @@ private struct MeetingPane: View {
             } label: {
                 Label("Advanced", systemImage: "slider.horizontal.3")
                     .font(.headline)
+            }
+        }
+    }
+
+}
+
+// MARK: - Meeting Notes
+
+private struct MeetingNotesPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Files") {
+                HStack {
+                    Text("Save to")
+                    Spacer()
+                    Text(settings.notesFolder.path.abbreviatingHome())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button("Choose…") { pickNotesFolder() }
+                }
+                Divider()
+                HStack {
+                    Text("Organize files")
+                    Spacer()
+                    Picker("", selection: $settings.notesOrganization) {
+                        ForEach(NotesOrganization.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 220)
+                }
+                Text("New meetings are saved into dated subfolders so the notes folder stays tidy. Existing files stay where they are — history, search, and stats find them either way.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Obsidian/Notion front-matter", isOn: $settings.frontMatterEnabled)
+                Text("Prepends YAML metadata (title, date, tags) to each notes file.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Speakers") {
+                HStack {
+                    Text("Your label")
+                    Spacer()
+                    TextField("", text: $settings.speakerLabelYou)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 160)
+                        .multilineTextAlignment(.trailing)
+                }
+                HStack {
+                    Text("Others' label")
+                    Spacer()
+                    TextField("", text: $settings.speakerLabelThem)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 160)
+                        .multilineTextAlignment(.trailing)
+                }
+                Divider()
+                Toggle("Label distinct speakers (experimental)", isOn: $settings.diarizationEnabled)
+                Text("Fingerprints each voice (pitch and timbre) and clusters segments, labeling remote voices Them / Them 2 / Them 3. On-device and lightweight — similar-sounding voices may still merge. Use Meeting Notes ▸ Rename Speakers… to give them real names per meeting.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.diarizationEnabled {
+                    HStack {
+                        Text("Max distinct speakers")
+                        Spacer()
+                        Picker("", selection: $settings.maxSpeakers) {
+                            ForEach([2, 3, 4, 5, 6], id: \.self) { Text("\($0)").tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 80)
+                        DefaultResetButton(isDefault: settings.maxSpeakers == AppSettings.Default.maxSpeakers) {
+                            settings.maxSpeakers = AppSettings.Default.maxSpeakers
+                        }
+                    }
+                }
+            }
+
+            SettingsGroup("Intelligence") {
+                Toggle("Append AI summary when a meeting ends", isOn: $settings.summariesEnabled)
+                Text("Adds TL;DR and decisions to the notes file.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Append action items", isOn: $settings.actionItemsEnabled)
+                Text("Adds an Action Items checklist (with owners when identifiable). Also feeds the Notes Assistant's Action Items tab.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Notify when notes are saved", isOn: $settings.notifyOnMeetingEnd)
+            }
+
+            SettingsGroup("Notes Assistant") {
+                HStack {
+                    Text("Search depth (recent meetings)")
+                    Spacer()
+                    Picker("", selection: $settings.searchDepth) {
+                        ForEach([100, 200, 500, 1000], id: \.self) { Text("\($0)").tag($0) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 100)
+                    DefaultResetButton(isDefault: settings.searchDepth == AppSettings.Default.searchDepth) {
+                        settings.searchDepth = AppSettings.Default.searchDepth
+                    }
+                }
+                Text("How many recent meetings full-text search and \"All meetings\" Ask scan. Higher reaches further back but is slower on large archives.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                HStack {
+                    Text("Action items from last")
+                    Spacer()
+                    Picker("", selection: $settings.actionItemsLookback) {
+                        ForEach([5, 10, 20, 50], id: \.self) { Text("\($0) meetings").tag($0) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 130)
+                    DefaultResetButton(isDefault: settings.actionItemsLookback == AppSettings.Default.actionItemsLookback) {
+                        settings.actionItemsLookback = AppSettings.Default.actionItemsLookback
+                    }
+                }
             }
         }
     }

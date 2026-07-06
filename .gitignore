@@ -80,3 +80,19 @@ Network Trash Folder/
 .DS_Store?
 .Spotlight-V100
 .Trashes
+
+### GhostWriter project-specific ###
+# Release/distribution output produced by ship.sh
+.release/
+
+# Claude Code local session/settings
+.claude/
+
+# Swift Package Manager local state
+.swiftpm/
+Package.resolved
+
+# Signing artifacts
+*.p12
+*.cer
+entitlements.local.plist

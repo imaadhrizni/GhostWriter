@@ -1,4 +1,6 @@
 import AVFoundation
+import AudioToolbox
+import CoreAudio
 import Foundation
 
 // MARK: - Audio Capture
@@ -16,8 +18,14 @@ final class AudioCapture {
 
     // MARK: - Private State
 
-    private let engine = AVAudioEngine()
+    // Recreated on every stop: a stopped AVAudioEngine still holds its input
+    // HAL unit, which keeps the mic "in use" — on Bluetooth headsets (AirPods)
+    // that pins them in the low-quality HFP call profile until the app quits.
+    private var engine = AVAudioEngine()
     private var isRunning = false
+
+    /// Cached converter — creating one per buffer is wasteful (~10×/sec).
+    private var converter: AVAudioConverter?
 
     /// Target format for Groq Whisper: 16kHz, 16-bit signed integer, mono
     private lazy var targetFormat: AVAudioFormat = {
@@ -36,6 +44,27 @@ final class AudioCapture {
         guard !isRunning else { return }
 
         let inputNode = engine.inputNode
+
+        // Prefer the built-in mic over Bluetooth: capturing from AirPods forces
+        // them into the HFP call profile (degraded output, volume shift). Pinning
+        // the engine to the built-in mic keeps headphones in A2DP untouched.
+        if AppSettings.shared.preferBuiltInMic,
+           let builtIn = Self.builtInInputDeviceID(),
+           let audioUnit = inputNode.audioUnit {
+            var deviceID = builtIn
+            let status = AudioUnitSetProperty(
+                audioUnit,
+                kAudioOutputUnitProperty_CurrentDevice,
+                kAudioUnitScope_Global,
+                0,
+                &deviceID,
+                UInt32(MemoryLayout<AudioDeviceID>.size)
+            )
+            if status != noErr {
+                Log.audio.warning("⚠️ Could not pin built-in mic (\(status)) — using default input")
+            }
+        }
+
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
         // Install a tap on the input node
@@ -48,9 +77,9 @@ final class AudioCapture {
         do {
             try engine.start()
             isRunning = true
-            print("🎙️ Audio capture started — 16kHz PCM, memory-only")
+            Log.audio.debug("🎙️ Audio capture started — 16kHz PCM, memory-only")
         } catch {
-            print("❌ Failed to start audio engine: \(error)")
+            Log.audio.error("❌ Failed to start audio engine: \(error)")
         }
     }
 
@@ -60,8 +89,13 @@ final class AudioCapture {
 
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        engine.reset()
+        // Drop the engine entirely so the input HAL unit is truly released —
+        // this lets Bluetooth headsets fall back from HFP to A2DP immediately.
+        engine = AVAudioEngine()
+        converter = nil
         isRunning = false
-        print("🎙️ Audio capture stopped")
+        Log.audio.debug("🎙️ Audio capture stopped")
     }
 
     // MARK: - Buffer Processing
@@ -69,9 +103,13 @@ final class AudioCapture {
     /// Convert the captured buffer to our target format (16kHz, 16-bit, mono)
     /// and emit as raw Data.
     private func processBuffer(_ buffer: AVAudioPCMBuffer, from sourceFormat: AVAudioFormat) {
-        // Create a converter from input format to target format
-        guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
-            print("❌ Cannot create audio converter")
+        // Reuse the converter across buffers; rebuild only if the format changed
+        // (e.g. AirPods switching profiles mid-capture).
+        if converter == nil || converter?.inputFormat != sourceFormat {
+            converter = AVAudioConverter(from: sourceFormat, to: targetFormat)
+        }
+        guard let converter else {
+            Log.audio.error("❌ Cannot create audio converter")
             return
         }
 
@@ -98,7 +136,7 @@ final class AudioCapture {
         }
 
         if let error {
-            print("❌ Audio conversion error: \(error)")
+            Log.audio.error("❌ Audio conversion error: \(error)")
             return
         }
 
@@ -110,6 +148,45 @@ final class AudioCapture {
         )
 
         onAudioBuffer?(data)
+    }
+
+    // MARK: - Device Discovery
+
+    /// The built-in microphone's device ID, if present (nil on Macs without one).
+    private static func builtInInputDeviceID() -> AudioDeviceID? {
+        var prop = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope:    kAudioObjectPropertyScopeGlobal,
+            mElement:  kAudioObjectPropertyElementMain)
+
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &prop, 0, nil, &size) == noErr else { return nil }
+        let count = Int(size) / MemoryLayout<AudioDeviceID>.size
+        var devices = [AudioDeviceID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &prop, 0, nil, &size, &devices) == noErr else { return nil }
+
+        for device in devices {
+            // Built-in transport only
+            var transportProp = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyTransportType,
+                mScope:    kAudioObjectPropertyScopeGlobal,
+                mElement:  kAudioObjectPropertyElementMain)
+            var transport: UInt32 = 0
+            var tSize = UInt32(MemoryLayout<UInt32>.size)
+            guard AudioObjectGetPropertyData(device, &transportProp, 0, nil, &tSize, &transport) == noErr,
+                  transport == kAudioDeviceTransportTypeBuiltIn else { continue }
+
+            // Must have input streams (skip the built-in speaker)
+            var streamsProp = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyStreams,
+                mScope:    kAudioObjectPropertyScopeInput,
+                mElement:  kAudioObjectPropertyElementMain)
+            var sSize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(device, &streamsProp, 0, nil, &sSize) == noErr, sSize > 0 else { continue }
+
+            return device
+        }
+        return nil
     }
 
     // MARK: - WAV Header Generation

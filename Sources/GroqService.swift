@@ -40,11 +40,21 @@ final class GroqService {
 
         var body = Data()
 
-        // Model parameter
-        body.appendMultipart(name: "model", value: "whisper-large-v3", boundary: boundary)
+        // Model parameter (user-configurable in Settings)
+        body.appendMultipart(name: "model", value: AppSettings.shared.transcriptionModel, boundary: boundary)
 
-        // Language hint (optional — helps accuracy)
-        body.appendMultipart(name: "language", value: "en", boundary: boundary)
+        // Custom vocabulary: Whisper biases toward terms seen in the prompt —
+        // names, acronyms, and jargon transcribe far more reliably.
+        let vocabularyPrompt = AppSettings.shared.vocabularyPrompt
+        if !vocabularyPrompt.isEmpty {
+            body.appendMultipart(name: "prompt", value: vocabularyPrompt, boundary: boundary)
+        }
+
+        // Language hint (optional — helps accuracy; user-configurable)
+        let language = AppSettings.shared.transcriptionLanguage.trimmingCharacters(in: .whitespaces)
+        if !language.isEmpty {
+            body.appendMultipart(name: "language", value: language, boundary: boundary)
+        }
 
         // Response format
         body.appendMultipart(name: "response_format", value: "json", boundary: boundary)
@@ -69,9 +79,13 @@ final class GroqService {
             throw GroqError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
         }
 
-        // Parse response
+        // Bill estimate: 16 kHz, 16-bit, mono PCM → 2 bytes/sample.
+        let audioSeconds = Double(audioData.count) / 2.0 / 16_000.0
+        UsageStats.shared.recordTranscription(audioSeconds: audioSeconds)
+
+        // Parse response, then apply the user's find→replace rules
         let result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
-        return result.text
+        return AppSettings.shared.applyReplacements(to: result.text)
     }
 }
 
@@ -91,7 +105,7 @@ enum GroqError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingAPIKey:
-            return "Groq API key not set. Set GROQ_API_KEY environment variable."
+            return "Groq API key not set. Add one via the menu bar → Set API Key…"
         case .invalidResponse:
             return "Invalid response from Groq API."
         case .apiError(let code, let message):

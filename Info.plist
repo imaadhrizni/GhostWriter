@@ -11,13 +11,17 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.6.1</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>GhostWriter needs microphone access to transcribe your speech into text.</string>
     <key>NSAccessibilityUsageDescription</key>
     <string>GhostWriter needs accessibility access to detect the Right Option key and inject text at your cursor.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>GhostWriter needs system audio recording access to transcribe the other participants in your meetings.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>GhostWriter uses on-device speech recognition as an offline fallback when the transcription service is unreachable.</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
 </dict>

@@ -96,7 +96,7 @@ cat <<EOF > "${APP_NAME}.app/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.6.1</string>
+    <string>0.7.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
@@ -107,6 +107,8 @@ cat <<EOF > "${APP_NAME}.app/Contents/Info.plist"
     <string>GhostWriter needs system audio recording access to transcribe the other participants in your meetings.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>GhostWriter uses on-device speech recognition as an offline fallback when the transcription service is unreachable.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>GhostWriter reads the active browser tab's address to pick the right writing style (e.g. email style on Gmail). You can disable this in Settings.</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>

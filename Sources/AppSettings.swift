@@ -71,6 +71,8 @@ final class AppSettings: ObservableObject {
         static let autoTagging            = "meeting.autoTagging"
         static let errorNotifications     = "diagnostics.errorNotifications"
         static let uiDateFormat           = "ui.dateFormat"
+        static let browserTabDetection    = "dictation.browserTabDetection"
+        static let domainStyleRules       = "dictation.domainStyleRules"
         static let priceAudioPerHour      = "cost.audioPerHour"
         static let priceInputPerMTok      = "cost.inputPerMTok"
         static let priceOutputPerMTok     = "cost.outputPerMTok"
@@ -95,6 +97,7 @@ final class AppSettings: ObservableObject {
                           quickNotesFolderPath, quickNoteNotify,
                           localOnlyMode, redactionEnabled, redactEmails, redactPhones, redactNumbers,
                           autoTagging, errorNotifications, uiDateFormat,
+                          browserTabDetection, domainStyleRules,
                           priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok]
     }
 
@@ -151,6 +154,13 @@ final class AppSettings: ObservableObject {
         static let autoTagging                     = true
         static let errorNotifications              = true
         static let uiDateFormat                    = "dd MMM yyyy"
+        static let browserTabDetection             = true
+        static let domainStyleRules = """
+        mail.google.com: email
+        outlook.office.com: email
+        github.com: code
+        docs.google.com: notes
+        """
         // Estimate defaults (USD) — Groq list prices as of shipping; editable
         // in Settings since provider pricing drifts over time.
         static let priceAudioPerHour               = 0.111   // whisper-large-v3
@@ -563,10 +573,54 @@ final class AppSettings: ObservableObject {
         dictationStyle(withID: defaultDictationStyleID) ?? .builtIn(.general)
     }
 
-    /// Choose the style for a given dictation context. Per-app override wins;
-    /// then a recognized (non-general) app category; otherwise the global
-    /// default style (which may be a custom style).
+    /// Whether to read the active browser tab's URL (via Automation) so a
+    /// domain rule / the log can distinguish sites inside a browser.
+    var browserTabDetection: Bool {
+        get { bool(Key.browserTabDetection, Default.browserTabDetection) }
+        set { set(newValue, Key.browserTabDetection) }
+    }
+
+    /// Newline rules mapping a host substring to a style key, e.g.
+    /// "mail.google.com: email". Applied when dictating in a browser.
+    var domainStyleRules: String {
+        get { string(Key.domainStyleRules, Default.domainStyleRules) }
+        set { set(newValue, Key.domainStyleRules) }
+    }
+
+    /// Resolve a style key ("email", "code", or a custom style's name) to a
+    /// concrete style: a built-in category first, then a user style by name.
+    func dictationStyle(forKey key: String) -> DictationStyle? {
+        let k = key.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !k.isEmpty else { return nil }
+        if let category = AppCategory(rawValue: k) { return .builtIn(category) }
+        if let user = userDictationStyles.first(where: { $0.name.lowercased() == k }) {
+            return .user(user)
+        }
+        return nil
+    }
+
+    /// The style for a browser host from the domain rules, if any rule's host
+    /// substring appears in `host`.
+    func domainStyle(forHost host: String) -> DictationStyle? {
+        let lowerHost = host.lowercased()
+        for line in domainStyleRules.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, !parts[0].isEmpty else { continue }
+            if lowerHost.contains(parts[0].lowercased()), let style = dictationStyle(forKey: parts[1]) {
+                return style
+            }
+        }
+        return nil
+    }
+
+    /// Choose the style for a given dictation context. Browser tab domain rule
+    /// wins (most specific); then a per-app override; then a recognized
+    /// (non-general) app category; otherwise the global default style.
     func resolvedDictationStyle(for context: AppContext) -> DictationStyle {
+        if context.category == .browser, let host = context.host,
+           let style = domainStyle(forHost: host) {
+            return style
+        }
         if let category = appProfileOverrides[context.bundleID.lowercased()] {
             return .builtIn(category)
         }

@@ -631,7 +631,7 @@ private struct ActionItemsTab: View {
                         }
                         Button {
                             export(openItems)
-                        } label: { Label("Export All Open", systemImage: "checklist") }
+                        } label: { Label("Add All to Reminders", systemImage: "checklist") }
                             .disabled(exporting || openItems.isEmpty)
                             .help("Add every open action item to Apple Reminders")
                     }
@@ -669,7 +669,7 @@ private struct ActionItemsTab: View {
                                     Button {
                                         export([item])
                                     } label: {
-                                        Image(systemName: "arrow.up.forward.app")
+                                        Image(systemName: "plus.circle")
                                     }
                                     .buttonStyle(.borderless)
                                     .disabled(exporting)

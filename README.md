@@ -23,7 +23,9 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 - **Auto-Redaction:** Optionally scrub emails, phone numbers, and long number sequences from transcripts before they're typed, saved, or sent to the LLM — replaced with `[redacted …]` labels.
 - **Usage & Cost Estimate:** Local counters track audio transcribed and LLM tokens, with a running Groq spend estimate (editable prices) in Settings and at a glance in the menu.
 - **Error Surfacing & Diagnostics:** Failures post a notification, show a dismissable banner in the menu, and collect in a Diagnostics pane — no more silent gaps.
-- **Meeting History & Dictation Recall:** Browse past meetings from the menu bar; recent dictations are one click to copy, and ⌃⌥V re-types the last one (great when you dictated into the wrong field).
+- **Meeting History & Dictation Recall:** Browse past meetings from the menu bar or the Notes Assistant; ⌃⌥V re-types your last dictation (great when you dictated into the wrong field).
+- **Per-Site Browser Styling:** Reads the active browser tab's address (Safari + Chromium; opt-in, Automation permission) so a website gets its own writing style — e.g. Gmail uses Email, GitHub uses Code — via editable `host: style` rules.
+- **Dictation Log:** A persisted record of recent dictations — which app (and browser host), which writing style, and duration — in Settings → Usage & Cost, with a clear button. Great for tuning your per-app and per-site style rules.
 - **Custom Vocabulary & Replacements:** Feed Whisper your names, acronyms, and jargon, plus post-transcription find→replace rules — domain terms transcribe correctly.
 - **Offline Fallback:** If Groq is unreachable, transcription falls back to Apple's on-device speech recognition — dictation keeps working with zero network.
 - **Retry Queue:** Meeting segments that fail to transcribe (network blips) are retried automatically with backoff; anything unrecoverable becomes a visible `⚠️ transcription failed` marker in the notes instead of a silent gap.
@@ -83,10 +85,11 @@ Press **⌃⌥J** anywhere to dictate a thought — press again to save, Esc to 
 Organized act → find → configure; the header shows the version and quick stats (meetings this week, total dictations).
 - **Start Meeting** (⌃⌥M) — becomes **End Meeting** while recording; **Pause Meeting** (⌃⌥P) appears only mid-meeting (writes *paused/resumed* markers).
 - **Quick Note** (⌃⌥J) — toggle-dictate into today's quick-notes file.
-- **Notes ▸** — open the current/latest meeting notes (⌃⌥N), today's quick notes, the last 10 meetings grouped by day, **Rename Speakers…**, and the notes folder.
-- **Notes Assistant…** — search all transcripts, ask questions about one meeting or across all of them (with cited sources), and review action items grouped by meeting.
-- **Recent Dictations ▸** — the last 20 dictations with timestamp and duration; click to copy; Clear History at the bottom.
-- **Settings…** — everything else lives here, including the API key (General) and permissions (Permissions pane).
+- **Notes ▸** — open the current/latest meeting notes (⌃⌥N), today's quick notes, the last 5 meetings grouped by day, **Browse All Notes…**, **Rename Speakers…**, and the notes folder.
+- **Notes Assistant…** — browse all notes, search transcripts, ask questions about one meeting or across all of them (with cited sources), and review action items grouped by meeting.
+- **Settings…** — everything else lives here, including the API key (General) and permissions (Privacy & Security).
+
+(⌃⌥V re-types your most recent dictation from anywhere — no menu needed.)
 
 ### Global shortcuts
 These work system-wide, from any app (they ride the same Accessibility event tap as the push-to-talk key):
@@ -107,14 +110,14 @@ A System Settings-style sidebar, grouped into **Capture**, **Meetings**, and **A
 | Group / Pane | Options (defaults in bold) |
 | --- | --- |
 | **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); prefer built-in microphone (**off** — uses the system default input; turn on to keep AirPods in high-quality audio); offline fallback (**on** — Apple on-device recognition when Groq is unreachable, covering dictation, quick notes, and meetings); date format for the menu & Notes Assistant (**dd MMM yyyy** → 03 Jul 2026; presets + custom pattern with live preview); start at login (**off** — registers as a macOS Login Item); reset all settings |
-| Capture · **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn); dictation history (**on**, keep **20**); streaming dictation (**on**, chunk **10 s**); voice commands (**on**, editable rule list); language (**en**); custom vocabulary; find→replace rules; writing styles (6 editable built-ins + your own custom styles, with a global default for unrecognized apps); per-app style overrides |
+| Capture · **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn); dictation history (**on**, keep **20**); streaming dictation (**on**, chunk **10 s**); voice commands (**on**, editable rule list); language (**en**); custom vocabulary; find→replace rules; writing styles (6 editable built-ins + your own custom styles, with a global default for unrecognized apps); per-app style overrides; browser tab styles (**on** — per-site `host: style` rules, e.g. Gmail → Email) |
 | Capture · **Quick Notes** | Save-to folder (**…/Notes/Quick Notes**); saved notification (**on**) |
 | Meetings · **Recording** | Call detection — offer to start/stop with the call (**on**); overlay mode (**minimal pill** / live captions / hidden); caption fade delay (**6 s**); echo suppression (**on**, gate **0.4 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**), retry attempts (**3**), retry interval (**20 s**) |
 | Meetings · **Notes & Summaries** | Notes folder (**~/Documents/Notes**); file organization (**year/month/day** / year/month / year / single folder); Obsidian front-matter (**off**); speaker labels (**You** / **Them**); voice diarization (**on**, experimental; max speakers **4**); meeting template (**Customer Call**, 9 built-in types + your own custom templates — editable sections, add/rename/delete); AI summary (**on**); action items (**on**); auto-tag topics into front-matter (**on**); saved notification (**on**); Assistant search depth (**200** recent meetings); action items from last (**10** meetings) |
 | Privacy & Security · **Privacy** | Local-only mode (**off** — on-device only, no network); redact sensitive info (**off**) with per-category toggles for emails, phones, and long number sequences |
-| Privacy & Security · **Permissions** | Live status of Microphone, System Audio Recording, and Accessibility with shortcuts to the relevant Settings panes, plus Reset All Permissions |
+| Privacy & Security · **Permissions** | Live status of Microphone, System Audio Recording, Accessibility, and Automation (default browser, optional) with shortcuts to the relevant Settings panes, plus Reset All Permissions |
 | App · **Shortcuts** | Reference card of all global shortcuts (push-to-talk, Esc, ⌃⌥V, ⌃⌥J, ⌃⌥M / ⌃⌥P / ⌃⌥N) |
-| App · **Usage & Cost** | Local usage counters — dictations, words, meetings, time — plus an editable-price Groq **cost estimate** (audio transcribed, LLM tokens), with their own reset |
+| App · **Usage & Cost** | Local usage counters — dictations, words, meetings, time — plus an editable-price Groq **cost estimate** (audio transcribed, LLM tokens); a **Dictation Log** (app/host · style · duration, clearable); with their own reset |
 | App · **Diagnostics** | Error notifications toggle (**on**) and a list of recent failures with a clear button |
 | App · **About** | Version and build, description, privacy note |
 
@@ -169,8 +172,9 @@ All values are stored in `UserDefaults` (start-at-login lives in macOS Login Ite
 | **Microphone** | Capture your speech for dictation and your side of meetings. |
 | **System Audio Recording** | Capture the other participants' audio in Meeting Mode (via process taps). |
 | **Accessibility** | Detect the Right Option hotkey globally and inject text at your cursor. |
+| **Automation** (optional) | Read the active browser tab's address for per-site dictation styling (Safari + Chromium browsers). Prompted only on first use, per browser; decline and browser dictation just uses the generic Browser style. |
 
-macOS keys each grant to the app's code signature, so re-signing with a different identity resets them. If a permission gets stuck, use **Reset All Permissions…** from the menu.
+macOS keys each grant to the app's code signature, so re-signing with a different identity resets them. If a permission gets stuck, use **Reset All Permissions…** from the menu (it now also clears the Automation grant).
 
 ---
 *Built natively for Apple Silicon and macOS.*

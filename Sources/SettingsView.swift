@@ -355,7 +355,7 @@ private struct DictationPane: View {
                             NotificationCenter.default.post(name: .dictationHistoryDisabled, object: nil)
                         }
                     }
-                Text("Shown in the menu bar for copy and ⌃⌥V recall. Kept in memory only — cleared when disabled or when the app quits.")
+                Text("Enables ⌃⌥V to re-type your most recent dictation. Kept in memory only — cleared when disabled or when the app quits. (For an app/style/duration log, see Usage & Cost → Dictation Log.)")
                     .font(.caption).foregroundColor(.secondary)
                 if settings.dictationHistoryEnabled {
                     HStack {
@@ -450,6 +450,26 @@ private struct DictationPane: View {
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
                 Text("Force a built-in style per app, one per line: bundle.id: style — styles: messaging, email, code, browser, notes, general (e.g. com.tinyspeck.slackmacgap: messaging). Custom styles apply via the default above.")
                     .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Browser Tab Styles") {
+                Toggle("Detect the active browser tab", isOn: $settings.browserTabDetection)
+                Text("Reads the frontmost browser tab's address (Safari and Chromium browsers; not Firefox) so a website can get its own style — e.g. Gmail uses the Email style instead of the generic Browser one. Needs the Automation permission (prompted once). Off: every browser uses the Browser style.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.browserTabDetection {
+                    Text("Rules — one per line, host: style. Style is a built-in (messaging / email / code / browser / notes / general) or a custom style's name. First matching host wins; unmatched tabs use the Browser style.")
+                        .font(.caption).foregroundColor(.secondary)
+                    TextEditor(text: $settings.domainStyleRules)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(height: 80)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                    HStack {
+                        Spacer()
+                        DefaultResetButton(isDefault: settings.domainStyleRules == AppSettings.Default.domainStyleRules) {
+                            settings.domainStyleRules = AppSettings.Default.domainStyleRules
+                        }
+                    }
+                }
             }
         }
     }
@@ -1096,6 +1116,8 @@ private struct StatsPane: View {
                 PriceField(label: "Output $/M tokens", value: $settings.priceOutputPerMTok, defaultValue: AppSettings.Default.priceOutputPerMTok)
             }
 
+            DictationLogGroup()
+
             SettingsGroup("Maintenance") {
                 HStack {
                     Text("Counters are stored locally and never leave this Mac.")
@@ -1123,6 +1145,58 @@ private struct StatRow: View {
             Text(value)
                 .monospacedDigit()
                 .foregroundColor(.secondary)
+        }
+    }
+}
+
+/// Recent dictations — app/host, style, and duration — with a clear button.
+private struct DictationLogGroup: View {
+    @ObservedObject private var log = DictationLog.shared
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        return f
+    }()
+
+    var body: some View {
+        SettingsGroup("Dictation Log") {
+            if log.entries.isEmpty {
+                Text("No dictations recorded yet. Each dictation logs the app, the writing style used, and its duration.")
+                    .font(.caption).foregroundColor(.secondary)
+            } else {
+                HStack {
+                    Text("App").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Style").frame(width: 110, alignment: .leading)
+                    Text("Time").frame(width: 52, alignment: .trailing)
+                }
+                .font(.caption2.bold()).foregroundColor(.secondary)
+                Divider()
+                ForEach(log.entries.prefix(25)) { entry in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(entry.app).lineLimit(1)
+                            Text(Self.timeFormatter.string(from: entry.date))
+                                .font(.caption2).foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(entry.style).frame(width: 110, alignment: .leading)
+                            .foregroundColor(.secondary).lineLimit(1)
+                        Text(UsageStats.hoursMinutes(entry.seconds))
+                            .frame(width: 52, alignment: .trailing)
+                            .monospacedDigit().foregroundColor(.secondary)
+                    }
+                    .font(.caption)
+                    Divider()
+                }
+                HStack {
+                    Text(log.entries.count > 25 ? "Showing 25 of \(log.entries.count) (up to 100 kept)." : "\(log.entries.count) recorded (up to 100 kept).")
+                        .font(.caption2).foregroundColor(.secondary)
+                    Spacer()
+                    Button("Clear", role: .destructive) { log.clear() }
+                }
+            }
         }
     }
 }
@@ -1232,6 +1306,7 @@ private struct PermissionsPane: View {
     @State private var hasMic = false
     @State private var hasA11y = false
     @State private var hasSysAudio: Bool? = nil
+    @State private var hasAutomation: Bool? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1257,6 +1332,15 @@ private struct PermissionsPane: View {
                     granted: hasA11y,
                     detail: "Push-to-talk hotkey and typing at your cursor."
                 ) { permissionGuard.openAccessibilitySettings() }
+
+                Divider()
+
+                PermissionRow(
+                    name: "Automation (default browser)",
+                    granted: hasAutomation,
+                    detail: "Optional — reads the active browser tab's address for per-site styling (Settings → Dictation → Browser Tab Styles). Prompted on first use; status shown for your default browser.",
+                    optional: true
+                ) { permissionGuard.openAutomationSettings() }
             }
 
             SettingsGroup("Maintenance") {
@@ -1283,6 +1367,7 @@ private struct PermissionsPane: View {
         hasMic = permissionGuard.hasMicrophonePermission
         hasA11y = permissionGuard.hasAccessibilityPermission
         hasSysAudio = permissionGuard.hasSystemAudioPermission
+        hasAutomation = permissionGuard.automationStatusForDefaultBrowser()
     }
 }
 
@@ -1290,6 +1375,7 @@ private struct PermissionRow: View {
     let name: String
     let granted: Bool?     // nil = not queryable
     let detail: String
+    var optional: Bool = false   // optional permissions render neutrally when nil
     let openSettings: () -> Void
 
     var body: some View {
@@ -1309,7 +1395,7 @@ private struct PermissionRow: View {
         switch granted {
         case true:  return "checkmark.circle.fill"
         case false: return "xmark.circle.fill"
-        default:    return "questionmark.circle.fill"
+        default:    return optional ? "minus.circle" : "questionmark.circle.fill"
         }
     }
     private var color: Color {

@@ -289,13 +289,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         assistantItem.target = self
         menu.addItem(assistantItem)
 
-        let dictationHistoryItem = NSMenuItem(title: "Recent Dictations", action: nil, keyEquivalent: "")
-        dictationHistoryItem.image = NSImage(systemSymbolName: "text.quote", accessibilityDescription: nil)
-        let dictationHistoryMenu = NSMenu(title: "Recent Dictations")
-        dictationHistoryMenu.delegate = self
-        dictationHistoryItem.submenu = dictationHistoryMenu
-        menu.addItem(dictationHistoryItem)
-
         menu.addItem(NSMenuItem.separator())
 
         // ── Configuration ───────────────────────────────────────
@@ -321,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func resetPermissions() {
         let alert = NSAlert()
         alert.messageText = "Reset all permissions?"
-        alert.informativeText = "This revokes GhostWriter's Microphone, Accessibility, and System Audio Recording permissions, then relaunches the app so macOS can prompt you again."
+        alert.informativeText = "This revokes GhostWriter's Microphone, Accessibility, System Audio Recording, and browser Automation permissions, then relaunches the app so macOS can prompt you again."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Reset & Relaunch")
         alert.addButton(withTitle: "Cancel")
@@ -861,14 +854,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
 
-                let activeApp = appDetector.currentApp()
+                var activeApp = appDetector.currentApp()
+                // For browsers, read the active tab host (if enabled) so domain
+                // rules and the log can distinguish sites like Gmail.
+                if activeApp.category == .browser, settings.browserTabDetection {
+                    let bundleID = activeApp.bundleID
+                    let host = await MainActor.run { BrowserURL.host(forBundleID: bundleID) }
+                    activeApp = AppContext(appName: activeApp.appName, bundleID: bundleID,
+                                           category: .browser, host: host)
+                }
+                let style = settings.resolvedDictationStyle(for: activeApp)
                 let polishedText = try await textPolisher.polish(rawText: rawText, appContext: activeApp)
                 textInjector.inject(text: polishedText)
+
+                let appLabel = activeApp.host.map { "\(activeApp.appName) · \($0)" } ?? activeApp.appName
 
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     let words = polishedText.split(whereSeparator: \.isWhitespace).count
                     UsageStats.shared.recordDictation(words: words, seconds: dictationDuration)
+                    DictationLog.shared.record(app: appLabel, style: style.displayName,
+                                               seconds: Int(dictationDuration.rounded()), words: words)
 
                     guard self.settings.dictationHistoryEnabled else { return }
                     self.dictationHistory.insert((Date(), polishedText, dictationDuration), at: 0)
@@ -1481,15 +1487,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
-    // MARK: - History Menus
+    // MARK: - Menus
 
-    private static let historyDateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d, HH:mm"
-        return f
-    }()
-
-    /// Rebuilds the Meeting History / Recent Dictations submenus on open.
+    /// Rebuilds the Notes submenu (and refreshes the Main menu) on open.
     func menuNeedsUpdate(_ menu: NSMenu) {
         switch menu.title {
         case "Main":
@@ -1574,36 +1574,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             folderItem.target = self
             menu.addItem(folderItem)
 
-        case "Recent Dictations":
-            menu.removeAllItems()
-            if !settings.dictationHistoryEnabled {
-                let disabled = NSMenuItem(title: "History disabled — enable in Settings → Dictation", action: nil, keyEquivalent: "")
-                disabled.isEnabled = false
-                menu.addItem(disabled)
-                return
-            }
-            if dictationHistory.isEmpty {
-                let empty = NSMenuItem(title: "No dictations yet", action: nil, keyEquivalent: "")
-                empty.isEnabled = false
-                menu.addItem(empty)
-            }
-            for entry in dictationHistory {
-                let preview = entry.text.count > 48 ? String(entry.text.prefix(48)) + "…" : entry.text
-                let duration = String(format: "%.0fs", entry.duration.rounded())
-                let item = NSMenuItem(title: "\(Self.historyDateFormatter.string(from: entry.date)) · \(duration)  \(preview)",
-                                      action: #selector(copyDictation(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = entry.text
-                item.toolTip = "\(entry.text)\n\nClick to copy. ⌃⌥V re-types the most recent one."
-                menu.addItem(item)
-            }
-            if !dictationHistory.isEmpty {
-                menu.addItem(NSMenuItem.separator())
-                let clearItem = NSMenuItem(title: "Clear History", action: #selector(clearDictationHistory), keyEquivalent: "")
-                clearItem.target = self
-                menu.addItem(clearItem)
-            }
-
         default:
             break
         }
@@ -1663,11 +1633,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(folder)
     }
 
-    @objc private func copyDictation(_ sender: NSMenuItem) {
-        guard let text = sender.representedObject as? String else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
 
     /// Surface a non-fatal error: remember it for the menu and post a
     /// notification. Safe to call from any thread.

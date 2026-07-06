@@ -91,7 +91,9 @@ final class TextPolisher {
             sections.append(contentsOf: template.summarySections)
         }
         if includeActionItems {
-            sections.append("A section with the exact heading \"## Action Items\" containing a Markdown task list (\"- [ ] item\") with owners when identifiable (omit the section if none).")
+            sections.append("""
+            A section with the exact heading "## Action Items" containing a Markdown task list. Format each item as "- [ ] <action> — @<owner> (due: <date>)". Append "@<owner>" (one word, no spaces) only when the transcript makes the responsible person clear, and "(due: <date>)" only when a deadline is stated; otherwise leave that part off. Omit the whole section if there are no action items.
+            """)
         }
 
         let requestBody = ChatRequest(

@@ -207,6 +207,22 @@ private struct GeneralPane: View {
 
                 Divider()
 
+                HStack {
+                    Text("Language")
+                    Spacer()
+                    TextField("en", text: $settings.transcriptionLanguage)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                        .multilineTextAlignment(.trailing)
+                    DefaultResetButton(isDefault: settings.transcriptionLanguage == AppSettings.Default.transcriptionLanguage) {
+                        settings.transcriptionLanguage = AppSettings.Default.transcriptionLanguage
+                    }
+                }
+                Text("ISO 639-1 code hint for Whisper (en, de, ta, si, …) — applies to both dictation and meetings. Leave as en unless you speak another language.")
+                    .font(.caption).foregroundColor(.secondary)
+
+                Divider()
+
                 ModelField(
                     title: "Polishing model",
                     presets: Self.polishingModels,
@@ -351,7 +367,7 @@ private struct DictationPane: View {
                     .foregroundColor(.secondary)
             }
 
-            SettingsGroup("Transcription Quality") {
+            SettingsGroup("Streaming") {
                 Toggle("Streaming dictation", isOn: $settings.streamingDictation)
                 Text("Long dictations are transcribed in chunks while you're still speaking, so the text appears almost instantly on release.")
                     .font(.caption).foregroundColor(.secondary)
@@ -362,19 +378,7 @@ private struct DictationPane: View {
                         defaultValue: AppSettings.Default.streamChunkSeconds
                     )
                 }
-                Divider()
-                HStack {
-                    Text("Language")
-                    Spacer()
-                    TextField("en", text: $settings.transcriptionLanguage)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
-                    DefaultResetButton(isDefault: settings.transcriptionLanguage == AppSettings.Default.transcriptionLanguage) {
-                        settings.transcriptionLanguage = AppSettings.Default.transcriptionLanguage
-                    }
-                }
-                Text("ISO 639-1 code hint for Whisper (en, de, ta, si, …). Leave as en unless you dictate in another language.")
+                Text("Transcription language lives in General → Groq API, since it applies to meetings too.")
                     .font(.caption).foregroundColor(.secondary)
             }
 
@@ -805,6 +809,45 @@ private struct MeetingPane: View {
                     .foregroundColor(.secondary)
             }
 
+            SettingsGroup("Speakers") {
+                HStack {
+                    Text("Your label")
+                    Spacer()
+                    TextField("", text: $settings.speakerLabelYou)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 160)
+                        .multilineTextAlignment(.trailing)
+                }
+                HStack {
+                    Text("Others' label")
+                    Spacer()
+                    TextField("", text: $settings.speakerLabelThem)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 160)
+                        .multilineTextAlignment(.trailing)
+                }
+                Text("How you and the other participants are named in the transcript.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Label distinct speakers (experimental)", isOn: $settings.diarizationEnabled)
+                Text("Fingerprints each voice (pitch and timbre) and clusters segments, labeling remote voices Them / Them 2 / Them 3. On-device and lightweight — similar-sounding voices may still merge. Use the Notes menu ▸ Rename Speakers… to give them real names per meeting.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.diarizationEnabled {
+                    HStack {
+                        Text("Max distinct speakers")
+                        Spacer()
+                        Picker("", selection: $settings.maxSpeakers) {
+                            ForEach([2, 3, 4, 5, 6], id: \.self) { Text("\($0)").tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 80)
+                        DefaultResetButton(isDefault: settings.maxSpeakers == AppSettings.Default.maxSpeakers) {
+                            settings.maxSpeakers = AppSettings.Default.maxSpeakers
+                        }
+                    }
+                }
+            }
+
             // Expert knobs, collapsed by default so the pane isn't intimidating.
             DisclosureGroup(isExpanded: $showAdvanced) {
                 VStack(alignment: .leading, spacing: 16) {
@@ -903,43 +946,6 @@ private struct MeetingNotesPane: View {
                 Toggle("Obsidian/Notion front-matter", isOn: $settings.frontMatterEnabled)
                 Text("Prepends YAML metadata (title, date, tags) to each notes file.")
                     .font(.caption).foregroundColor(.secondary)
-            }
-
-            SettingsGroup("Speakers") {
-                HStack {
-                    Text("Your label")
-                    Spacer()
-                    TextField("", text: $settings.speakerLabelYou)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 160)
-                        .multilineTextAlignment(.trailing)
-                }
-                HStack {
-                    Text("Others' label")
-                    Spacer()
-                    TextField("", text: $settings.speakerLabelThem)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 160)
-                        .multilineTextAlignment(.trailing)
-                }
-                Divider()
-                Toggle("Label distinct speakers (experimental)", isOn: $settings.diarizationEnabled)
-                Text("Fingerprints each voice (pitch and timbre) and clusters segments, labeling remote voices Them / Them 2 / Them 3. On-device and lightweight — similar-sounding voices may still merge. Use Meeting Notes ▸ Rename Speakers… to give them real names per meeting.")
-                    .font(.caption).foregroundColor(.secondary)
-                if settings.diarizationEnabled {
-                    HStack {
-                        Text("Max distinct speakers")
-                        Spacer()
-                        Picker("", selection: $settings.maxSpeakers) {
-                            ForEach([2, 3, 4, 5, 6], id: \.self) { Text("\($0)").tag($0) }
-                        }
-                        .labelsHidden()
-                        .frame(width: 80)
-                        DefaultResetButton(isDefault: settings.maxSpeakers == AppSettings.Default.maxSpeakers) {
-                            settings.maxSpeakers = AppSettings.Default.maxSpeakers
-                        }
-                    }
-                }
             }
 
             SettingsGroup("Intelligence") {
@@ -1351,6 +1357,7 @@ private struct PermissionsPane: View {
     @State private var hasA11y = false
     @State private var hasSysAudio: Bool? = nil
     @State private var hasAutomation: Bool? = nil
+    @State private var hasReminders: Bool? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1385,6 +1392,15 @@ private struct PermissionsPane: View {
                     detail: "Optional — reads the active browser tab's address for per-site styling (Settings → Dictation → Browser Tab Styles). Prompted on first use; status shown for your default browser.",
                     optional: true
                 ) { permissionGuard.openAutomationSettings() }
+
+                Divider()
+
+                PermissionRow(
+                    name: "Reminders",
+                    granted: hasReminders,
+                    detail: "Optional — lets you export meeting action items to the Reminders app (Notes Assistant → Action Items). Prompted on first export.",
+                    optional: true
+                ) { permissionGuard.openRemindersSettings() }
             }
 
             SettingsGroup("Maintenance") {
@@ -1412,6 +1428,7 @@ private struct PermissionsPane: View {
         hasA11y = permissionGuard.hasAccessibilityPermission
         hasSysAudio = permissionGuard.hasSystemAudioPermission
         hasAutomation = permissionGuard.automationStatusForDefaultBrowser()
+        hasReminders = permissionGuard.remindersStatus()
     }
 }
 

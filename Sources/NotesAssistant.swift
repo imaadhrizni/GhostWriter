@@ -46,7 +46,7 @@ final class NotesAssistantModel: ObservableObject {
 
 // MARK: - Notes folder helpers
 
-private enum NotesLibrary {
+enum NotesLibrary {
 
     struct MeetingFile: Identifiable, Hashable {
         let url: URL
@@ -167,10 +167,52 @@ private enum NotesLibrary {
     struct ActionItem: Identifiable {
         let id = UUID()
         let file: MeetingFile
+        /// Full item text (everything after the checkbox), preserved verbatim so
+        /// toggling can rewrite the line without losing the owner/due annotations.
         let text: String
         let done: Bool
         /// The exact line in the file — used to toggle done state in place.
         let rawLine: String
+
+        /// Assignee, from a "@owner" token when the summary identified one.
+        var owner: String? {
+            guard let m = ActionItem.ownerRegex.firstMatch(
+                in: text, range: NSRange(text.startIndex..., in: text)),
+                let r = Range(m.range(at: 1), in: text) else { return nil }
+            return String(text[r])
+        }
+
+        /// Due date, from a "(due: …)" annotation when the summary stated one.
+        var due: String? {
+            guard let m = ActionItem.dueRegex.firstMatch(
+                in: text, range: NSRange(text.startIndex..., in: text)),
+                let r = Range(m.range(at: 1), in: text) else { return nil }
+            return String(text[r]).trimmingCharacters(in: .whitespaces)
+        }
+
+        /// The action alone, with the "@owner" / "(due: …)" chips and any
+        /// trailing "—" separator removed — for a clean row and Reminders title.
+        var displayText: String {
+            var s = text
+            s = ActionItem.dueRegex.stringByReplacingMatches(
+                in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "")
+            s = ActionItem.ownerRegex.stringByReplacingMatches(
+                in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "")
+            s = s.trimmingCharacters(in: .whitespaces)
+            while s.hasSuffix("—") || s.hasSuffix("-") || s.hasSuffix(",") {
+                s = String(s.dropLast()).trimmingCharacters(in: .whitespaces)
+            }
+            return s.isEmpty ? text : s
+        }
+
+        // Owner is only recognized in the trailing "— @owner" position the
+        // summary emits, so an @mention or email inside the action text isn't
+        // mistaken for the assignee.
+        private static let ownerRegex =
+            try! NSRegularExpression(pattern: "[—–-]\\s*@([\\w][\\w.'-]*)")
+        private static let dueRegex =
+            try! NSRegularExpression(pattern: "\\(due:\\s*([^)]*)\\)",
+                                     options: [.caseInsensitive])
     }
 
     /// Flip an item's checkbox in its notes file. Line-based: finds the
@@ -559,6 +601,13 @@ private struct AskTab: View {
 
 private struct ActionItemsTab: View {
     @State private var groups: [NotesLibrary.MeetingActionItems] = []
+    @State private var exporting = false
+    @State private var exportStatus = ""
+
+    /// Every open (unchecked) item across the shown meetings.
+    private var openItems: [NotesLibrary.ActionItem] {
+        groups.flatMap { $0.items }.filter { !$0.done }
+    }
 
     var body: some View {
         Group {
@@ -573,25 +622,59 @@ private struct ActionItemsTab: View {
                     Spacer()
                 }
             } else {
-                List {
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Text("\(openItems.count) open").font(.caption).foregroundColor(.secondary)
+                        Spacer()
+                        if !exportStatus.isEmpty {
+                            Text(exportStatus).font(.caption).foregroundColor(.secondary)
+                        }
+                        Button {
+                            export(openItems)
+                        } label: { Label("Export All Open", systemImage: "checklist") }
+                            .disabled(exporting || openItems.isEmpty)
+                            .help("Add every open action item to Apple Reminders")
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    Divider()
+                    List {
                     ForEach(groups) { group in
                         Section {
                             ForEach(group.items) { item in
-                                Button {
-                                    toggle(item)
-                                } label: {
-                                    HStack(alignment: .top, spacing: 8) {
-                                        Image(systemName: item.done ? "checkmark.circle.fill" : "circle")
-                                            .foregroundColor(item.done ? .secondary : .accentColor)
-                                        Text(item.text)
-                                            .strikethrough(item.done)
-                                            .foregroundColor(item.done ? .secondary : .primary)
+                                HStack(alignment: .top, spacing: 8) {
+                                    Button {
+                                        toggle(item)
+                                    } label: {
+                                        HStack(alignment: .top, spacing: 8) {
+                                            Image(systemName: item.done ? "checkmark.circle.fill" : "circle")
+                                                .foregroundColor(item.done ? .secondary : .accentColor)
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(item.displayText)
+                                                    .strikethrough(item.done)
+                                                    .foregroundColor(item.done ? .secondary : .primary)
+                                                if item.owner != nil || item.due != nil {
+                                                    HStack(spacing: 6) {
+                                                        if let owner = item.owner { chip("person", owner) }
+                                                        if let due = item.due { chip("calendar", due) }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
                                     }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
+                                    .buttonStyle(.plain)
+                                    .help(item.done ? "Click to mark as open" : "Click to mark as done")
+
+                                    Button {
+                                        export([item])
+                                    } label: {
+                                        Image(systemName: "arrow.up.forward.app")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .disabled(exporting)
+                                    .help("Add this item to Reminders")
                                 }
-                                .buttonStyle(.plain)
-                                .help(item.done ? "Click to mark as open" : "Click to mark as done")
                             }
                         } header: {
                             Button {
@@ -609,16 +692,46 @@ private struct ActionItemsTab: View {
                             .help("Open this meeting's notes file")
                         }
                     }
+                    }
+                    .listStyle(.inset)
                 }
-                .listStyle(.inset)
             }
         }
         .onAppear { groups = NotesLibrary.actionItemsByMeeting() }
+    }
+
+    /// A small owner/due pill.
+    private func chip(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: icon)
+            Text(text)
+        }
+        .font(.caption2)
+        .foregroundColor(.secondary)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Capsule().fill(Color.secondary.opacity(0.12)))
     }
 
     /// Flip the checkbox in the file, then reload so the UI matches the file.
     private func toggle(_ item: NotesLibrary.ActionItem) {
         NotesLibrary.toggleDone(item)
         groups = NotesLibrary.actionItemsByMeeting()
+    }
+
+    /// Push the given items into Apple Reminders (requests access on first use).
+    /// Used for both a single row and every open item.
+    private func export(_ items: [NotesLibrary.ActionItem]) {
+        guard !items.isEmpty else { return }
+        exporting = true
+        exportStatus = "Exporting…"
+        Task { @MainActor in
+            defer { exporting = false }
+            do {
+                let count = try await RemindersExporter.export(items)
+                exportStatus = count == 1 ? "Added 1 to Reminders" : "Added \(count) to Reminders"
+            } catch {
+                exportStatus = error.localizedDescription
+            }
+        }
     }
 }

@@ -70,6 +70,7 @@ final class AppSettings: ObservableObject {
         static let redactNumbers          = "privacy.redactNumbers"
         static let autoTagging            = "meeting.autoTagging"
         static let errorNotifications     = "diagnostics.errorNotifications"
+        static let uiDateFormat           = "ui.dateFormat"
         static let priceAudioPerHour      = "cost.audioPerHour"
         static let priceInputPerMTok      = "cost.inputPerMTok"
         static let priceOutputPerMTok     = "cost.outputPerMTok"
@@ -93,7 +94,7 @@ final class AppSettings: ObservableObject {
                           dictationStyleOverrides, userDictationStyles, defaultDictationStyle,
                           quickNotesFolderPath, quickNoteNotify,
                           localOnlyMode, redactionEnabled, redactEmails, redactPhones, redactNumbers,
-                          autoTagging, errorNotifications,
+                          autoTagging, errorNotifications, uiDateFormat,
                           priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok]
     }
 
@@ -149,6 +150,7 @@ final class AppSettings: ObservableObject {
         static let redactNumbers                   = true
         static let autoTagging                     = true
         static let errorNotifications              = true
+        static let uiDateFormat                    = "dd MMM yyyy"
         // Estimate defaults (USD) — Groq list prices as of shipping; editable
         // in Settings since provider pricing drifts over time.
         static let priceAudioPerHour               = 0.111   // whisper-large-v3
@@ -711,6 +713,12 @@ final class AppSettings: ObservableObject {
     var errorNotifications: Bool {
         get { bool(Key.errorNotifications, Default.errorNotifications) }
         set { set(newValue, Key.errorNotifications) }
+    }
+
+    /// DateFormatter pattern for dates shown in the menu and Notes Assistant.
+    var uiDateFormat: String {
+        get { string(Key.uiDateFormat, Default.uiDateFormat) }
+        set { set(newValue, Key.uiDateFormat) }
     }
 
     /// ISO 639-1 language hint for Whisper (e.g. "en", "de", "ta").

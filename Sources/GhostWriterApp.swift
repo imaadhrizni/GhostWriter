@@ -1553,7 +1553,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     : stamp
                 if day != currentDay {
                     currentDay = day
-                    let header = NSMenuItem(title: day, action: nil, keyEquivalent: "")
+                    let header = NSMenuItem(title: DateDisplay.day(day), action: nil, keyEquivalent: "")
                     header.isEnabled = false
                     menu.addItem(header)
                 }

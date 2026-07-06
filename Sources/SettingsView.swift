@@ -226,6 +226,10 @@ private struct GeneralPane: View {
                     .foregroundColor(.secondary)
             }
 
+            SettingsGroup("Display") {
+                DateFormatField()
+            }
+
             SettingsGroup("Startup") {
                 Toggle("Start GhostWriter at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in
@@ -272,6 +276,47 @@ private struct ModelField: View {
             .menuStyle(.borderlessButton)
             .frame(width: 24)
             DefaultResetButton(isDefault: value == defaultValue) { value = defaultValue }
+        }
+    }
+}
+
+/// Date format used across the menu and Notes Assistant, with presets,
+/// a custom pattern field, and a live preview of today's date.
+private struct DateFormatField: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    private static let presets = [
+        "dd MMM yyyy",       // 03 Jul 2026
+        "MMM d, yyyy",       // Jul 3, 2026
+        "d MMMM yyyy",       // 3 July 2026
+        "EEE, dd MMM yyyy",  // Fri, 03 Jul 2026
+        "yyyy-MM-dd",        // 2026-07-03
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Date format")
+                Spacer()
+                TextField("", text: $settings.uiDateFormat)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 180)
+                    .multilineTextAlignment(.trailing)
+                Menu {
+                    ForEach(Self.presets, id: \.self) { preset in
+                        Button("\(DateDisplay.preview(preset))  ·  \(preset)") { settings.uiDateFormat = preset }
+                    }
+                } label: {
+                    Image(systemName: "chevron.up.chevron.down")
+                }
+                .menuStyle(.borderlessButton)
+                .frame(width: 24)
+                DefaultResetButton(isDefault: settings.uiDateFormat == AppSettings.Default.uiDateFormat) {
+                    settings.uiDateFormat = AppSettings.Default.uiDateFormat
+                }
+            }
+            Text("Preview: \(DateDisplay.preview(settings.uiDateFormat).isEmpty ? "—" : DateDisplay.preview(settings.uiDateFormat))  ·  Unicode date pattern (dd MMM yyyy). Applies to the menu and Notes Assistant; note filenames are unaffected.")
+                .font(.caption).foregroundColor(.secondary)
         }
     }
 }

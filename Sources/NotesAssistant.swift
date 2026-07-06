@@ -65,7 +65,7 @@ private enum NotesLibrary {
                 ? String(stamp.dropFirst(11)).replacingOccurrences(of: "-", with: ":")
                 : stamp
         }
-        var displayName: String { "\(day) · \(time)" }
+        var displayName: String { "\(DateDisplay.day(day)) · \(time)" }
     }
 
     /// Meetings grouped by day, newest day (and meeting) first.
@@ -288,7 +288,7 @@ private struct BrowseTab: View {
             } else {
                 List {
                     ForEach(groups, id: \.day) { group in
-                        Section(header: Text(group.day)) {
+                        Section(header: Text(DateDisplay.day(group.day))) {
                             ForEach(group.meetings) { meeting in
                                 Button {
                                     NotesViewerWindowController.present(fileURL: meeting.url)
@@ -427,7 +427,7 @@ private struct AskTab: View {
                     Text("All meetings").tag(Optional<NotesLibrary.MeetingFile>.none)
                     Divider()
                     ForEach(NotesLibrary.meetingsByDay(limit: 15), id: \.day) { group in
-                        Section(header: Text(group.day)) {
+                        Section(header: Text(DateDisplay.day(group.day))) {
                             ForEach(group.meetings) { meeting in
                                 Text(meeting.time).tag(Optional(meeting))
                             }

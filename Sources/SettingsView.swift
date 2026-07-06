@@ -1,5 +1,4 @@
 import SwiftUI
-import AVFoundation
 import ServiceManagement
 
 // MARK: - Window Controller
@@ -37,6 +36,7 @@ final class SettingsWindowController: NSWindowController {
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general     = "General"
     case dictation   = "Dictation"
+    case styles      = "Writing Styles"
     case quickNotes  = "Quick Notes"
     case meeting     = "Recording"
     case notes       = "Notes & Summaries"
@@ -53,7 +53,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     /// System Settings clusters its domains.
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
         (nil,                  [.general]),
-        ("Capture",            [.dictation, .quickNotes]),
+        ("Capture",            [.dictation, .styles, .quickNotes]),
         ("Meetings",           [.meeting, .notes]),
         ("Privacy & Security", [.privacy, .permissions]),
         ("App",                [.shortcuts, .stats, .diagnostics, .about]),
@@ -63,6 +63,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general:     return "gearshape.fill"
         case .dictation:   return "mic.fill"
+        case .styles:      return "textformat"
         case .quickNotes:  return "square.and.pencil"
         case .meeting:     return "person.2.wave.2.fill"
         case .notes:       return "doc.text.fill"
@@ -79,6 +80,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general:     return .gray
         case .dictation:   return .blue
+        case .styles:      return .cyan
         case .quickNotes:  return .yellow
         case .meeting:     return .purple
         case .notes:       return .indigo
@@ -126,6 +128,7 @@ struct SettingsView: View {
                     switch selection {
                     case .general:     GeneralPane()
                     case .dictation:   DictationPane()
+                    case .styles:      WritingStylesPane()
                     case .quickNotes:  QuickNotesPane()
                     case .meeting:     MeetingPane()
                     case .notes:       MeetingNotesPane()
@@ -348,7 +351,52 @@ private struct DictationPane: View {
                     .foregroundColor(.secondary)
             }
 
-            SettingsGroup("History") {
+            SettingsGroup("Transcription Quality") {
+                Toggle("Streaming dictation", isOn: $settings.streamingDictation)
+                Text("Long dictations are transcribed in chunks while you're still speaking, so the text appears almost instantly on release.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.streamingDictation {
+                    DurationSlider(
+                        title: "Chunk length",
+                        value: $settings.streamChunkSeconds, range: 5...20, step: 1, unit: "s",
+                        defaultValue: AppSettings.Default.streamChunkSeconds
+                    )
+                }
+                Divider()
+                HStack {
+                    Text("Language")
+                    Spacer()
+                    TextField("en", text: $settings.transcriptionLanguage)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                        .multilineTextAlignment(.trailing)
+                    DefaultResetButton(isDefault: settings.transcriptionLanguage == AppSettings.Default.transcriptionLanguage) {
+                        settings.transcriptionLanguage = AppSettings.Default.transcriptionLanguage
+                    }
+                }
+                Text("ISO 639-1 code hint for Whisper (en, de, ta, si, …). Leave as en unless you dictate in another language.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Accuracy") {
+                Text("Custom vocabulary").font(.caption.bold())
+                TextEditor(text: $settings.vocabulary)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(height: 54)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                Text("Names, acronyms, jargon — comma or newline separated. Whisper biases toward these terms (e.g. WSO2, Sivanoly, Choreo).")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Text("Replacements").font(.caption.bold())
+                TextEditor(text: $settings.replacements)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(height: 54)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                Text("Applied after transcription, one rule per line: wrong => right (e.g. west of two => WSO2).")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Recall") {
                 Toggle("Keep recent dictations", isOn: $settings.dictationHistoryEnabled)
                     .onChange(of: settings.dictationHistoryEnabled) { _, enabled in
                         if !enabled {
@@ -373,18 +421,50 @@ private struct DictationPane: View {
                 }
             }
 
-            SettingsGroup("Transcription Quality") {
-                Toggle("Streaming dictation", isOn: $settings.streamingDictation)
-                Text("Long dictations are transcribed in chunks while you're still speaking, so the text appears almost instantly on release.")
+            SettingsGroup("Archive") {
+                Toggle("Save each dictation to a file", isOn: $settings.saveDictations)
+                Text("Writes one Markdown file per dictation with metadata front-matter (app, browser host, writing style, duration, word count) plus the polished text. Browse them from the menu bar → Dictations…. Redaction, if enabled, applies before saving. Kept separate from meetings and the Notes Assistant.")
                     .font(.caption).foregroundColor(.secondary)
-                if settings.streamingDictation {
-                    DurationSlider(
-                        title: "Chunk length",
-                        value: $settings.streamChunkSeconds, range: 5...20, step: 1, unit: "s",
-                        defaultValue: AppSettings.Default.streamChunkSeconds
-                    )
+                if settings.saveDictations {
+                    HStack {
+                        Text("Save to")
+                        Spacer()
+                        Text(settings.dictationsFolder.path.abbreviatingHome())
+                            .font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
+                        Button("Change…") {
+                            if let url = chooseFolder(startingAt: settings.dictationsFolder) {
+                                settings.dictationsFolder = url
+                            }
+                        }
+                    }
+                    Divider()
+                    HStack {
+                        Text("Organize files")
+                        Spacer()
+                        Picker("", selection: $settings.dictationOrganization) {
+                            ForEach(NotesOrganization.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 220)
+                    }
+                    Text("Dated subfolders for dictation files, independent of the meeting layout. Existing files stay put; the Dictations browser finds them in any layout.")
+                        .font(.caption).foregroundColor(.secondary)
                 }
-                Divider()
+            }
+        }
+    }
+}
+
+// MARK: - Writing Styles (dictation output shaping)
+
+private struct WritingStylesPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Voice Commands") {
                 HStack {
                     Toggle("Voice commands", isOn: $settings.voiceCommandsEnabled)
                     Spacer()
@@ -402,41 +482,6 @@ private struct DictationPane: View {
                         .frame(height: 90)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
                 }
-                Divider()
-
-                HStack {
-                    Text("Language")
-                    Spacer()
-                    TextField("en", text: $settings.transcriptionLanguage)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
-                    DefaultResetButton(isDefault: settings.transcriptionLanguage == AppSettings.Default.transcriptionLanguage) {
-                        settings.transcriptionLanguage = AppSettings.Default.transcriptionLanguage
-                    }
-                }
-                Text("ISO 639-1 code hint for Whisper (en, de, ta, si, …). Leave as en unless you dictate in another language.")
-                    .font(.caption).foregroundColor(.secondary)
-
-                Divider()
-
-                Text("Custom vocabulary").font(.caption.bold())
-                TextEditor(text: $settings.vocabulary)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
-                Text("Names, acronyms, jargon — comma or newline separated. Whisper biases toward these terms (e.g. WSO2, Sivanoly, Choreo).")
-                    .font(.caption).foregroundColor(.secondary)
-
-                Divider()
-
-                Text("Replacements").font(.caption.bold())
-                TextEditor(text: $settings.replacements)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
-                Text("Applied after transcription, one rule per line: wrong => right (e.g. west of two => WSO2).")
-                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Writing Styles") {
@@ -473,7 +518,6 @@ private struct DictationPane: View {
             }
         }
     }
-
 }
 
 /// Manages dictation writing styles: pick one to edit, set the global default

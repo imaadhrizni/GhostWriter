@@ -186,6 +186,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         notesAssistantWindowController?.showAllNotes()
     }
 
+    private var dictationsWindowController: DictationsWindowController?
+
+    /// Open the searchable Dictations browser.
+    @objc private func showDictations() {
+        if dictationsWindowController == nil {
+            dictationsWindowController = DictationsWindowController()
+        }
+        dictationsWindowController?.showAndActivate()
+    }
+
     @objc private func showSettingsWindow() {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController()
@@ -288,6 +298,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         assistantItem.image = NSImage(systemSymbolName: "sparkle.magnifyingglass", accessibilityDescription: nil)
         assistantItem.target = self
         menu.addItem(assistantItem)
+
+        let dictationsItem = NSMenuItem(title: "Dictations…", action: #selector(showDictations), keyEquivalent: "")
+        dictationsItem.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)
+        dictationsItem.target = self
+        menu.addItem(dictationsItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -868,10 +883,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 textInjector.inject(text: polishedText)
 
                 let appLabel = activeApp.host.map { "\(activeApp.appName) · \($0)" } ?? activeApp.appName
+                let words = polishedText.split(whereSeparator: \.isWhitespace).count
+
+                // Optional archive: one Markdown file per dictation, with metadata.
+                if settings.saveDictations {
+                    MeetingNotesWriter.saveDictation(
+                        text: polishedText, app: activeApp.appName, host: activeApp.host,
+                        style: style.displayName, seconds: Int(dictationDuration.rounded()), words: words)
+                }
 
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    let words = polishedText.split(whereSeparator: \.isWhitespace).count
                     UsageStats.shared.recordDictation(words: words, seconds: dictationDuration)
                     DictationLog.shared.record(app: appLabel, style: style.displayName,
                                                seconds: Int(dictationDuration.rounded()), words: words)

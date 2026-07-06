@@ -26,6 +26,7 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 - **Meeting History & Dictation Recall:** Browse past meetings from the menu bar or the Notes Assistant; ⌃⌥V re-types your last dictation (great when you dictated into the wrong field).
 - **Per-Site Browser Styling:** Reads the active browser tab's address (Safari + Chromium; opt-in, Automation permission) so a website gets its own writing style — e.g. Gmail uses Email, GitHub uses Code — via editable `host: style` rules.
 - **Dictation Log:** A persisted record of recent dictations — which app (and browser host), which writing style, and duration — in Settings → Usage & Cost, with a clear button. Great for tuning your per-app and per-site style rules.
+- **Dictation Archive:** Optionally save every dictation to its own Markdown file with metadata front-matter (app, host, style, duration, words), organized into dated subfolders (its own layout, independent of meetings). Browse and search them from the menu bar → **Dictations…**.
 - **Custom Vocabulary & Replacements:** Feed Whisper your names, acronyms, and jargon, plus post-transcription find→replace rules — domain terms transcribe correctly.
 - **Offline Fallback:** If Groq is unreachable, transcription falls back to Apple's on-device speech recognition — dictation keeps working with zero network.
 - **Retry Queue:** Meeting segments that fail to transcribe (network blips) are retried automatically with backoff; anything unrecoverable becomes a visible `⚠️ transcription failed` marker in the notes instead of a silent gap.
@@ -86,7 +87,8 @@ Organized act → find → configure; the header shows the version and quick sta
 - **Start Meeting** (⌃⌥M) — becomes **End Meeting** while recording; **Pause Meeting** (⌃⌥P) appears only mid-meeting (writes *paused/resumed* markers).
 - **Quick Note** (⌃⌥J) — toggle-dictate into today's quick-notes file.
 - **Notes ▸** — open the current/latest meeting notes (⌃⌥N), today's quick notes, the last 5 meetings grouped by day, **Browse All Notes…**, **Rename Speakers…**, and the notes folder.
-- **Notes Assistant…** — browse all notes, search transcripts, ask questions about one meeting or across all of them (with cited sources), and review action items grouped by meeting.
+- **Notes Assistant…** — opens on **All Notes**, plus search transcripts, ask questions about one meeting or across all of them (with cited sources), and review action items grouped by meeting.
+- **Dictations…** — a searchable, day-grouped browser of your archived dictations; click any to open in the in-app editor.
 - **Settings…** — everything else lives here, including the API key (General) and permissions (Privacy & Security).
 
 (⌃⌥V re-types your most recent dictation from anywhere — no menu needed.)
@@ -110,7 +112,8 @@ A System Settings-style sidebar, grouped into **Capture**, **Meetings**, and **A
 | Group / Pane | Options (defaults in bold) |
 | --- | --- |
 | **General** | API key status; transcription model (**whisper-large-v3**); polishing model (**llama-3.3-70b-versatile**); prefer built-in microphone (**off** — uses the system default input; turn on to keep AirPods in high-quality audio); offline fallback (**on** — Apple on-device recognition when Groq is unreachable, covering dictation, quick notes, and meetings); date format for the menu & Notes Assistant (**dd MMM yyyy** → 03 Jul 2026; presets + custom pattern with live preview); start at login (**off** — registers as a macOS Login Item); reset all settings |
-| Capture · **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn); dictation history (**on**, keep **20**); streaming dictation (**on**, chunk **10 s**); voice commands (**on**, editable rule list); language (**en**); custom vocabulary; find→replace rules; writing styles (6 editable built-ins + your own custom styles, with a global default for unrecognized apps); per-app style overrides; browser tab styles (**on** — per-site `host: style` rules, e.g. Gmail → Email) |
+| Capture · **Dictation** | Push-to-talk key (**Right Option**, or Left Option / Right Command / Right Control / Fn); streaming dictation (**on**, chunk **10 s**); language (**en**); accuracy — custom vocabulary + find→replace rules; recall — keep recent dictations for ⌃⌥V (**on**, keep **20**); archive — save each dictation to a file (**on**) with its own folder and organization (**year/month**) |
+| Capture · **Writing Styles** | Voice commands (**on**, editable rule list); writing styles (6 editable built-ins + your own custom styles, with a global default for unrecognized apps); per-app style overrides; browser tab styles (**on** — per-site `host: style` rules, e.g. Gmail → Email) |
 | Capture · **Quick Notes** | Save-to folder (**…/Notes/Quick Notes**); saved notification (**on**) |
 | Meetings · **Recording** | Call detection — offer to start/stop with the call (**on**); overlay mode (**minimal pill** / live captions / hidden); caption fade delay (**6 s**); echo suppression (**on**, gate **0.4 s**); *Advanced (collapsed):* mic threshold (**−40 dBFS**), system-audio threshold (**−50 dBFS**), segment flush pause (**1.5 s**), max segment length (**25 s**), retry attempts (**3**), retry interval (**20 s**) |
 | Meetings · **Notes & Summaries** | Notes folder (**~/Documents/Notes**); file organization (**year/month/day** / year/month / year / single folder); Obsidian front-matter (**off**); speaker labels (**You** / **Them**); voice diarization (**on**, experimental; max speakers **4**); meeting template (**Customer Call**, 9 built-in types + your own custom templates — editable sections, add/rename/delete); AI summary (**on**); action items (**on**); auto-tag topics into front-matter (**on**); saved notification (**on**); Assistant search depth (**200** recent meetings); action items from last (**10** meetings) |
@@ -154,6 +157,7 @@ All values are stored in `UserDefaults` (start-at-login lives in macOS Login Ite
 | `Sources/NotificationManager.swift` | Post-meeting, quick-note, and error notifications |
 | `Sources/NotesAssistant.swift` | All Notes / Search / Ask / Action Items window |
 | `Sources/NotesViewerWindow.swift` | In-app Markdown viewer/editor (edit, follow-up, rename, open externally) |
+| `Sources/DictationsWindow.swift` | Searchable, day-grouped browser for archived dictations |
 | `Sources/Redactor.swift` | Opt-in redaction of emails / phones / long numbers |
 | `Sources/Diagnostics.swift` | In-memory recent-errors log for the Diagnostics pane |
 | `Sources/UsageStats.swift` | Local usage counters + Groq cost estimate |

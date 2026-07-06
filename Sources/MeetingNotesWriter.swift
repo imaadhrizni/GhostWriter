@@ -112,6 +112,54 @@ final class MeetingNotesWriter {
         return fileURL
     }
 
+    // MARK: - Dictation Archive
+
+    /// Archive one dictation to its own Markdown file with metadata
+    /// front-matter, in the dedicated dictations folder. Returns the URL, or
+    /// nil on failure. The text is already polished and (if enabled) redacted.
+    @discardableResult
+    static func saveDictation(text: String, app: String, host: String?, style: String,
+                              seconds: Int, words: Int) -> URL? {
+        let now = Date()
+        let folder = AppSettings.shared.dictationDestinationFolder(for: now)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            Log.dictation.error("❌ Could not create dictations folder: \(error.localizedDescription)")
+            return nil
+        }
+
+        let stamp = fileNameFormatter.string(from: now)
+        let fileURL = folder.appendingPathComponent("Dictation_\(stamp).md")
+
+        // Quote free-text values — an app/host/style could contain a colon or
+        // quote that would otherwise produce malformed YAML.
+        func yaml(_ s: String) -> String {
+            "\"\(s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
+        }
+        var lines = ["---",
+                     "title: Dictation \(stamp)",
+                     "date: \(ISO8601DateFormatter().string(from: now))",
+                     "app: \(yaml(app))"]
+        if let host, !host.isEmpty { lines.append("host: \(yaml(host))") }
+        lines.append("style: \(yaml(style))")
+        lines.append("duration: \(seconds)s")
+        lines.append("words: \(words)")
+        lines.append("tags: [dictation, ghostwriter]")
+        lines.append("---")
+        lines.append("")
+        let content = lines.joined(separator: "\n") + "\n" + text + "\n"
+
+        do {
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            Log.dictation.error("❌ Could not write dictation file: \(error.localizedDescription)")
+            return nil
+        }
+        Log.dictation.info("📝 Dictation archived")
+        return fileURL
+    }
+
     /// Where today's quick notes live (whether or not the file exists yet).
     static func todaysQuickNotesURL() -> URL {
         AppSettings.shared.quickNotesFolder

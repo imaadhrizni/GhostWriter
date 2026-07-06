@@ -41,7 +41,7 @@ final class NotesAssistantWindowController: NSWindowController {
 
 /// Holds the selected tab so the menu can open the window to a specific one.
 final class NotesAssistantModel: ObservableObject {
-    @Published var mode: AssistantMode = .search
+    @Published var mode: AssistantMode = .browse
 }
 
 // MARK: - Notes folder helpers

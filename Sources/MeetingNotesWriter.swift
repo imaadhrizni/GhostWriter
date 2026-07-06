@@ -231,6 +231,31 @@ final class MeetingNotesWriter {
         Log.meeting.info("📝 Summary appended")
     }
 
+    /// Merge topic tags into the YAML front-matter `tags: [...]` line. No-op if
+    /// the file has no front-matter (tags require it) or no new tags.
+    static func addFrontMatterTags(_ tags: [String], to fileURL: URL) {
+        let newTags = tags.filter { !$0.isEmpty }
+        guard !newTags.isEmpty,
+              var content = try? String(contentsOf: fileURL, encoding: .utf8),
+              content.hasPrefix("---") else { return }
+
+        var lines = content.components(separatedBy: "\n")
+        guard let i = lines.firstIndex(where: { $0.hasPrefix("tags:") }) else { return }
+
+        // Parse existing "tags: [a, b]" and append any that are new.
+        let existing = lines[i]
+            .drop(while: { $0 != "[" }).dropFirst().prefix(while: { $0 != "]" })
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        var merged = existing
+        for tag in newTags where !merged.contains(tag) { merged.append(tag) }
+        lines[i] = "tags: [\(merged.joined(separator: ", "))]"
+        content = lines.joined(separator: "\n")
+        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
+        Log.meeting.info("🏷 Front-matter tags updated")
+    }
+
     /// Full text of a notes file (for summarization).
     func transcriptText(of fileURL: URL) -> String? {
         try? String(contentsOf: fileURL, encoding: .utf8)

@@ -30,6 +30,8 @@ final class TextPolisher {
             // If no API key, return raw text (graceful degradation)
             return rawText
         }
+        // Local-only mode never contacts the network — skip polishing.
+        guard !AppSettings.shared.localOnlyMode else { return rawText }
 
         let systemPrompt = buildSystemPrompt(for: appContext)
         let userPrompt = """
@@ -66,6 +68,7 @@ final class TextPolisher {
         }
 
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        recordUsage(result)
         return result.choices.first?.message.content ?? rawText
     }
 
@@ -121,6 +124,7 @@ final class TextPolisher {
             throw GroqError.invalidResponse
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        recordUsage(result)
         guard let content = result.choices.first?.message.content, !content.isEmpty else {
             throw GroqError.invalidResponse
         }
@@ -160,6 +164,7 @@ final class TextPolisher {
             throw GroqError.invalidResponse
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        recordUsage(result)
         guard let content = result.choices.first?.message.content, !content.isEmpty else {
             throw GroqError.invalidResponse
         }
@@ -202,6 +207,7 @@ final class TextPolisher {
               let http = response as? HTTPURLResponse, http.statusCode == 200,
               let result = try? JSONDecoder().decode(ChatResponse.self, from: data),
               let content = result.choices.first?.message.content else { return fallback }
+        recordUsage(result)
 
         let terms = content
             .components(separatedBy: CharacterSet(charactersIn: ",\n"))
@@ -244,6 +250,92 @@ final class TextPolisher {
             throw GroqError.invalidResponse
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        recordUsage(result)
+        guard let content = result.choices.first?.message.content, !content.isEmpty else {
+            throw GroqError.invalidResponse
+        }
+        return content
+    }
+
+    // MARK: - Usage
+
+    /// Record LLM token usage for the cost estimate in Stats.
+    private func recordUsage(_ result: ChatResponse) {
+        guard let u = result.usage else { return }
+        UsageStats.shared.recordChat(inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens)
+    }
+
+    // MARK: - Follow-up & Tags
+
+    /// Draft a follow-up message recapping a meeting, shaped by its template
+    /// (recipient, tone, and sections vary by meeting type). The notes may
+    /// already contain a summary and action items — the draft builds on them.
+    func draftFollowUp(transcript: String, template: SummaryTemplate = .builtIn(.general)) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(transcript.suffix(24_000))
+        let body = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                You draft a follow-up from a meeting's notes. Use ONLY what is in the
+                notes below — which may already include a summary and action items;
+                build on them and never contradict or invent facts.
+
+                \(template.followUpGuidance)
+
+                Keep it tight and skimmable. Attribute owners where identifiable.
+                If it's an email, start with a one-line subject. Output the follow-up
+                text only — no preamble or meta-commentary.
+                """),
+                .init(role: "user", content: "Notes:\n\n\(clipped)")
+            ],
+            temperature: 0.3,
+            max_tokens: 800
+        )
+        return try await send(body, timeout: 30)
+    }
+
+    /// Extract a few short topic tags (lowercase, hyphenated) for front-matter.
+    /// Best-effort: returns [] on any failure.
+    func extractTags(transcript: String) async -> [String] {
+        guard !apiKey.isEmpty else { return [] }
+        let clipped = String(transcript.suffix(16_000))
+        let body = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                Extract 3-6 short topic tags describing this meeting's subjects.
+                Output ONLY a comma-separated list of lowercase, hyphenated tags
+                (e.g. budget-review, hiring, q3-roadmap). No other text.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0,
+            max_tokens: 60
+        )
+        guard let content = try? await send(body, timeout: 15) else { return [] }
+        return content
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased()
+                     .replacingOccurrences(of: " ", with: "-") }
+            .filter { !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" } }
+    }
+
+    /// Shared chat request: sends, records usage, returns the message content.
+    private func send(_ body: ChatRequest, timeout: TimeInterval) async throws -> String {
+        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = timeout
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw GroqError.invalidResponse
+        }
+        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        recordUsage(result)
         guard let content = result.choices.first?.message.content, !content.isEmpty else {
             throw GroqError.invalidResponse
         }
@@ -298,8 +390,14 @@ private struct ChatMessage: Codable {
 
 private struct ChatResponse: Codable {
     let choices: [Choice]
+    let usage: Usage?
 
     struct Choice: Codable {
         let message: ChatMessage
+    }
+
+    struct Usage: Codable {
+        let prompt_tokens: Int
+        let completion_tokens: Int
     }
 }

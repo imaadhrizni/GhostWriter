@@ -11,8 +11,10 @@ final class RenameSpeakersWindowController: NSWindowController {
 
     /// - Parameters:
     ///   - liveFile: the currently recording meeting's file, if any
+    ///   - preselect: a specific meeting to open selected (e.g. the note being
+    ///     viewed); defaults to the live meeting, then the most recent
     ///   - onRename: called per changed label (old, new, file) after the rewrite
-    convenience init(liveFile: URL?, onRename: @escaping (String, String, URL) -> Void) {
+    convenience init(liveFile: URL?, preselect: URL? = nil, onRename: @escaping (String, String, URL) -> Void) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 340),
             styleMask: [.titled, .closable],
@@ -25,7 +27,7 @@ final class RenameSpeakersWindowController: NSWindowController {
 
         self.init(window: window)
         window.contentView = NSHostingView(rootView: RenameSpeakersView(
-            liveFile: liveFile, onRename: onRename,
+            liveFile: liveFile, preselect: preselect, onRename: onRename,
             close: { [weak window] in window?.close() }))
     }
 
@@ -38,6 +40,7 @@ final class RenameSpeakersWindowController: NSWindowController {
 
 private struct RenameSpeakersView: View {
     let liveFile: URL?
+    let preselect: URL?
     let onRename: (String, String, URL) -> Void
     let close: () -> Void
 
@@ -97,7 +100,10 @@ private struct RenameSpeakersView: View {
         .frame(width: 400, height: 340)
         .onAppear {
             files = MeetingNotesWriter.allMeetingFiles(under: AppSettings.shared.notesFolder)
-            selected = liveFile ?? files.first
+            // Prefer an explicitly requested meeting (the one being viewed),
+            // then the live meeting, then the most recent.
+            selected = (preselect.map { p in files.contains(p) ? p : nil } ?? nil)
+                ?? liveFile ?? files.first
             rescan()
         }
         .onChange(of: selected) { _, _ in rescan() }

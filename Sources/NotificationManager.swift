@@ -61,8 +61,14 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
              sound: nil)
     }
 
-    /// Shared plumbing: authorization, content, click-to-open payload.
-    private func post(title: String, body: String, fileURL: URL, sound: UNNotificationSound?) {
+    /// "Something went wrong" — no click payload; also surfaced in the menu.
+    func notifyError(_ message: String) {
+        let clipped = message.count > 160 ? String(message.prefix(160)) + "…" : message
+        post(title: "GhostWriter error", body: clipped, fileURL: nil, sound: .default)
+    }
+
+    /// Shared plumbing: authorization, content, optional click-to-open payload.
+    private func post(title: String, body: String, fileURL: URL?, sound: UNNotificationSound?) {
         Task {
             guard await ensureAuthorization() else { return }
 
@@ -70,7 +76,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             content.title = title
             content.body = body
             content.sound = sound
-            content.userInfo = ["notesPath": fileURL.path]
+            if let fileURL { content.userInfo = ["notesPath": fileURL.path] }
 
             let request = UNNotificationRequest(
                 identifier: UUID().uuidString,

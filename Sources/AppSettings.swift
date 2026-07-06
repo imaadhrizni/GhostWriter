@@ -63,6 +63,16 @@ final class AppSettings: ObservableObject {
         static let defaultDictationStyle   = "dictation.defaultStyle"
         static let quickNotesFolderPath   = "quicknotes.folderPath"
         static let quickNoteNotify        = "quicknotes.notifyOnSave"
+        static let localOnlyMode          = "privacy.localOnly"
+        static let redactionEnabled       = "privacy.redactionEnabled"
+        static let redactEmails           = "privacy.redactEmails"
+        static let redactPhones           = "privacy.redactPhones"
+        static let redactNumbers          = "privacy.redactNumbers"
+        static let autoTagging            = "meeting.autoTagging"
+        static let errorNotifications     = "diagnostics.errorNotifications"
+        static let priceAudioPerHour      = "cost.audioPerHour"
+        static let priceInputPerMTok      = "cost.inputPerMTok"
+        static let priceOutputPerMTok     = "cost.outputPerMTok"
 
         static let all = [transcriptionModel, polishingModel, pttKeyCode,
                           preferBuiltInMic,
@@ -81,7 +91,10 @@ final class AppSettings: ObservableObject {
                           actionItemsLookback, searchDepth, meetingTemplate,
                           customTemplateSections, userTemplates,
                           dictationStyleOverrides, userDictationStyles, defaultDictationStyle,
-                          quickNotesFolderPath, quickNoteNotify]
+                          quickNotesFolderPath, quickNoteNotify,
+                          localOnlyMode, redactionEnabled, redactEmails, redactPhones, redactNumbers,
+                          autoTagging, errorNotifications,
+                          priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -129,6 +142,18 @@ final class AppSettings: ObservableObject {
         static let searchDepth                     = 200
         static let meetingTemplate                 = MeetingTemplate.customerCall
         static let quickNoteNotify                 = true
+        static let localOnlyMode                   = false
+        static let redactionEnabled                = false
+        static let redactEmails                    = true
+        static let redactPhones                    = true
+        static let redactNumbers                   = true
+        static let autoTagging                     = true
+        static let errorNotifications              = true
+        // Estimate defaults (USD) — Groq list prices as of shipping; editable
+        // in Settings since provider pricing drifts over time.
+        static let priceAudioPerHour               = 0.111   // whisper-large-v3
+        static let priceInputPerMTok               = 0.59    // llama-3.3-70b input
+        static let priceOutputPerMTok              = 0.79    // llama-3.3-70b output
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -626,12 +651,66 @@ final class AppSettings: ObservableObject {
         userDictationStyles = userDictationStyles.filter { $0.id != id }
     }
 
+    // MARK: - Privacy
+
+    /// Never contact the network: transcribe on-device and skip all LLM steps
+    /// (polishing, summaries, auto-tagging, follow-up drafts).
+    var localOnlyMode: Bool {
+        get { bool(Key.localOnlyMode, Default.localOnlyMode) }
+        set { set(newValue, Key.localOnlyMode) }
+    }
+
+    /// Scrub sensitive tokens from transcribed text before it is used.
+    var redactionEnabled: Bool {
+        get { bool(Key.redactionEnabled, Default.redactionEnabled) }
+        set { set(newValue, Key.redactionEnabled) }
+    }
+    var redactEmails: Bool {
+        get { bool(Key.redactEmails, Default.redactEmails) }
+        set { set(newValue, Key.redactEmails) }
+    }
+    var redactPhones: Bool {
+        get { bool(Key.redactPhones, Default.redactPhones) }
+        set { set(newValue, Key.redactPhones) }
+    }
+    var redactNumbers: Bool {
+        get { bool(Key.redactNumbers, Default.redactNumbers) }
+        set { set(newValue, Key.redactNumbers) }
+    }
+
+    // MARK: - Cost Estimate Pricing (USD, editable — provider prices drift)
+
+    var priceAudioPerHour: Double {
+        get { double(Key.priceAudioPerHour, Default.priceAudioPerHour) }
+        set { set(newValue, Key.priceAudioPerHour) }
+    }
+    var priceInputPerMTok: Double {
+        get { double(Key.priceInputPerMTok, Default.priceInputPerMTok) }
+        set { set(newValue, Key.priceInputPerMTok) }
+    }
+    var priceOutputPerMTok: Double {
+        get { double(Key.priceOutputPerMTok, Default.priceOutputPerMTok) }
+        set { set(newValue, Key.priceOutputPerMTok) }
+    }
+
     // MARK: - Transcription Quality
 
     /// Fall back to Apple's on-device speech recognition when Groq is unreachable.
     var offlineFallback: Bool {
         get { bool(Key.offlineFallback, Default.offlineFallback) }
         set { set(newValue, Key.offlineFallback) }
+    }
+
+    /// Have the summarizer extract topic tags into the notes front-matter.
+    var autoTagging: Bool {
+        get { bool(Key.autoTagging, Default.autoTagging) }
+        set { set(newValue, Key.autoTagging) }
+    }
+
+    /// Post a notification when something fails (also logged in Diagnostics).
+    var errorNotifications: Bool {
+        get { bool(Key.errorNotifications, Default.errorNotifications) }
+        set { set(newValue, Key.errorNotifications) }
     }
 
     /// ISO 639-1 language hint for Whisper (e.g. "en", "de", "ta").
@@ -868,6 +947,49 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
     private func sect(_ heading: String, _ instruction: String) -> String {
         Self.sect(heading, instruction)
     }
+
+    /// How a follow-up message for this meeting type should be shaped —
+    /// recipient, tone, and what to include. Fed to the follow-up drafter.
+    var followUpGuidance: String {
+        switch self {
+        case .general:
+            return "Write a concise recap email to the participants: key outcomes and clear next steps with owners."
+        case .standup:
+            return "Write a short INTERNAL status update (not a formal email): what's done, what's next, and blockers with owners. Terse and skimmable."
+        case .oneOnOne:
+            return "Write a brief, warm private recap for the two participants: topics discussed, agreements reached, and any growth/career follow-ups."
+        case .customerCall:
+            return "Write a polished, client-facing follow-up EMAIL to the customer. Thank them, restate the needs they raised, confirm the commitments made, and lay out next steps with owners and timing. Professional and warm."
+        case .interview:
+            return "Write an INTERNAL interview debrief for the hiring team — NOT a message to the candidate. Cover the candidate's relevant background, strengths with evidence, concerns, and a clear recommendation on next steps."
+        case .planning:
+            return "Write an internal follow-up: agreed scope (in/out), estimates and dates, owners, and open risks or dependencies."
+        case .retrospective:
+            return "Write an internal recap: what went well, what didn't, and the concrete improvements the team committed to (with owners)."
+        case .lecture:
+            return "Write a learner-oriented recap: key concepts, practical takeaways, and follow-up resources or questions to explore."
+        case .brainstorm:
+            return "Write a recap: the ideas raised, the most promising directions, and agreed next steps to explore them."
+        }
+    }
+
+    /// Best-guess template from a finished note's section headings — used when
+    /// drafting a follow-up for a past meeting whose template isn't recorded.
+    /// Returns nil when nothing distinctive matches (caller falls back).
+    static func inferred(fromNotes content: String) -> MeetingTemplate? {
+        let lc = content.lowercased()
+        func has(_ heading: String) -> Bool { lc.contains("## \(heading.lowercased())") }
+
+        if has("Customer Needs") || has("Objections & Concerns") { return .customerCall }
+        if has("Went Well") || has("Didn't Go Well") { return .retrospective }
+        if has("Background") && has("Strengths") { return .interview }
+        if has("Updates") && has("Blockers") { return .standup }
+        if has("Scope") && has("Risks") { return .planning }
+        if has("Key Concepts") || has("Takeaways") { return .lecture }
+        if has("Promising Directions") { return .brainstorm }
+        if has("Growth & Career") { return .oneOnOne }
+        return nil
+    }
 }
 
 // MARK: - User Templates
@@ -919,6 +1041,15 @@ enum SummaryTemplate: Identifiable, Hashable {
         switch self {
         case .builtIn(let t): return t.summarySections
         case .user(let t):    return MeetingTemplate.parseSections(t.sections)
+        }
+    }
+
+    /// How a follow-up for this meeting type should be shaped.
+    var followUpGuidance: String {
+        switch self {
+        case .builtIn(let t): return t.followUpGuidance
+        case .user(let t):
+            return "Write a concise follow-up appropriate to a \(t.name) meeting, building on the notes: key outcomes and clear next steps with owners."
         }
     }
 }

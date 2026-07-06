@@ -40,9 +40,11 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case quickNotes  = "Quick Notes"
     case meeting     = "Recording"
     case notes       = "Notes & Summaries"
-    case shortcuts   = "Shortcuts"
-    case stats       = "Stats"
+    case privacy     = "Privacy"
     case permissions = "Permissions"
+    case shortcuts   = "Shortcuts"
+    case stats       = "Usage & Cost"
+    case diagnostics = "Diagnostics"
     case about       = "About"
 
     var id: String { rawValue }
@@ -50,10 +52,11 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     /// Sidebar layout: related panes grouped under headers, the way
     /// System Settings clusters its domains.
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
-        (nil,        [.general]),
-        ("Capture",  [.dictation, .quickNotes]),
-        ("Meetings", [.meeting, .notes]),
-        ("App",      [.shortcuts, .stats, .permissions, .about]),
+        (nil,                  [.general]),
+        ("Capture",            [.dictation, .quickNotes]),
+        ("Meetings",           [.meeting, .notes]),
+        ("Privacy & Security", [.privacy, .permissions]),
+        ("App",                [.shortcuts, .stats, .diagnostics, .about]),
     ]
 
     var icon: String {
@@ -63,9 +66,11 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return "square.and.pencil"
         case .meeting:     return "person.2.wave.2.fill"
         case .notes:       return "doc.text.fill"
+        case .privacy:     return "hand.raised.fill"
+        case .permissions: return "lock.shield.fill"
         case .shortcuts:   return "command"
         case .stats:       return "chart.bar.fill"
-        case .permissions: return "lock.shield.fill"
+        case .diagnostics: return "stethoscope"
         case .about:       return "info.circle.fill"
         }
     }
@@ -77,9 +82,11 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return .yellow
         case .meeting:     return .purple
         case .notes:       return .indigo
+        case .privacy:     return .pink
+        case .permissions: return .green
         case .shortcuts:   return .orange
         case .stats:       return .teal
-        case .permissions: return .green
+        case .diagnostics: return .red
         case .about:       return .secondary
         }
     }
@@ -122,9 +129,11 @@ struct SettingsView: View {
                     case .quickNotes:  QuickNotesPane()
                     case .meeting:     MeetingPane()
                     case .notes:       MeetingNotesPane()
+                    case .privacy:     PrivacyPane()
+                    case .permissions: PermissionsPane()
                     case .shortcuts:   ShortcutsPane()
                     case .stats:       StatsPane()
-                    case .permissions: PermissionsPane()
+                    case .diagnostics: DiagnosticsPane()
                     case .about:       AboutPane()
                     }
                 }
@@ -835,6 +844,10 @@ private struct MeetingNotesPane: View {
                 Text("Adds an Action Items checklist (with owners when identifiable). Also feeds the Notes Assistant's Action Items tab.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
+                Toggle("Auto-tag topics into front-matter", isOn: $settings.autoTagging)
+                Text("After summarizing, extract 3–6 topic tags and merge them into the note's YAML front-matter (great for Obsidian/Notion graphs). Requires front-matter enabled and network access.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
                 Toggle("Notify when notes are saved", isOn: $settings.notifyOnMeetingEnd)
             }
 
@@ -1027,6 +1040,17 @@ private struct StatsPane: View {
                 StatRow(label: "Total meeting time", value: UsageStats.hoursMinutes(stats.meetingSeconds))
             }
 
+            SettingsGroup("Estimated Cost") {
+                StatRow(label: "Estimated Groq spend", value: UsageStats.currency(stats.estimatedCostUSD))
+                StatRow(label: "Audio transcribed", value: UsageStats.hoursMinutes(stats.audioSecondsTranscribed))
+                StatRow(label: "LLM tokens (in / out)", value: "\(stats.inputTokens) / \(stats.outputTokens)")
+                Text("A rough estimate from local counters — actual billing on the Groq console is authoritative. Prices drift, so they're editable:")
+                    .font(.caption).foregroundColor(.secondary)
+                PriceField(label: "Audio $/hour", value: $settings.priceAudioPerHour, defaultValue: AppSettings.Default.priceAudioPerHour)
+                PriceField(label: "Input $/M tokens", value: $settings.priceInputPerMTok, defaultValue: AppSettings.Default.priceInputPerMTok)
+                PriceField(label: "Output $/M tokens", value: $settings.priceOutputPerMTok, defaultValue: AppSettings.Default.priceOutputPerMTok)
+            }
+
             SettingsGroup("Maintenance") {
                 HStack {
                     Text("Counters are stored locally and never leave this Mac.")
@@ -1054,6 +1078,104 @@ private struct StatRow: View {
             Text(value)
                 .monospacedDigit()
                 .foregroundColor(.secondary)
+        }
+    }
+}
+
+/// Editable USD price with reset-to-default.
+private struct PriceField: View {
+    let label: String
+    @Binding var value: Double
+    let defaultValue: Double
+
+    var body: some View {
+        HStack {
+            Text(label).font(.caption)
+            Spacer()
+            TextField("", value: $value, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 90)
+                .multilineTextAlignment(.trailing)
+            DefaultResetButton(isDefault: value == defaultValue) { value = defaultValue }
+        }
+    }
+}
+
+// MARK: - Privacy
+
+private struct PrivacyPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Network") {
+                Toggle("Local-only mode (never contact the network)", isOn: $settings.localOnlyMode)
+                Text("Transcribe entirely on-device and skip every cloud step — no polishing, summaries, auto-tags, or follow-up drafts, and no API cost. Lower transcription accuracy; nothing leaves this Mac.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Redaction") {
+                Toggle("Redact sensitive info from transcripts", isOn: $settings.redactionEnabled)
+                Text("Replaces matches with labels (e.g. [redacted email]) in the transcribed text before it's typed, saved to notes, or sent for polishing/summaries — so the original is never stored or seen by the LLM. Covers dictation, quick notes, and meetings. Note: audio is still sent to Groq for transcription; to keep audio on-device too, also enable Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.redactionEnabled {
+                    Toggle("Email addresses", isOn: $settings.redactEmails)
+                    Toggle("Phone numbers", isOn: $settings.redactPhones)
+                    Toggle("Long number sequences (cards, account numbers)", isOn: $settings.redactNumbers)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Diagnostics
+
+private struct DiagnosticsPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @ObservedObject private var log = DiagnosticsLog.shared
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .none
+        f.timeStyle = .medium
+        return f
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Notifications") {
+                Toggle("Notify me when something fails", isOn: $settings.errorNotifications)
+                Text("Transcription, polishing, summary, and follow-up failures post a notification and appear below. The most recent error is also shown at the top of the menu bar menu until dismissed.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Recent Errors") {
+                if log.entries.isEmpty {
+                    Text("No errors recorded this session. 🎉")
+                        .font(.caption).foregroundColor(.secondary)
+                } else {
+                    ForEach(log.entries) { entry in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.message)
+                                .font(.caption)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(Self.timeFormatter.string(from: entry.date))
+                                .font(.caption2).foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Divider()
+                    }
+                    HStack {
+                        Spacer()
+                        Button("Clear", role: .destructive) { log.clear() }
+                    }
+                }
+            }
+
+            SettingsGroup("Reliability") {
+                Text("When a Groq request fails, GhostWriter automatically retries meeting segments and — if offline fallback is on (General) — transcribes on-device so you don't lose audio. Detailed logs are in Console.app under the “GhostWriter” subsystem.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
         }
     }
 }
@@ -1276,6 +1398,7 @@ extension Notification.Name {
     static let settingsDidReset    = Notification.Name("SettingsDidReset")
     static let resetAllPermissions = Notification.Name("ResetAllPermissions")
     static let dictationHistoryDisabled = Notification.Name("DictationHistoryDisabled")
+    static let renameSpeakersForFile = Notification.Name("RenameSpeakersForFile")
 }
 
 // MARK: - About

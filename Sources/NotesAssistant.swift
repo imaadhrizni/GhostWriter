@@ -9,6 +9,8 @@ import AppKit
 //   Action Items — aggregated "## Action Items" sections from recent meetings
 
 final class NotesAssistantWindowController: NSWindowController {
+    let model = NotesAssistantModel()
+
     convenience init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 460),
@@ -21,7 +23,7 @@ final class NotesAssistantWindowController: NSWindowController {
         window.title = "Notes Assistant"
 
         self.init(window: window)
-        window.contentView = NSHostingView(rootView: NotesAssistantView())
+        window.contentView = NSHostingView(rootView: NotesAssistantView(model: model))
     }
 
     func showAndActivate() {
@@ -29,6 +31,17 @@ final class NotesAssistantWindowController: NSWindowController {
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
     }
+
+    /// Open straight to the browse-all-notes tab (from the menu).
+    func showAllNotes() {
+        model.mode = .browse
+        showAndActivate()
+    }
+}
+
+/// Holds the selected tab so the menu can open the window to a specific one.
+final class NotesAssistantModel: ObservableObject {
+    @Published var mode: AssistantMode = .search
 }
 
 // MARK: - Notes folder helpers
@@ -229,17 +242,17 @@ private enum NotesLibrary {
 
 // MARK: - Root view
 
-private enum AssistantMode: String, CaseIterable, Identifiable {
-    case search = "Search", ask = "Ask", actions = "Action Items"
+enum AssistantMode: String, CaseIterable, Identifiable {
+    case browse = "All Notes", search = "Search", ask = "Ask", actions = "Action Items"
     var id: String { rawValue }
 }
 
 struct NotesAssistantView: View {
-    @State private var mode: AssistantMode = .search
+    @ObservedObject var model: NotesAssistantModel
 
     var body: some View {
         VStack(spacing: 12) {
-            Picker("", selection: $mode) {
+            Picker("", selection: $model.mode) {
                 ForEach(AssistantMode.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -247,13 +260,57 @@ struct NotesAssistantView: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
 
-            switch mode {
+            switch model.mode {
+            case .browse:  BrowseTab()
             case .search:  SearchTab()
             case .ask:     AskTab()
             case .actions: ActionItemsTab()
             }
         }
         .frame(minWidth: 560, minHeight: 420)
+    }
+}
+
+// MARK: - Browse (all notes)
+
+private struct BrowseTab: View {
+    @State private var groups: [(day: String, meetings: [NotesLibrary.MeetingFile])] = []
+
+    var body: some View {
+        Group {
+            if groups.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.largeTitle).foregroundColor(.secondary)
+                    Text("No meeting notes yet.").foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(groups, id: \.day) { group in
+                        Section(header: Text(group.day)) {
+                            ForEach(group.meetings) { meeting in
+                                Button {
+                                    NotesViewerWindowController.present(fileURL: meeting.url)
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "doc.text")
+                                            .foregroundColor(.secondary)
+                                        Text(meeting.time)
+                                        Spacer()
+                                        Image(systemName: "arrow.up.forward.square")
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear { groups = NotesLibrary.meetingsByDay(limit: 500) }
     }
 }
 
@@ -317,7 +374,7 @@ private struct SearchTab: View {
                         Section {
                             ForEach(group.hits) { hit in
                                 Button {
-                                    NSWorkspace.shared.open(hit.file.url)
+                                    NotesViewerWindowController.present(fileURL: hit.file.url)
                                 } label: {
                                     Text(hit.line)
                                         .lineLimit(2)
@@ -328,7 +385,7 @@ private struct SearchTab: View {
                             }
                         } header: {
                             Button {
-                                NSWorkspace.shared.open(group.file.url)
+                                NotesViewerWindowController.present(fileURL: group.file.url)
                             } label: {
                                 HStack(spacing: 4) {
                                     Text(group.file.displayName)
@@ -379,7 +436,7 @@ private struct AskTab: View {
                 }
                 .labelsHidden()
                 Button {
-                    if let url = selected?.url { NSWorkspace.shared.open(url) }
+                    if let url = selected?.url { NotesViewerWindowController.present(fileURL: url) }
                 } label: {
                     Image(systemName: "arrow.up.forward.square")
                 }
@@ -431,7 +488,7 @@ private struct AskTab: View {
                                 .foregroundColor(.secondary)
                             ForEach(sources) { source in
                                 Button {
-                                    NSWorkspace.shared.open(source.url)
+                                    NotesViewerWindowController.present(fileURL: source.url)
                                 } label: {
                                     HStack(spacing: 4) {
                                         Image(systemName: "doc.text")
@@ -538,7 +595,7 @@ private struct ActionItemsTab: View {
                             }
                         } header: {
                             Button {
-                                NSWorkspace.shared.open(group.file.url)
+                                NotesViewerWindowController.present(fileURL: group.file.url)
                             } label: {
                                 HStack(spacing: 4) {
                                     Text(group.file.displayName)

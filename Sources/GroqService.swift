@@ -79,6 +79,10 @@ final class GroqService {
             throw GroqError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
         }
 
+        // Bill estimate: 16 kHz, 16-bit, mono PCM → 2 bytes/sample.
+        let audioSeconds = Double(audioData.count) / 2.0 / 16_000.0
+        UsageStats.shared.recordTranscription(audioSeconds: audioSeconds)
+
         // Parse response, then apply the user's find→replace rules
         let result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
         return AppSettings.shared.applyReplacements(to: result.text)

@@ -121,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private var pauseMenuItem: NSMenuItem?
     private var statsMenuItem: NSMenuItem?
+    private var errorMenuItem: NSMenuItem?
 
     // Support logic
     private var hasPromptedForPermissions = false
@@ -137,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(onSettingsChanged), name: .settingsDidReset, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(resetPermissions), name: .resetAllPermissions, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(clearDictationHistory), name: .dictationHistoryDisabled, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(renameSpeakersForFile(_:)), name: .renameSpeakersForFile, object: nil)
 
         if KeychainService.groqAPIKey() == nil {
             Log.app.info("🔑 API Key missing — showing setup window")
@@ -174,6 +176,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             notesAssistantWindowController = NotesAssistantWindowController()
         }
         notesAssistantWindowController?.showAndActivate()
+    }
+
+    /// Open the Notes Assistant straight to its "All Notes" browser.
+    @objc private func showAllNotes() {
+        if notesAssistantWindowController == nil {
+            notesAssistantWindowController = NotesAssistantWindowController()
+        }
+        notesAssistantWindowController?.showAllNotes()
     }
 
     @objc private func showSettingsWindow() {
@@ -225,6 +235,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statsItem.isEnabled = false
         menu.addItem(statsItem)
         self.statsMenuItem = statsItem
+
+        // Error banner — hidden unless something recently failed.
+        let errorItem = NSMenuItem(title: "", action: #selector(dismissLastError), keyEquivalent: "")
+        errorItem.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)
+        errorItem.target = self
+        errorItem.isHidden = true
+        menu.addItem(errorItem)
+        self.errorMenuItem = errorItem
 
         menu.addItem(NSMenuItem.separator())
 
@@ -546,6 +564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             } catch {
                 Log.dictation.error("❌ Quick note failed: \(error.localizedDescription)")
+                reportError("Quick note failed: \(error.localizedDescription)")
                 await MainActor.run { appState.recordingState = .error(error.localizedDescription) }
                 try? await Task.sleep(for: .seconds(2))
                 await MainActor.run {
@@ -601,16 +620,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return hasContent ? output.joined(separator: "\n\n") : nil
     }
 
-    /// Groq first; when the network is down and the fallback is enabled,
-    /// Apple's on-device recognition keeps transcription working.
+    /// The single transcription choke point for dictation, quick notes, and
+    /// meetings. Local-only mode goes straight to on-device recognition; other-
+    /// wise Groq first, falling back on-device when the network is down. The
+    /// result is passed through optional redaction before anyone sees it.
     private func transcribeWithFallback(_ audioData: Data) async throws -> String {
-        do {
-            return try await groqService.transcribe(audioData: audioData)
-        } catch let error as URLError {
-            guard settings.offlineFallback else { throw error }
-            Log.api.warning("⚠️ Groq unreachable (\(error.code.rawValue)) — falling back to on-device recognition")
-            return try await offlineTranscriber.transcribe(audioData: audioData)
+        let text: String
+        if settings.localOnlyMode {
+            text = try await offlineTranscriber.transcribe(audioData: audioData)
+        } else {
+            do {
+                text = try await groqService.transcribe(audioData: audioData)
+            } catch {
+                // Fall back on ANY Groq failure — network down, 5xx, rate
+                // limit, bad response — not just connectivity errors.
+                guard settings.offlineFallback else { throw error }
+                Log.api.warning("⚠️ Groq transcription failed (\(error.localizedDescription)) — falling back to on-device recognition")
+                text = try await offlineTranscriber.transcribe(audioData: audioData)
+            }
         }
+        return Redactor.redact(text)
     }
 
     /// After a meeting ends: append the AI summary (if enabled), then notify (if enabled).
@@ -625,7 +654,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             let wantsSummary = self.settings.summariesEnabled
             let wantsActions = self.settings.actionItemsEnabled
-            if wantsSummary || wantsActions,
+            // Local-only mode never contacts the network — no LLM summary/tags.
+            if !self.settings.localOnlyMode,
+               wantsSummary || wantsActions,
                let transcript = self.meetingNotes.transcriptText(of: fileURL),
                Self.dialogueLength(of: transcript) > 200 {  // measure actual speech, not header/markers
                 do {
@@ -641,6 +672,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 } catch {
                     Log.meeting.error("❌ Summary failed: \(error.localizedDescription)")
+                    self.reportError("Meeting summary failed: \(error.localizedDescription)")
+                }
+
+                // Auto-tag topics into the front-matter (needs front-matter on).
+                if self.settings.autoTagging, self.settings.frontMatterEnabled {
+                    let tags = await self.textPolisher.extractTags(transcript: transcript)
+                    MeetingNotesWriter.addFrontMatterTags(tags, to: fileURL)
                 }
             }
 
@@ -847,6 +885,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             } catch {
                 Log.dictation.error("❌ Pipeline error: \(error)")
+                reportError("Dictation failed: \(error.localizedDescription)")
                 await MainActor.run { appState.recordingState = .error(error.localizedDescription) }
                 try? await Task.sleep(for: .seconds(2))
                 await MainActor.run {
@@ -1456,9 +1495,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "Main":
             let stats = UsageStats.shared
             let weekMeetings = stats.meetingsThisWeek(in: settings.notesFolder)
-            statsMenuItem?.title = "\(weekMeetings) meeting\(weekMeetings == 1 ? "" : "s") this week · \(stats.dictationCount) dictations"
+            var statsLine = "\(weekMeetings) meeting\(weekMeetings == 1 ? "" : "s") this week · \(stats.dictationCount) dictations"
+            // Surface the running cost estimate when there's been any spend.
+            if !settings.localOnlyMode, stats.estimatedCostUSD >= 0.01 {
+                statsLine += " · ~\(UsageStats.currency(stats.estimatedCostUSD))"
+            }
+            statsMenuItem?.title = statsLine
             // Pause only makes sense mid-meeting — hide it otherwise.
             pauseMenuItem?.isHidden = !appState.isMeetingMode
+            // Error banner — visible only when there's a recent failure.
+            if let message = appState.lastError {
+                errorMenuItem?.isHidden = false
+                errorMenuItem?.title = "\(message)  (click to dismiss)"
+            } else {
+                errorMenuItem?.isHidden = true
+            }
 
         case "Notes":
             menu.removeAllItems()
@@ -1470,12 +1521,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             openItem.keyEquivalentModifierMask = [.control, .option]
             openItem.target = self
             menu.addItem(openItem)
-            let quickNotesItem = NSMenuItem(title: "Open Today's Quick Notes", action: #selector(openTodaysQuickNotes), keyEquivalent: "")
+            // Title reflects what actually opens: today's file if it exists,
+            // otherwise the most recent quick-notes file, otherwise the folder.
+            let hasTodayQuickNotes = FileManager.default.fileExists(
+                atPath: MeetingNotesWriter.todaysQuickNotesURL().path)
+            let quickNotesTitle = hasTodayQuickNotes
+                ? "Open Today's Quick Notes"
+                : (MeetingNotesWriter.latestQuickNotesFile() != nil ? "Open Latest Quick Notes" : "Open Quick Notes Folder")
+            let quickNotesItem = NSMenuItem(title: quickNotesTitle, action: #selector(openTodaysQuickNotes), keyEquivalent: "")
             quickNotesItem.target = self
             menu.addItem(quickNotesItem)
             menu.addItem(NSMenuItem.separator())
 
-            let files = MeetingNotesWriter.allMeetingFiles(under: settings.notesFolder).prefix(10)
+            // Only the 5 most recent here — "Browse All Notes…" (below) opens
+            // the Notes Assistant for the full, searchable history.
+            let files = MeetingNotesWriter.allMeetingFiles(under: settings.notesFolder).prefix(5)
 
             if files.isEmpty {
                 let empty = NSMenuItem(title: "No meetings yet", action: nil, keyEquivalent: "")
@@ -1503,6 +1563,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 item.representedObject = file
                 menu.addItem(item)
             }
+            let browseItem = NSMenuItem(title: "Browse All Notes…", action: #selector(showAllNotes), keyEquivalent: "")
+            browseItem.target = self
+            menu.addItem(browseItem)
             menu.addItem(NSMenuItem.separator())
             let renameItem = NSMenuItem(title: "Rename Speakers…", action: #selector(showRenameSpeakers), keyEquivalent: "")
             renameItem.target = self
@@ -1550,10 +1613,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictationHistory.removeAll()
     }
 
+    /// Open a meeting note in the in-app viewer/editor (which itself offers
+    /// "Open in Default App", "Reveal in Finder", and "Draft Follow-up").
     @objc private func openMeetingFile(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
-        NSWorkspace.shared.open(url)
+        NotesViewerWindowController.present(fileURL: url)
     }
+
 
     private var renameSpeakersWindowController: RenameSpeakersWindowController?
 
@@ -1561,8 +1627,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// meeting preselected when one is running; renames touch only the chosen
     /// file, and live-session overrides apply only to the current meeting.
     @objc private func showRenameSpeakers() {
+        presentRenameSpeakers(preselect: nil)
+    }
+
+    /// From the notes viewer: rename speakers with that note preselected.
+    @objc private func renameSpeakersForFile(_ note: Notification) {
+        presentRenameSpeakers(preselect: note.object as? URL)
+    }
+
+    private func presentRenameSpeakers(preselect: URL?) {
         renameSpeakersWindowController = RenameSpeakersWindowController(
             liveFile: meetingNotes.currentFilePath,
+            preselect: preselect,
             onRename: { [weak self] old, new, file in
                 guard let self, self.meetingNotes.currentFilePath == file else { return }
                 self.meetingNotes.setNameOverride(new, replacing: old)
@@ -1593,6 +1669,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    /// Surface a non-fatal error: remember it for the menu and post a
+    /// notification. Safe to call from any thread.
+    private func reportError(_ message: String) {
+        Log.app.error("❗️ \(message)")
+        DiagnosticsLog.shared.record(message)
+        Task { @MainActor in
+            self.appState.lastError = message
+            if self.settings.errorNotifications {
+                NotificationManager.shared.notifyError(message)
+            }
+        }
+    }
+
+    /// Clear the current surfaced error (from the menu).
+    @objc private func dismissLastError() {
+        appState.lastError = nil
+    }
+
     private func showError(_ message: String) {
         let alert = NSAlert()
         alert.messageText = "GhostWriter"
@@ -1619,6 +1713,8 @@ final class AppState {
     var isMeetingMode: Bool = false
     var isSpeakerActive: Bool = false
     var meetingCaption: String = ""
+    /// The most recent surfaced error, shown in the menu until dismissed.
+    var lastError: String?
 }
 
 // MARK: - Recording State

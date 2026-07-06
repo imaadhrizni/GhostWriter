@@ -201,6 +201,13 @@ private struct GeneralPane: View {
                     defaultValue: AppSettings.Default.polishingModel,
                     value: $settings.polishingModel
                 )
+
+                Divider()
+
+                Toggle("Offline fallback (Apple on-device recognition)", isOn: $settings.offlineFallback)
+                Text("If Groq can't be reached, transcribe on-device instead of failing — applies to dictation, quick notes, and meetings. Lower accuracy and no AI polishing or summaries (transcription only), but zero network. Triggers on connectivity errors, not on API-key or server errors.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             SettingsGroup("Microphone") {
@@ -341,11 +348,6 @@ private struct DictationPane: View {
                         .frame(height: 90)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
                 }
-                Divider()
-                Toggle("Offline fallback (Apple on-device recognition)", isOn: $settings.offlineFallback)
-                Text("When Groq is unreachable, transcribe on-device instead of failing. Lower accuracy, zero network.")
-                    .font(.caption).foregroundColor(.secondary)
-
                 Divider()
 
                 HStack {

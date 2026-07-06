@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotkeyManager = HotkeyManager()
     private let audioCapture = AudioCapture()
     private let systemAudioCapture = SystemAudioCapture()
+    private let meetingDetector = MeetingDetector()
     private let voiceActivityDetector = VoiceActivityDetector()
     private let groqService = GroqService()
     private let textPolisher = TextPolisher()
@@ -35,6 +36,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // PTT audio buffer
     private var audioBuffer = Data()
+    // Streaming dictation: chunks transcribed while the PTT key is still held,
+    // in capture order. Joined with the tail on release.
+    private var streamTasks: [Task<String?, Never>] = []
+    // Quick note (⌃⌥J): toggle-style dictation into today's QuickNotes file.
+    private var quickNoteActive = false
+    private var quickNoteMenuItem: NSMenuItem?
+    private var quickNoteStartTime: Date?
+    private var quickNoteTimer: Timer?
 
     // Meeting mode state — system audio (others), accessed on meetingQueue
     private let meetingQueue = DispatchQueue(label: "com.ghostwriter.meeting", qos: .userInteractive)
@@ -112,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private var pauseMenuItem: NSMenuItem?
     private var statsMenuItem: NSMenuItem?
+    private var errorMenuItem: NSMenuItem?
 
     // Support logic
     private var hasPromptedForPermissions = false
@@ -128,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(onSettingsChanged), name: .settingsDidReset, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(resetPermissions), name: .resetAllPermissions, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(clearDictationHistory), name: .dictationHistoryDisabled, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(renameSpeakersForFile(_:)), name: .renameSpeakersForFile, object: nil)
 
         if KeychainService.groqAPIKey() == nil {
             Log.app.info("🔑 API Key missing — showing setup window")
@@ -135,6 +146,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             finishInitialization()
         }
+
+        meetingDetector.onMeetingDetected = { [weak self] appName in
+            self?.offerToStartMeeting(for: appName)
+        }
+        meetingDetector.onCallEnded = { [weak self] in
+            self?.offerToStopMeeting()
+        }
+        meetingDetector.start()
 
         Log.app.info("🎤 GhostWriter launched")
     }
@@ -157,6 +176,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             notesAssistantWindowController = NotesAssistantWindowController()
         }
         notesAssistantWindowController?.showAndActivate()
+    }
+
+    /// Open the Notes Assistant straight to its "All Notes" browser.
+    @objc private func showAllNotes() {
+        if notesAssistantWindowController == nil {
+            notesAssistantWindowController = NotesAssistantWindowController()
+        }
+        notesAssistantWindowController?.showAllNotes()
     }
 
     @objc private func showSettingsWindow() {
@@ -209,30 +236,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(statsItem)
         self.statsMenuItem = statsItem
 
+        // Error banner — hidden unless something recently failed.
+        let errorItem = NSMenuItem(title: "", action: #selector(dismissLastError), keyEquivalent: "")
+        errorItem.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)
+        errorItem.target = self
+        errorItem.isHidden = true
+        menu.addItem(errorItem)
+        self.errorMenuItem = errorItem
+
         menu.addItem(NSMenuItem.separator())
 
-        // ── Actions ─────────────────────────────────────────────
-        // ⌃⌥M is a true global hotkey (handled by the CGEventTap); the key shown
-        // here is display-only so users can discover it.
-        let meetingItem = NSMenuItem(title: "Meeting Mode", action: #selector(toggleMeetingMode), keyEquivalent: "m")
+        // ── Meeting ─────────────────────────────────────────────
+        // ⌃⌥M / ⌃⌥P are true global hotkeys (handled by the CGEventTap); the
+        // keys shown here are display-only so users can discover them.
+        let meetingItem = NSMenuItem(title: "Start Meeting", action: #selector(toggleMeetingMode), keyEquivalent: "m")
         meetingItem.keyEquivalentModifierMask = [.control, .option]
         meetingItem.image = NSImage(systemSymbolName: "person.2.wave.2", accessibilityDescription: nil)
         meetingItem.target = self
         menu.addItem(meetingItem)
         self.meetingModeMenuItem = meetingItem
 
-        let pauseItem = NSMenuItem(title: "Pause Transcription", action: #selector(togglePauseTranscription), keyEquivalent: "p")
+        let pauseItem = NSMenuItem(title: "Pause Meeting", action: #selector(togglePauseTranscription), keyEquivalent: "p")
         pauseItem.keyEquivalentModifierMask = [.control, .option]
         pauseItem.image = NSImage(systemSymbolName: "pause.circle", accessibilityDescription: nil)
         pauseItem.target = self
         menu.addItem(pauseItem)
         self.pauseMenuItem = pauseItem
 
-        // Notes submenu — current notes, recent meetings, notes folder — rebuilt
-        // on open via menuNeedsUpdate
-        let meetingNotesItem = NSMenuItem(title: "Meeting Notes", action: nil, keyEquivalent: "")
+        // Quick note sits with the capture actions — all three are "record
+        // something now" verbs sharing the same hotkey family.
+        let quickNoteItem = NSMenuItem(title: "Quick Note", action: #selector(toggleQuickNote), keyEquivalent: "j")
+        quickNoteItem.keyEquivalentModifierMask = [.control, .option]
+        quickNoteItem.image = NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: nil)
+        quickNoteItem.target = self
+        menu.addItem(quickNoteItem)
+        self.quickNoteMenuItem = quickNoteItem
+
+        menu.addItem(NSMenuItem.separator())
+
+        // ── Notes & history ─────────────────────────────────────
+        // Notes submenu — current notes, quick notes, recent meetings, folder —
+        // rebuilt on open via menuNeedsUpdate
+        let meetingNotesItem = NSMenuItem(title: "Notes", action: nil, keyEquivalent: "")
         meetingNotesItem.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)
-        let meetingNotesMenu = NSMenu(title: "Meeting Notes")
+        let meetingNotesMenu = NSMenu(title: "Notes")
         meetingNotesMenu.delegate = self
         meetingNotesItem.submenu = meetingNotesMenu
         menu.addItem(meetingNotesItem)
@@ -260,37 +307,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
-        let apiKeyItem = NSMenuItem(title: "Set API Key…", action: #selector(showAPIKeyWindow), keyEquivalent: "")
-        apiKeyItem.image = NSImage(systemSymbolName: "key", accessibilityDescription: nil)
-        apiKeyItem.target = self
-        menu.addItem(apiKeyItem)
-
-        // Permissions grouped into a submenu to keep the top level clean
-        let permissionsItem = NSMenuItem(title: "Permissions", action: nil, keyEquivalent: "")
-        permissionsItem.image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: nil)
-        let permissionsMenu = NSMenu(title: "Permissions")
-
-        let micItem = NSMenuItem(title: "Authorize Microphone…", action: #selector(manualMicRequest), keyEquivalent: "")
-        micItem.target = self
-        permissionsMenu.addItem(micItem)
-
-        let sysAudioItem = NSMenuItem(title: "Authorize System Audio Recording…", action: #selector(manualSystemAudioRequest), keyEquivalent: "")
-        sysAudioItem.target = self
-        permissionsMenu.addItem(sysAudioItem)
-
-        let a11yItem = NSMenuItem(title: "Authorize Accessibility…", action: #selector(openPermissions), keyEquivalent: "")
-        a11yItem.target = self
-        permissionsMenu.addItem(a11yItem)
-
-        permissionsMenu.addItem(NSMenuItem.separator())
-
-        let resetItem = NSMenuItem(title: "Reset All Permissions…", action: #selector(resetPermissions), keyEquivalent: "")
-        resetItem.target = self
-        permissionsMenu.addItem(resetItem)
-
-        permissionsItem.submenu = permissionsMenu
-        menu.addItem(permissionsItem)
-
+        // Permissions and the API key live in Settings (Permissions pane /
+        // General pane) — no need to duplicate them at the top level.
         menu.addItem(NSMenuItem.separator())
 
         // ── Quit ────────────────────────────────────────────────
@@ -298,26 +316,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quitItem)
 
         statusItem?.menu = menu
-    }
-
-    @objc private func manualMicRequest() {
-        Task { @MainActor in
-            // Fires the native prompt when the status is undetermined; awaits the result.
-            _ = await permissionGuard.requestMicrophonePermission()
-            // Always open the Settings pane afterward so the menu item is never a
-            // silent no-op (e.g. when already authorized or previously denied).
-            permissionGuard.openMicrophoneSettings()
-        }
-    }
-
-    @objc private func manualSystemAudioRequest() {
-        Task { @MainActor in
-            // Running the capture chain surfaces the TCC prompt when undetermined.
-            await systemAudioCapture.requestPermission()
-            // Always open the Settings pane too, so the menu item is never a
-            // silent no-op (e.g. when already granted or previously denied).
-            permissionGuard.openSystemAudioSettings()
-        }
     }
 
     @objc private func resetPermissions() {
@@ -415,12 +413,165 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.textInjector.inject(text: last.text)
         }
 
+        // ⌃⌥J — toggle a quick dictated note into today's notes file
+        hotkeyManager.onQuickNoteHotkey = { [weak self] in
+            self?.toggleQuickNote()
+        }
+
         // Esc — cancel an in-flight dictation without typing anything
         hotkeyManager.shouldCaptureEscape = { [weak self] in
             self?.appState.recordingState == .listening
         }
         hotkeyManager.onCancelDictation = { [weak self] in
-            self?.cancelRecording()
+            guard let self else { return }
+            if self.quickNoteActive {
+                self.cancelQuickNote()
+            } else {
+                self.cancelRecording()
+            }
+        }
+    }
+
+    // MARK: - Quick Notes (⌃⌥J)
+
+    /// First press starts recording, second press transcribes + saves the note.
+    @objc private func toggleQuickNote() {
+        if quickNoteActive {
+            finishQuickNote()
+            return
+        }
+        // Don't fight the PTT flow over the one AudioCapture engine.
+        guard appState.recordingState == .idle else { return }
+        guard permissionGuard.hasMicrophonePermission else {
+            Log.dictation.warning("⚠️ Missing mic permission — cannot record quick note")
+            if !hasPromptedForPermissions {
+                Task { @MainActor in await checkPermissions() }
+            }
+            return
+        }
+
+        quickNoteActive = true
+        audioBuffer = Data()
+        meetingDetector.suppressed = true
+        appState.recordingState = .listening
+        overlayPanel?.orderFront(nil)
+        quickNoteMenuItem?.title = "Finish Quick Note"
+
+        // Live elapsed indicator in the menu bar — skipped during a meeting,
+        // where the meeting timer owns the title (the overlay glow already
+        // shows the note is recording).
+        quickNoteStartTime = Date()
+        if !appState.isMeetingMode {
+            statusItem?.button?.title = " 📝 0:00"
+            quickNoteTimer = Timer.scheduledTimer(
+                timeInterval: 1, target: self, selector: #selector(updateQuickNoteTimer),
+                userInfo: nil, repeats: true)
+        }
+
+        audioCapture.onAudioBuffer = { [weak self] buffer in
+            guard let self else { return }
+            let rms = self.voiceActivityDetector.calculateRMS(from: buffer)
+            Task { @MainActor in self.appState.audioLevel = rms }
+            self.audioBuffer.append(buffer)
+        }
+        audioCapture.start()
+        Log.dictation.info("📝 Quick note recording")
+    }
+
+    @objc private func updateQuickNoteTimer() {
+        guard let start = quickNoteStartTime else { return }
+        let elapsed = Int(Date().timeIntervalSince(start))
+        statusItem?.button?.title = String(format: " 📝 %d:%02d", elapsed / 60, elapsed % 60)
+    }
+
+    /// Synchronous teardown of the recording phase: flag, timer, menu title.
+    /// Runs the moment capture stops — NOT deferred to the async save — so the
+    /// toggle can't re-enter finish, and a new note can't be torn down by a
+    /// stale deferred cleanup.
+    private func endQuickNoteRecording() {
+        quickNoteActive = false
+        quickNoteTimer?.invalidate()
+        quickNoteTimer = nil
+        quickNoteStartTime = nil
+        meetingDetector.suppressed = appState.isMeetingMode
+        statusItem?.button?.title = ""  // meeting timer (if any) repaints within 1s
+        quickNoteMenuItem?.title = "Quick Note"
+    }
+
+    private func hideOverlayUnlessMeeting() {
+        if !appState.isMeetingMode { overlayPanel?.orderOut(nil) }
+    }
+
+    private func cancelQuickNote() {
+        audioCapture.stop()
+        audioBuffer = Data()
+        endQuickNoteRecording()
+        appState.recordingState = .idle
+        hideOverlayUnlessMeeting()
+        Log.dictation.debug("📝 Quick note cancelled")
+    }
+
+    private func finishQuickNote() {
+        audioCapture.stop()
+        let captured = audioBuffer
+        audioBuffer = Data()
+        endQuickNoteRecording()
+
+        guard !captured.isEmpty else {
+            appState.recordingState = .idle
+            hideOverlayUnlessMeeting()
+            return
+        }
+        appState.recordingState = .processing
+
+        Task {
+            do {
+                let rawText = try await transcribeWithFallback(captured)
+                let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    await MainActor.run {
+                        appState.recordingState = .idle
+                        hideOverlayUnlessMeeting()
+                    }
+                    return
+                }
+                // Polish in a notes voice regardless of the frontmost app.
+                let context = AppContext(appName: "Quick Notes", bundleID: "quicknote", category: .notes)
+                let polished = (try? await textPolisher.polish(rawText: trimmed, appContext: context)) ?? trimmed
+
+                guard let fileURL = MeetingNotesWriter.appendQuickNote(polished) else {
+                    // The note must not vanish: park it on the clipboard and say so.
+                    await MainActor.run {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(polished, forType: .string)
+                        appState.recordingState = .error("Couldn't save quick note — copied to clipboard. Check the Quick Notes folder in Settings.")
+                    }
+                    try? await Task.sleep(for: .seconds(3))
+                    await MainActor.run {
+                        appState.recordingState = .idle
+                        hideOverlayUnlessMeeting()
+                    }
+                    return
+                }
+                if self.settings.quickNoteNotify {
+                    NotificationManager.shared.notifyQuickNoteSaved(preview: polished, fileURL: fileURL)
+                }
+                await MainActor.run { appState.recordingState = .done }
+                try? await Task.sleep(for: .milliseconds(500))
+                await MainActor.run {
+                    appState.recordingState = .idle
+                    hideOverlayUnlessMeeting()
+                }
+            } catch {
+                Log.dictation.error("❌ Quick note failed: \(error.localizedDescription)")
+                reportError("Quick note failed: \(error.localizedDescription)")
+                await MainActor.run { appState.recordingState = .error(error.localizedDescription) }
+                try? await Task.sleep(for: .seconds(2))
+                await MainActor.run {
+                    appState.recordingState = .idle
+                    hideOverlayUnlessMeeting()
+                }
+            }
         }
     }
 
@@ -469,16 +620,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return hasContent ? output.joined(separator: "\n\n") : nil
     }
 
-    /// Groq first; when the network is down and the fallback is enabled,
-    /// Apple's on-device recognition keeps transcription working.
+    /// The single transcription choke point for dictation, quick notes, and
+    /// meetings. Local-only mode goes straight to on-device recognition; other-
+    /// wise Groq first, falling back on-device when the network is down. The
+    /// result is passed through optional redaction before anyone sees it.
     private func transcribeWithFallback(_ audioData: Data) async throws -> String {
-        do {
-            return try await groqService.transcribe(audioData: audioData)
-        } catch let error as URLError {
-            guard settings.offlineFallback else { throw error }
-            Log.api.warning("⚠️ Groq unreachable (\(error.code.rawValue)) — falling back to on-device recognition")
-            return try await offlineTranscriber.transcribe(audioData: audioData)
+        let text: String
+        if settings.localOnlyMode {
+            text = try await offlineTranscriber.transcribe(audioData: audioData)
+        } else {
+            do {
+                text = try await groqService.transcribe(audioData: audioData)
+            } catch {
+                // Fall back on ANY Groq failure — network down, 5xx, rate
+                // limit, bad response — not just connectivity errors.
+                guard settings.offlineFallback else { throw error }
+                Log.api.warning("⚠️ Groq transcription failed (\(error.localizedDescription)) — falling back to on-device recognition")
+                text = try await offlineTranscriber.transcribe(audioData: audioData)
+            }
         }
+        return Redactor.redact(text)
     }
 
     /// After a meeting ends: append the AI summary (if enabled), then notify (if enabled).
@@ -493,12 +654,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             let wantsSummary = self.settings.summariesEnabled
             let wantsActions = self.settings.actionItemsEnabled
-            if wantsSummary || wantsActions,
+            // Local-only mode never contacts the network — no LLM summary/tags.
+            if !self.settings.localOnlyMode,
+               wantsSummary || wantsActions,
                let transcript = self.meetingNotes.transcriptText(of: fileURL),
                Self.dialogueLength(of: transcript) > 200 {  // measure actual speech, not header/markers
                 do {
                     let raw = try await self.textPolisher.summarize(
                         transcript: transcript,
+                        template: self.settings.selectedTemplate,
                         includeSummary: wantsSummary,
                         includeActionItems: wantsActions)
                     if let summary = Self.sanitizedSummary(raw) {
@@ -508,6 +672,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 } catch {
                     Log.meeting.error("❌ Summary failed: \(error.localizedDescription)")
+                    self.reportError("Meeting summary failed: \(error.localizedDescription)")
+                }
+
+                // Auto-tag topics into the front-matter (needs front-matter on).
+                if self.settings.autoTagging, self.settings.frontMatterEnabled {
+                    let tags = await self.textPolisher.extractTags(transcript: transcript)
+                    MeetingNotesWriter.addFrontMatterTags(tags, to: fileURL)
                 }
             }
 
@@ -554,7 +725,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         meetingNotes.appendMarker(paused ? "Transcription paused" : "Transcription resumed")
-        pauseMenuItem?.title = paused ? "Resume Transcription" : "Pause Transcription"
+        pauseMenuItem?.title = paused ? "Resume Meeting" : "Pause Meeting"
         appState.meetingCaption = paused ? "Paused" : "Listening to meeting…"
         appState.isSpeakerActive = false
         statusItem?.button?.image = NSImage(
@@ -566,6 +737,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - PTT Recording Flow
 
     private func startRecording() {
+        // A quick note owns the mic engine right now — finish/cancel it first.
+        guard !quickNoteActive else { return }
         guard permissionGuard.hasMicrophonePermission,
               permissionGuard.hasAccessibilityPermission else {
             Log.dictation.warning("⚠️ Missing permissions — cannot record")
@@ -576,7 +749,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         audioBuffer = Data()
+        streamTasks = []
         pttStartTime = Date()
+        meetingDetector.suppressed = true
         appState.recordingState = .listening
         overlayPanel?.orderFront(nil)
 
@@ -585,15 +760,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             timeInterval: 1, target: self, selector: #selector(updateDictationTimer),
             userInfo: nil, repeats: true)
 
+        let streaming = settings.streamingDictation
+        // Chunk length from settings: long enough for Whisper to have context,
+        // short enough that release-to-text feels instant on long dictations.
+        let chunkBytes = Int(16000 * 2 * max(3, settings.streamChunkSeconds))
         audioCapture.onAudioBuffer = { [weak self] buffer in
             guard let self else { return }
             let rms = self.voiceActivityDetector.calculateRMS(from: buffer)
             Task { @MainActor in self.appState.audioLevel = rms }
             self.audioBuffer.append(buffer)
+
+            // Streaming: transcribe in chunks while the key is still held,
+            // so a long dictation types almost immediately on release.
+            if streaming, self.audioBuffer.count >= chunkBytes {
+                let chunk = self.audioBuffer
+                self.audioBuffer = Data()
+                self.streamTasks.append(Task { [weak self] in
+                    try? await self?.transcribeWithFallback(chunk)
+                })
+            }
         }
 
         audioCapture.start()
     }
+
 
     @objc private func updateDictationTimer() {
         guard let start = pttStartTime else { return }
@@ -612,7 +802,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func cancelRecording() {
         guard appState.recordingState == .listening else { return }
         audioCapture.stop()
+        meetingDetector.suppressed = appState.isMeetingMode
         stopDictationTimer()
+        streamTasks.forEach { $0.cancel() }
+        streamTasks = []
         audioBuffer = Data()
         pttStartTime = nil
         appState.recordingState = .idle
@@ -621,12 +814,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func stopRecordingAndProcess() {
+        // PTT key-up fires even when key-down was refused (e.g. a quick note
+        // owns the engine) — don't hijack the quick note's capture.
+        guard !quickNoteActive else { return }
         audioCapture.stop()
+        meetingDetector.suppressed = appState.isMeetingMode
         stopDictationTimer()
         let dictationDuration = pttStartTime.map { Date().timeIntervalSince($0) } ?? 0
         pttStartTime = nil
 
-        guard !audioBuffer.isEmpty else {
+        let chunkTasks = streamTasks
+        streamTasks = []
+
+        guard !audioBuffer.isEmpty || !chunkTasks.isEmpty else {
             appState.recordingState = .idle
             if !appState.isMeetingMode { overlayPanel?.orderOut(nil) }
             return
@@ -638,7 +838,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         Task {
             do {
-                let rawText = try await transcribeWithFallback(capturedAudio)
+                // Streamed chunks were transcribed while the key was held —
+                // collect them in order, then transcribe only the tail.
+                var parts: [String] = []
+                for task in chunkTasks {
+                    if let piece = await task.value?
+                        .trimmingCharacters(in: .whitespacesAndNewlines), !piece.isEmpty {
+                        parts.append(piece)
+                    }
+                }
+                if !capturedAudio.isEmpty {
+                    let tail = try await transcribeWithFallback(capturedAudio)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !tail.isEmpty { parts.append(tail) }
+                }
+                let rawText = parts.joined(separator: " ")
                 guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     await MainActor.run {
                         appState.recordingState = .idle
@@ -671,6 +885,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             } catch {
                 Log.dictation.error("❌ Pipeline error: \(error)")
+                reportError("Dictation failed: \(error.localizedDescription)")
                 await MainActor.run { appState.recordingState = .error(error.localizedDescription) }
                 try? await Task.sleep(for: .seconds(2))
                 await MainActor.run {
@@ -681,18 +896,126 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // MARK: - Meeting Detection
+
+    /// A conferencing app started using the mic — offer to transcribe.
+    private func offerToStartMeeting(for appName: String) {
+        guard !appState.isMeetingMode else { return }
+
+        let browser = appName.hasPrefix("browser call")
+        confirmMeetingStart(
+            title: browser ? "Browser call detected" : "\(appName) call detected",
+            message: browser
+                ? "\(appName.replacingOccurrences(of: "browser call ", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "()"))) is using your microphone — likely Google Meet or another web call. Start Meeting Mode to transcribe it?"
+                : "Looks like a meeting is starting. Start Meeting Mode to transcribe it?",
+            confirmTitle: "Start Meeting Mode",
+            declineTitle: "Not Now",
+            onDecline: { [weak self] in self?.meetingDetector.snooze() })
+    }
+
+    /// One prompt is enough: while a start dialog is up, hotkeys and the
+    /// detector keep running (runModal services the main queue) — this flag
+    /// stops a second dialog from stacking and double-starting the meeting.
+    private var meetingStartPromptActive = false
+
+    /// The single start-meeting dialog: template picker + confirm/decline.
+    /// Both the manual (⌃⌥M / menu) and auto-detect paths run through here so
+    /// they can't drift apart.
+    private func confirmMeetingStart(title: String, message: String,
+                                     confirmTitle: String, declineTitle: String,
+                                     onDecline: (() -> Void)? = nil) {
+        guard !meetingStartPromptActive, !appState.isMeetingMode else { return }
+        meetingStartPromptActive = true
+
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: confirmTitle)
+        alert.addButton(withTitle: declineTitle)
+        alert.alertStyle = .informational
+
+        // Template picker inline — what kind of meeting shapes the summary.
+        let picker = Self.makeTemplatePicker(selectedID: settings.selectedTemplateID)
+        alert.accessoryView = picker
+
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            applyTemplateSelection(from: picker)
+            // Hold the prompt flag through the async start so a queued ⌃⌥M
+            // can't open a spurious second dialog before isMeetingMode flips.
+            Task { @MainActor in
+                await startMeetingMode()
+                meetingStartPromptActive = false
+            }
+        } else {
+            meetingStartPromptActive = false
+            onDecline?()
+        }
+    }
+
+    /// A framed popup of meeting templates (an accessory view without an
+    /// explicit frame renders but doesn't receive clicks in NSAlert).
+    private static func makeTemplatePicker(selectedID: String) -> NSPopUpButton {
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 26), pullsDown: false)
+        let templates = AppSettings.shared.allTemplates
+        for template in templates {
+            picker.addItem(withTitle: template.displayName)
+            picker.lastItem?.representedObject = template.id
+        }
+        if let index = templates.firstIndex(where: { $0.id == selectedID }) {
+            picker.selectItem(at: index)
+        }
+        return picker
+    }
+
+    private func applyTemplateSelection(from picker: NSPopUpButton) {
+        guard let id = picker.selectedItem?.representedObject as? String else { return }
+        settings.selectedTemplateID = id
+    }
+
+    /// The tracked call released the mic while Meeting Mode is still running —
+    /// offer to stop instead of transcribing an empty room.
+    private func offerToStopMeeting() {
+        guard appState.isMeetingMode else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Call ended"
+        alert.informativeText = "The call seems to be over, but Meeting Mode is still recording. Stop and finalize the notes?"
+        alert.addButton(withTitle: "Stop & Save Notes")
+        alert.addButton(withTitle: "Keep Recording")
+        alert.alertStyle = .informational
+
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            stopMeetingMode()
+        }
+    }
+
     // MARK: - Meeting Mode
 
     @objc private func toggleMeetingMode() {
         if appState.isMeetingMode {
             stopMeetingMode()
         } else {
-            Task { @MainActor in await startMeetingMode() }
+            promptTemplateAndStartMeeting()
         }
+    }
+
+    /// Manual start (menu or ⌃⌥M): confirm the meeting template first so the
+    /// summary matches the kind of meeting.
+    private func promptTemplateAndStartMeeting() {
+        confirmMeetingStart(
+            title: "Start Meeting Mode",
+            message: "What kind of meeting is this? The template shapes what the summary extracts.",
+            confirmTitle: "Start",
+            declineTitle: "Cancel")
     }
 
     @MainActor
     private func startMeetingMode() async {
+        // Re-entrancy guard: two confirm dialogs (or a dialog + hotkey) must
+        // never double-start the capture chain and leak timers.
+        guard !appState.isMeetingMode else { return }
         // Transcription needs the Groq key — fail fast with guidance instead of
         // silently producing an empty notes file.
         guard KeychainService.groqAPIKey() != nil else {
@@ -714,9 +1037,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appState.meetingCaption = "Listening to meeting…"
         appState.isSpeakerActive = false
         setTranscriptionPaused(false)
-        pauseMenuItem?.title = "Pause Transcription"
-        meetingModeMenuItem?.state = .on
+        pauseMenuItem?.title = "Pause Meeting"
+        meetingModeMenuItem?.title = "End Meeting"
         meetingStartTime = Date()
+        meetingDetector.suppressed = true
         meetingNotes.beginSession()
 
         // Reset the speaker profiles for the new session (safe to touch
@@ -749,6 +1073,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func startMeetingTimer() {
+        meetingTimer?.invalidate()
         meetingTimer = Timer.scheduledTimer(
             timeInterval: 1, target: self, selector: #selector(updateMeetingTimer),
             userInfo: nil, repeats: true)
@@ -768,6 +1093,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         micCapture.stop()
         systemAudioCapture.stop()
 
+        // Don't immediately re-prompt "start Meeting Mode?" for the very call
+        // the user just chose to stop transcribing.
+        meetingDetector.suppressed = false
+        meetingDetector.snooze()
+
         // Flush the tail speech still sitting in the buffers — the last words of
         // a meeting must be transcribed, not discarded. (flush* resets the state.)
         micMeetingQueue.sync { flushMicMeetingSegment() }
@@ -779,7 +1109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         setTranscriptionPaused(false)
         DispatchQueue.main.async { [weak self] in
-            self?.pauseMenuItem?.title = "Pause Transcription"
+            self?.pauseMenuItem?.title = "Pause Meeting"
         }
 
         if let start = meetingStartTime {
@@ -803,7 +1133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.appState.isMeetingMode = false
             self.appState.meetingCaption = ""
             self.appState.isSpeakerActive = false
-            self.meetingModeMenuItem?.state = .off
+            self.meetingModeMenuItem?.title = "Start Meeting"
             self.statusItem?.button?.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: "GhostWriter")
 
             if let panel = self.overlayPanel {
@@ -882,6 +1212,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func flushMicMeetingSegment() {
         let captured = micMeetingSpeechBuffer
+        // Stamp lines with when the speech was captured, not when the API
+        // returns — keeps interleaved You/Them lines in true order.
+        let capturedAt = micMeetingSegmentStart ?? Date()
         micMeetingSpeechBuffer = Data()
         micMeetingLastVoiceTime = nil
         micMeetingSegmentStart = nil
@@ -898,11 +1231,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard !trimmed.isEmpty,
                       !self.whisperHallucinations.contains(trimmed.lowercased()) else { return }
                 Log.meeting.debug("🎤 You: \(trimmed)")
-                self.meetingNotes.append(segment: trimmed, speaker: "You")
+                self.meetingNotes.append(segment: trimmed, speaker: "You", at: capturedAt)
             } catch {
                 Log.meeting.error("❌ Mic transcription error: \(error.localizedDescription)")
                 await MainActor.run { [weak self] in
-                    self?.enqueueFailedSegment(audio: captured, speaker: "You", capturedAt: Date())
+                    self?.enqueueFailedSegment(audio: captured, speaker: "You", capturedAt: capturedAt)
                 }
             }
         }
@@ -1055,6 +1388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func flushMeetingSegment() {
         // Must be called on meetingQueue
         let capturedAudio = meetingSpeechBuffer
+        let capturedAt = meetingSegmentStart ?? Date()
         meetingSpeechBuffer = Data()
         meetingLastVoiceTime = nil
         meetingSegmentStart = nil
@@ -1086,7 +1420,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
 
                 Log.meeting.debug("📡 Meeting transcript: \(trimmed)")
-                self.meetingNotes.append(segment: trimmed, speaker: speakerLabel)
+                self.meetingNotes.append(segment: trimmed, speaker: speakerLabel, at: capturedAt)
                 if self.settings.overlayMode == .captions {
                     await MainActor.run { [weak self] in
                         self?.appState.meetingCaption = trimmed
@@ -1095,7 +1429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 Log.meeting.error("❌ Meeting transcription error: \(error.localizedDescription)")
                 await MainActor.run { [weak self] in
-                    self?.enqueueFailedSegment(audio: capturedAudio, speaker: speakerLabel, capturedAt: Date())
+                    self?.enqueueFailedSegment(audio: capturedAudio, speaker: speakerLabel, capturedAt: capturedAt)
                 }
             }
         }
@@ -1141,11 +1475,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func openPermissions() {
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-        NSWorkspace.shared.open(url)
-    }
-
     /// Grey out "Pause Transcription" when no meeting is running.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem === pauseMenuItem { return appState.isMeetingMode }
@@ -1166,20 +1495,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "Main":
             let stats = UsageStats.shared
             let weekMeetings = stats.meetingsThisWeek(in: settings.notesFolder)
-            statsMenuItem?.title = "\(weekMeetings) meeting\(weekMeetings == 1 ? "" : "s") this week · \(stats.dictationCount) dictations"
+            var statsLine = "\(weekMeetings) meeting\(weekMeetings == 1 ? "" : "s") this week · \(stats.dictationCount) dictations"
+            // Surface the running cost estimate when there's been any spend.
+            if !settings.localOnlyMode, stats.estimatedCostUSD >= 0.01 {
+                statsLine += " · ~\(UsageStats.currency(stats.estimatedCostUSD))"
+            }
+            statsMenuItem?.title = statsLine
+            // Pause only makes sense mid-meeting — hide it otherwise.
+            pauseMenuItem?.isHidden = !appState.isMeetingMode
+            // Error banner — visible only when there's a recent failure.
+            if let message = appState.lastError {
+                errorMenuItem?.isHidden = false
+                errorMenuItem?.title = "\(message)  (click to dismiss)"
+            } else {
+                errorMenuItem?.isHidden = true
+            }
 
-        case "Meeting Notes":
+        case "Notes":
             menu.removeAllItems()
 
-            // Current (or latest) notes — same action as the ⌃⌥N hotkey
-            let openItem = NSMenuItem(title: appState.isMeetingMode ? "Open Current Notes" : "Open Latest Notes",
+            // Current (or latest) meeting notes — same action as ⌃⌥N —
+            // and today's quick notes, the two "get me to my notes" verbs.
+            let openItem = NSMenuItem(title: appState.isMeetingMode ? "Open Current Meeting Notes" : "Open Latest Meeting Notes",
                                       action: #selector(openNotes), keyEquivalent: "n")
             openItem.keyEquivalentModifierMask = [.control, .option]
             openItem.target = self
             menu.addItem(openItem)
+            // Title reflects what actually opens: today's file if it exists,
+            // otherwise the most recent quick-notes file, otherwise the folder.
+            let hasTodayQuickNotes = FileManager.default.fileExists(
+                atPath: MeetingNotesWriter.todaysQuickNotesURL().path)
+            let quickNotesTitle = hasTodayQuickNotes
+                ? "Open Today's Quick Notes"
+                : (MeetingNotesWriter.latestQuickNotesFile() != nil ? "Open Latest Quick Notes" : "Open Quick Notes Folder")
+            let quickNotesItem = NSMenuItem(title: quickNotesTitle, action: #selector(openTodaysQuickNotes), keyEquivalent: "")
+            quickNotesItem.target = self
+            menu.addItem(quickNotesItem)
             menu.addItem(NSMenuItem.separator())
 
-            let files = MeetingNotesWriter.allMeetingFiles(under: settings.notesFolder).prefix(10)
+            // Only the 5 most recent here — "Browse All Notes…" (below) opens
+            // the Notes Assistant for the full, searchable history.
+            let files = MeetingNotesWriter.allMeetingFiles(under: settings.notesFolder).prefix(5)
 
             if files.isEmpty {
                 let empty = NSMenuItem(title: "No meetings yet", action: nil, keyEquivalent: "")
@@ -1197,7 +1553,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     : stamp
                 if day != currentDay {
                     currentDay = day
-                    let header = NSMenuItem(title: day, action: nil, keyEquivalent: "")
+                    let header = NSMenuItem(title: DateDisplay.day(day), action: nil, keyEquivalent: "")
                     header.isEnabled = false
                     menu.addItem(header)
                 }
@@ -1207,7 +1563,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 item.representedObject = file
                 menu.addItem(item)
             }
+            let browseItem = NSMenuItem(title: "Browse All Notes…", action: #selector(showAllNotes), keyEquivalent: "")
+            browseItem.target = self
+            menu.addItem(browseItem)
             menu.addItem(NSMenuItem.separator())
+            let renameItem = NSMenuItem(title: "Rename Speakers…", action: #selector(showRenameSpeakers), keyEquivalent: "")
+            renameItem.target = self
+            menu.addItem(renameItem)
             let folderItem = NSMenuItem(title: "Open Notes Folder…", action: #selector(openNotesFolder), keyEquivalent: "")
             folderItem.target = self
             menu.addItem(folderItem)
@@ -1251,9 +1613,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictationHistory.removeAll()
     }
 
+    /// Open a meeting note in the in-app viewer/editor (which itself offers
+    /// "Open in Default App", "Reveal in Finder", and "Draft Follow-up").
     @objc private func openMeetingFile(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
-        NSWorkspace.shared.open(url)
+        NotesViewerWindowController.present(fileURL: url)
+    }
+
+
+    private var renameSpeakersWindowController: RenameSpeakersWindowController?
+
+    /// Rename Them / Them 2 to real names — per meeting. Opens with the live
+    /// meeting preselected when one is running; renames touch only the chosen
+    /// file, and live-session overrides apply only to the current meeting.
+    @objc private func showRenameSpeakers() {
+        presentRenameSpeakers(preselect: nil)
+    }
+
+    /// From the notes viewer: rename speakers with that note preselected.
+    @objc private func renameSpeakersForFile(_ note: Notification) {
+        presentRenameSpeakers(preselect: note.object as? URL)
+    }
+
+    private func presentRenameSpeakers(preselect: URL?) {
+        renameSpeakersWindowController = RenameSpeakersWindowController(
+            liveFile: meetingNotes.currentFilePath,
+            preselect: preselect,
+            onRename: { [weak self] old, new, file in
+                guard let self, self.meetingNotes.currentFilePath == file else { return }
+                self.meetingNotes.setNameOverride(new, replacing: old)
+            })
+        renameSpeakersWindowController?.showAndActivate()
+    }
+
+    /// Opens today's QuickNotes file, or the most recent one, or the folder.
+    @objc private func openTodaysQuickNotes() {
+        if let url = MeetingNotesWriter.latestQuickNotesFile() {
+            NSWorkspace.shared.open(url)
+        } else {
+            let folder = settings.quickNotesFolder
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(folder)
+        }
     }
 
     @objc private func openNotesFolder() {
@@ -1266,6 +1667,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let text = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    /// Surface a non-fatal error: remember it for the menu and post a
+    /// notification. Safe to call from any thread.
+    private func reportError(_ message: String) {
+        Log.app.error("❗️ \(message)")
+        DiagnosticsLog.shared.record(message)
+        Task { @MainActor in
+            self.appState.lastError = message
+            if self.settings.errorNotifications {
+                NotificationManager.shared.notifyError(message)
+            }
+        }
+    }
+
+    /// Clear the current surfaced error (from the menu).
+    @objc private func dismissLastError() {
+        appState.lastError = nil
     }
 
     private func showError(_ message: String) {
@@ -1294,6 +1713,8 @@ final class AppState {
     var isMeetingMode: Bool = false
     var isSpeakerActive: Bool = false
     var meetingCaption: String = ""
+    /// The most recent surfaced error, shown in the menu until dismissed.
+    var lastError: String?
 }
 
 // MARK: - Recording State

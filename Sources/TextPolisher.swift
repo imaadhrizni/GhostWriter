@@ -30,6 +30,8 @@ final class TextPolisher {
             // If no API key, return raw text (graceful degradation)
             return rawText
         }
+        // Local-only mode never contacts the network — skip polishing.
+        guard !AppSettings.shared.localOnlyMode else { return rawText }
 
         let systemPrompt = buildSystemPrompt(for: appContext)
         let userPrompt = """
@@ -66,14 +68,18 @@ final class TextPolisher {
         }
 
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        recordUsage(result)
         return result.choices.first?.message.content ?? rawText
     }
 
     // MARK: - Meeting Summaries
 
-    /// Summarize a meeting transcript. Sections are driven by settings:
-    /// TL;DR + Decisions when summaries are on, Action Items when enabled.
-    func summarize(transcript: String, includeSummary: Bool = true, includeActionItems: Bool = true) async throws -> String {
+    /// Summarize a meeting transcript. Sections come from the meeting
+    /// template; Action Items is appended when enabled.
+    func summarize(transcript: String,
+                   template: SummaryTemplate = .builtIn(.general),
+                   includeSummary: Bool = true,
+                   includeActionItems: Bool = true) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         guard includeSummary || includeActionItems else { throw GroqError.invalidResponse }
 
@@ -82,11 +88,10 @@ final class TextPolisher {
 
         var sections: [String] = []
         if includeSummary {
-            sections.append("## TL;DR — 2-3 sentences.")
-            sections.append("## Decisions — bullet list (omit section if none).")
+            sections.append(contentsOf: template.summarySections)
         }
         if includeActionItems {
-            sections.append("## Action Items — bullet list with owners when identifiable (omit section if none).")
+            sections.append("A section with the exact heading \"## Action Items\" containing a Markdown task list (\"- [ ] item\") with owners when identifiable (omit the section if none).")
         }
 
         let requestBody = ChatRequest(
@@ -119,6 +124,7 @@ final class TextPolisher {
             throw GroqError.invalidResponse
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        recordUsage(result)
         guard let content = result.choices.first?.message.content, !content.isEmpty else {
             throw GroqError.invalidResponse
         }
@@ -158,6 +164,7 @@ final class TextPolisher {
             throw GroqError.invalidResponse
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        recordUsage(result)
         guard let content = result.choices.first?.message.content, !content.isEmpty else {
             throw GroqError.invalidResponse
         }
@@ -200,6 +207,7 @@ final class TextPolisher {
               let http = response as? HTTPURLResponse, http.statusCode == 200,
               let result = try? JSONDecoder().decode(ChatResponse.self, from: data),
               let content = result.choices.first?.message.content else { return fallback }
+        recordUsage(result)
 
         let terms = content
             .components(separatedBy: CharacterSet(charactersIn: ",\n"))
@@ -242,6 +250,92 @@ final class TextPolisher {
             throw GroqError.invalidResponse
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        recordUsage(result)
+        guard let content = result.choices.first?.message.content, !content.isEmpty else {
+            throw GroqError.invalidResponse
+        }
+        return content
+    }
+
+    // MARK: - Usage
+
+    /// Record LLM token usage for the cost estimate in Stats.
+    private func recordUsage(_ result: ChatResponse) {
+        guard let u = result.usage else { return }
+        UsageStats.shared.recordChat(inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens)
+    }
+
+    // MARK: - Follow-up & Tags
+
+    /// Draft a follow-up message recapping a meeting, shaped by its template
+    /// (recipient, tone, and sections vary by meeting type). The notes may
+    /// already contain a summary and action items — the draft builds on them.
+    func draftFollowUp(transcript: String, template: SummaryTemplate = .builtIn(.general)) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(transcript.suffix(24_000))
+        let body = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                You draft a follow-up from a meeting's notes. Use ONLY what is in the
+                notes below — which may already include a summary and action items;
+                build on them and never contradict or invent facts.
+
+                \(template.followUpGuidance)
+
+                Keep it tight and skimmable. Attribute owners where identifiable.
+                If it's an email, start with a one-line subject. Output the follow-up
+                text only — no preamble or meta-commentary.
+                """),
+                .init(role: "user", content: "Notes:\n\n\(clipped)")
+            ],
+            temperature: 0.3,
+            max_tokens: 800
+        )
+        return try await send(body, timeout: 30)
+    }
+
+    /// Extract a few short topic tags (lowercase, hyphenated) for front-matter.
+    /// Best-effort: returns [] on any failure.
+    func extractTags(transcript: String) async -> [String] {
+        guard !apiKey.isEmpty else { return [] }
+        let clipped = String(transcript.suffix(16_000))
+        let body = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                Extract 3-6 short topic tags describing this meeting's subjects.
+                Output ONLY a comma-separated list of lowercase, hyphenated tags
+                (e.g. budget-review, hiring, q3-roadmap). No other text.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0,
+            max_tokens: 60
+        )
+        guard let content = try? await send(body, timeout: 15) else { return [] }
+        return content
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased()
+                     .replacingOccurrences(of: " ", with: "-") }
+            .filter { !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" } }
+    }
+
+    /// Shared chat request: sends, records usage, returns the message content.
+    private func send(_ body: ChatRequest, timeout: TimeInterval) async throws -> String {
+        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = timeout
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw GroqError.invalidResponse
+        }
+        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        recordUsage(result)
         guard let content = result.choices.first?.message.content, !content.isEmpty else {
             throw GroqError.invalidResponse
         }
@@ -252,53 +346,29 @@ final class TextPolisher {
 
     /// Build a system prompt tailored to the active application.
     private func buildSystemPrompt(for context: AppContext) -> String {
-        let basePrompt = """
+        var basePrompt = """
         You are a dictation polisher. Your job is to clean up speech-to-text output.
         Fix grammar, punctuation, capitalization. Remove filler words (um, uh, like).
         Maintain the speaker's intent and meaning exactly.
         """
 
-        // Per-app override from Settings wins over the automatic categorization.
-        let category = AppSettings.shared.appProfileOverrides[context.bundleID.lowercased()]
-            ?? context.category
+        let commandRules = AppSettings.shared.voiceCommandRules
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if AppSettings.shared.voiceCommandsEnabled, !commandRules.isEmpty {
+            basePrompt += """
 
-        let contextPrompt: String
-        switch category {
-        case .messaging:
-            contextPrompt = """
-            The user is typing in a messaging app (\(context.appName)).
-            Keep it casual and concise. Emojis are okay if the tone suggests them.
-            Don't over-formalize. Short sentences are fine.
-            """
-        case .email:
-            contextPrompt = """
-            The user is composing an email in \(context.appName).
-            Use professional tone. Proper paragraphs and punctuation.
-            No emojis unless explicitly dictated.
-            """
-        case .code:
-            contextPrompt = """
-            The user is in a code editor (\(context.appName)).
-            If the text sounds like a code comment, format it as a comment.
-            If it sounds like documentation, format it as documentation.
-            If it sounds like a commit message, format it concisely.
-            Otherwise, just clean it up as plain text.
-            """
-        case .browser:
-            contextPrompt = """
-            The user is typing in a web browser (\(context.appName)).
-            Clean, natural prose appropriate for web forms or messages.
-            """
-        case .notes:
-            contextPrompt = """
-            The user is in a notes/document app (\(context.appName)).
-            Clean paragraphs with proper formatting. Maintain a natural writing style.
-            """
-        case .general:
-            contextPrompt = """
-            Clean up the text with standard professional English.
+
+            Interpret spoken editing commands instead of transcribing them literally:
+            \(commandRules)
+            Only treat these as commands when clearly meant as commands, not as content \
+            (e.g. "the meeting ended on a question mark" stays as words).
             """
         }
+
+        // Resolve the writing style: per-app override → recognized app
+        // category → the user's global default style. Each style's instruction
+        // is user-editable in Settings.
+        let contextPrompt = AppSettings.shared.resolvedDictationStyle(for: context).instruction
 
         return basePrompt + "\n\n" + contextPrompt
     }
@@ -320,8 +390,14 @@ private struct ChatMessage: Codable {
 
 private struct ChatResponse: Codable {
     let choices: [Choice]
+    let usage: Usage?
 
     struct Choice: Codable {
         let message: ChatMessage
+    }
+
+    struct Usage: Codable {
+        let prompt_tokens: Int
+        let completion_tokens: Int
     }
 }

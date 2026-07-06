@@ -9,6 +9,8 @@ import AppKit
 //   Action Items — aggregated "## Action Items" sections from recent meetings
 
 final class NotesAssistantWindowController: NSWindowController {
+    let model = NotesAssistantModel()
+
     convenience init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 460),
@@ -21,7 +23,7 @@ final class NotesAssistantWindowController: NSWindowController {
         window.title = "Notes Assistant"
 
         self.init(window: window)
-        window.contentView = NSHostingView(rootView: NotesAssistantView())
+        window.contentView = NSHostingView(rootView: NotesAssistantView(model: model))
     }
 
     func showAndActivate() {
@@ -29,6 +31,17 @@ final class NotesAssistantWindowController: NSWindowController {
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
     }
+
+    /// Open straight to the browse-all-notes tab (from the menu).
+    func showAllNotes() {
+        model.mode = .browse
+        showAndActivate()
+    }
+}
+
+/// Holds the selected tab so the menu can open the window to a specific one.
+final class NotesAssistantModel: ObservableObject {
+    @Published var mode: AssistantMode = .search
 }
 
 // MARK: - Notes folder helpers
@@ -52,7 +65,7 @@ private enum NotesLibrary {
                 ? String(stamp.dropFirst(11)).replacingOccurrences(of: "-", with: ":")
                 : stamp
         }
-        var displayName: String { "\(day) · \(time)" }
+        var displayName: String { "\(DateDisplay.day(day)) · \(time)" }
     }
 
     /// Meetings grouped by day, newest day (and meeting) first.
@@ -85,7 +98,8 @@ private enum NotesLibrary {
     /// keystroke's search stops as soon as the next one starts.
     /// Capped at `maxFiles` recent meetings — with an unbounded archive,
     /// reading every file on each keystroke would freeze the window.
-    static func search(_ query: String, maxHits: Int = 60, maxFiles: Int = 200) async -> [SearchHit] {
+    static func search(_ query: String, maxHits: Int = 60,
+                       maxFiles: Int = AppSettings.shared.searchDepth) async -> [SearchHit] {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard trimmed.count >= 2 else { return [] }
 
@@ -114,7 +128,7 @@ private enum NotesLibrary {
 
     static func excerpts(matching terms: [String],
                          contextLines: Int = 2,
-                         maxFiles: Int = 200,
+                         maxFiles: Int = AppSettings.shared.searchDepth,
                          maxChars: Int = 20_000) -> ExcerptResult {
         let needles = terms.map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { $0.count >= 2 }
@@ -154,6 +168,34 @@ private enum NotesLibrary {
         let id = UUID()
         let file: MeetingFile
         let text: String
+        let done: Bool
+        /// The exact line in the file — used to toggle done state in place.
+        let rawLine: String
+    }
+
+    /// Flip an item's checkbox in its notes file. Line-based: finds the
+    /// item's exact line (ignoring indentation), rewrites just that line.
+    /// Returns false when the line is gone (file edited elsewhere).
+    @discardableResult
+    static func toggleDone(_ item: ActionItem) -> Bool {
+        guard let content = try? String(contentsOf: item.file.url, encoding: .utf8) else { return false }
+        var lines = content.components(separatedBy: "\n")
+        guard let idx = lines.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespaces) == item.rawLine
+        }) else { return false }
+
+        // Rebuild the line from clean parts (bullet + one checkbox + text) —
+        // idempotent, and repairs any earlier duplicated "[x] [x]" tokens.
+        let indent = lines[idx].prefix(while: { $0 == " " || $0 == "\t" })
+        let bullet = item.rawLine.hasPrefix("*") ? "*" : "-"
+        lines[idx] = "\(indent)\(bullet) [\(item.done ? " " : "x")] \(item.text)"
+        do {
+            try lines.joined(separator: "\n").write(to: item.file.url, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            Log.app.error("❌ Could not update action item: \(error.localizedDescription)")
+            return false
+        }
     }
 
     struct MeetingActionItems: Identifiable {
@@ -164,7 +206,8 @@ private enum NotesLibrary {
 
     /// Bullets under "## Action Items" headings, grouped per meeting,
     /// newest meetings first. Meetings without action items are skipped.
-    static func actionItemsByMeeting(fromLast meetings: Int = 10) -> [MeetingActionItems] {
+    static func actionItemsByMeeting(
+        fromLast meetings: Int = AppSettings.shared.actionItemsLookback) -> [MeetingActionItems] {
         var groups: [MeetingActionItems] = []
         for file in meetingFiles(limit: meetings) {
             guard let content = try? String(contentsOf: file.url, encoding: .utf8) else { continue }
@@ -176,8 +219,18 @@ private enum NotesLibrary {
                 if inSection {
                     if line.hasPrefix("#") { inSection = false; continue }
                     if line.hasPrefix("-") || line.hasPrefix("*") {
-                        let text = line.dropFirst().trimmingCharacters(in: .whitespaces)
-                        if !text.isEmpty { items.append(ActionItem(file: file, text: text)) }
+                        // "- [ ] item" / "* [x] item" checkboxes (either bullet),
+                        // or legacy plain "- item". Strip every leading checkbox
+                        // token so a previously duplicated "[x] [x]" self-heals.
+                        var text = line.dropFirst().trimmingCharacters(in: .whitespaces)
+                        var done = false
+                        while text.hasPrefix("[ ]") || text.lowercased().hasPrefix("[x]") {
+                            if text.lowercased().hasPrefix("[x]") { done = true }
+                            text = text.dropFirst(3).trimmingCharacters(in: .whitespaces)
+                        }
+                        if !text.isEmpty {
+                            items.append(ActionItem(file: file, text: text, done: done, rawLine: line))
+                        }
                     }
                 }
             }
@@ -189,17 +242,17 @@ private enum NotesLibrary {
 
 // MARK: - Root view
 
-private enum AssistantMode: String, CaseIterable, Identifiable {
-    case search = "Search", ask = "Ask", actions = "Action Items"
+enum AssistantMode: String, CaseIterable, Identifiable {
+    case browse = "All Notes", search = "Search", ask = "Ask", actions = "Action Items"
     var id: String { rawValue }
 }
 
 struct NotesAssistantView: View {
-    @State private var mode: AssistantMode = .search
+    @ObservedObject var model: NotesAssistantModel
 
     var body: some View {
         VStack(spacing: 12) {
-            Picker("", selection: $mode) {
+            Picker("", selection: $model.mode) {
                 ForEach(AssistantMode.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -207,13 +260,57 @@ struct NotesAssistantView: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
 
-            switch mode {
+            switch model.mode {
+            case .browse:  BrowseTab()
             case .search:  SearchTab()
             case .ask:     AskTab()
             case .actions: ActionItemsTab()
             }
         }
         .frame(minWidth: 560, minHeight: 420)
+    }
+}
+
+// MARK: - Browse (all notes)
+
+private struct BrowseTab: View {
+    @State private var groups: [(day: String, meetings: [NotesLibrary.MeetingFile])] = []
+
+    var body: some View {
+        Group {
+            if groups.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.largeTitle).foregroundColor(.secondary)
+                    Text("No meeting notes yet.").foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(groups, id: \.day) { group in
+                        Section(header: Text(DateDisplay.day(group.day))) {
+                            ForEach(group.meetings) { meeting in
+                                Button {
+                                    NotesViewerWindowController.present(fileURL: meeting.url)
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "doc.text")
+                                            .foregroundColor(.secondary)
+                                        Text(meeting.time)
+                                        Spacer()
+                                        Image(systemName: "arrow.up.forward.square")
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear { groups = NotesLibrary.meetingsByDay(limit: 500) }
     }
 }
 
@@ -277,7 +374,7 @@ private struct SearchTab: View {
                         Section {
                             ForEach(group.hits) { hit in
                                 Button {
-                                    NSWorkspace.shared.open(hit.file.url)
+                                    NotesViewerWindowController.present(fileURL: hit.file.url)
                                 } label: {
                                     Text(hit.line)
                                         .lineLimit(2)
@@ -288,7 +385,7 @@ private struct SearchTab: View {
                             }
                         } header: {
                             Button {
-                                NSWorkspace.shared.open(group.file.url)
+                                NotesViewerWindowController.present(fileURL: group.file.url)
                             } label: {
                                 HStack(spacing: 4) {
                                     Text(group.file.displayName)
@@ -330,7 +427,7 @@ private struct AskTab: View {
                     Text("All meetings").tag(Optional<NotesLibrary.MeetingFile>.none)
                     Divider()
                     ForEach(NotesLibrary.meetingsByDay(limit: 15), id: \.day) { group in
-                        Section(header: Text(group.day)) {
+                        Section(header: Text(DateDisplay.day(group.day))) {
                             ForEach(group.meetings) { meeting in
                                 Text(meeting.time).tag(Optional(meeting))
                             }
@@ -339,7 +436,7 @@ private struct AskTab: View {
                 }
                 .labelsHidden()
                 Button {
-                    if let url = selected?.url { NSWorkspace.shared.open(url) }
+                    if let url = selected?.url { NotesViewerWindowController.present(fileURL: url) }
                 } label: {
                     Image(systemName: "arrow.up.forward.square")
                 }
@@ -391,7 +488,7 @@ private struct AskTab: View {
                                 .foregroundColor(.secondary)
                             ForEach(sources) { source in
                                 Button {
-                                    NSWorkspace.shared.open(source.url)
+                                    NotesViewerWindowController.present(fileURL: source.url)
                                 } label: {
                                     HStack(spacing: 4) {
                                         Image(systemName: "doc.text")
@@ -468,7 +565,7 @@ private struct ActionItemsTab: View {
             if groups.isEmpty {
                 VStack {
                     Spacer()
-                    Text("No action items found in the last 10 meetings.")
+                    Text("No action items found in the last \(AppSettings.shared.actionItemsLookback) meetings.")
                         .foregroundColor(.secondary)
                     Text("Action items are collected from the AI summary appended when a meeting ends.")
                         .font(.caption)
@@ -480,17 +577,25 @@ private struct ActionItemsTab: View {
                     ForEach(groups) { group in
                         Section {
                             ForEach(group.items) { item in
-                                HStack(alignment: .top, spacing: 8) {
-                                    Image(systemName: "checkmark.circle")
-                                        .foregroundColor(.accentColor)
-                                    Text(item.text)
-                                        .textSelection(.enabled)
+                                Button {
+                                    toggle(item)
+                                } label: {
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Image(systemName: item.done ? "checkmark.circle.fill" : "circle")
+                                            .foregroundColor(item.done ? .secondary : .accentColor)
+                                        Text(item.text)
+                                            .strikethrough(item.done)
+                                            .foregroundColor(item.done ? .secondary : .primary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .buttonStyle(.plain)
+                                .help(item.done ? "Click to mark as open" : "Click to mark as done")
                             }
                         } header: {
                             Button {
-                                NSWorkspace.shared.open(group.file.url)
+                                NotesViewerWindowController.present(fileURL: group.file.url)
                             } label: {
                                 HStack(spacing: 4) {
                                     Text(group.file.displayName)
@@ -509,5 +614,11 @@ private struct ActionItemsTab: View {
             }
         }
         .onAppear { groups = NotesLibrary.actionItemsByMeeting() }
+    }
+
+    /// Flip the checkbox in the file, then reload so the UI matches the file.
+    private func toggle(_ item: NotesLibrary.ActionItem) {
+        NotesLibrary.toggleDone(item)
+        groups = NotesLibrary.actionItemsByMeeting()
     }
 }

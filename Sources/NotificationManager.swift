@@ -44,14 +44,39 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     /// "Meeting notes saved" — clicking opens the file.
     func notifyMeetingSaved(duration: String, fileURL: URL) {
+        post(title: "Meeting notes saved",
+             body: "Duration \(duration) — click to open.",
+             fileURL: fileURL,
+             sound: .default)
+    }
+
+    /// "Quick note saved" — clicking opens today's QuickNotes file.
+    /// Silent by design: quick notes are frequent and low-stakes.
+    func notifyQuickNoteSaved(preview: String, fileURL: URL) {
+        let clipped = preview.count > 80 ? String(preview.prefix(80)) + "…" : preview
+        let folder = fileURL.deletingLastPathComponent().path.abbreviatingHome()
+        post(title: "Quick note saved",
+             body: "\(clipped)\n\(folder)",
+             fileURL: fileURL,
+             sound: nil)
+    }
+
+    /// "Something went wrong" — no click payload; also surfaced in the menu.
+    func notifyError(_ message: String) {
+        let clipped = message.count > 160 ? String(message.prefix(160)) + "…" : message
+        post(title: "GhostWriter error", body: clipped, fileURL: nil, sound: .default)
+    }
+
+    /// Shared plumbing: authorization, content, optional click-to-open payload.
+    private func post(title: String, body: String, fileURL: URL?, sound: UNNotificationSound?) {
         Task {
             guard await ensureAuthorization() else { return }
 
             let content = UNMutableNotificationContent()
-            content.title = "Meeting notes saved"
-            content.body = "Duration \(duration) — click to open."
-            content.sound = .default
-            content.userInfo = ["notesPath": fileURL.path]
+            content.title = title
+            content.body = body
+            content.sound = sound
+            if let fileURL { content.userInfo = ["notesPath": fileURL.path] }
 
             let request = UNNotificationRequest(
                 identifier: UUID().uuidString,

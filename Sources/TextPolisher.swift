@@ -273,47 +273,10 @@ final class TextPolisher {
             """
         }
 
-        // Per-app override from Settings wins over the automatic categorization.
-        let category = AppSettings.shared.appProfileOverrides[context.bundleID.lowercased()]
-            ?? context.category
-
-        let contextPrompt: String
-        switch category {
-        case .messaging:
-            contextPrompt = """
-            The user is typing in a messaging app (\(context.appName)).
-            Keep it casual and concise. Emojis are okay if the tone suggests them.
-            Don't over-formalize. Short sentences are fine.
-            """
-        case .email:
-            contextPrompt = """
-            The user is composing an email in \(context.appName).
-            Use professional tone. Proper paragraphs and punctuation.
-            No emojis unless explicitly dictated.
-            """
-        case .code:
-            contextPrompt = """
-            The user is in a code editor (\(context.appName)).
-            If the text sounds like a code comment, format it as a comment.
-            If it sounds like documentation, format it as documentation.
-            If it sounds like a commit message, format it concisely.
-            Otherwise, just clean it up as plain text.
-            """
-        case .browser:
-            contextPrompt = """
-            The user is typing in a web browser (\(context.appName)).
-            Clean, natural prose appropriate for web forms or messages.
-            """
-        case .notes:
-            contextPrompt = """
-            The user is in a notes/document app (\(context.appName)).
-            Clean paragraphs with proper formatting. Maintain a natural writing style.
-            """
-        case .general:
-            contextPrompt = """
-            Clean up the text with standard professional English.
-            """
-        }
+        // Resolve the writing style: per-app override → recognized app
+        // category → the user's global default style. Each style's instruction
+        // is user-editable in Settings.
+        let contextPrompt = AppSettings.shared.resolvedDictationStyle(for: context).instruction
 
         return basePrompt + "\n\n" + contextPrompt
     }

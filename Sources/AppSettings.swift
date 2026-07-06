@@ -58,6 +58,9 @@ final class AppSettings: ObservableObject {
         static let meetingTemplate        = "meeting.template"
         static let customTemplateSections = "meeting.customTemplateSections"
         static let userTemplates          = "meeting.userTemplates"
+        static let dictationStyleOverrides = "dictation.styleOverrides"
+        static let userDictationStyles     = "dictation.userStyles"
+        static let defaultDictationStyle   = "dictation.defaultStyle"
         static let quickNotesFolderPath   = "quicknotes.folderPath"
         static let quickNoteNotify        = "quicknotes.notifyOnSave"
 
@@ -77,6 +80,7 @@ final class AppSettings: ObservableObject {
                           streamChunkSeconds, maxSpeakers,
                           actionItemsLookback, searchDepth, meetingTemplate,
                           customTemplateSections, userTemplates,
+                          dictationStyleOverrides, userDictationStyles, defaultDictationStyle,
                           quickNotesFolderPath, quickNoteNotify]
     }
 
@@ -504,6 +508,124 @@ final class AppSettings: ObservableObject {
         userTemplates = userTemplates.filter { $0.id != id }
     }
 
+    // MARK: - Dictation Writing Styles
+
+    /// Every dictation style — the six built-in categories (with any
+    /// instruction overrides applied) followed by the user's own.
+    var allDictationStyles: [DictationStyle] {
+        AppCategory.allCases.map { .builtIn($0) } + userDictationStyles.map { .user($0) }
+    }
+
+    /// Resolve a style by id.
+    func dictationStyle(withID id: String) -> DictationStyle? {
+        allDictationStyles.first { $0.id == id }
+    }
+
+    /// The global default style used when the app being dictated into isn't
+    /// auto-recognized and has no per-app override. Persists by id (a category
+    /// rawValue or "user:UUID"); self-heals to General if the id is gone.
+    var defaultDictationStyleID: String {
+        get {
+            let stored = defaults.string(forKey: Key.defaultDictationStyle) ?? AppCategory.general.rawValue
+            return allDictationStyles.contains(where: { $0.id == stored }) ? stored : AppCategory.general.rawValue
+        }
+        set { set(newValue, Key.defaultDictationStyle) }
+    }
+
+    var defaultDictationStyle: DictationStyle {
+        dictationStyle(withID: defaultDictationStyleID) ?? .builtIn(.general)
+    }
+
+    /// Choose the style for a given dictation context. Per-app override wins;
+    /// then a recognized (non-general) app category; otherwise the global
+    /// default style (which may be a custom style).
+    func resolvedDictationStyle(for context: AppContext) -> DictationStyle {
+        if let category = appProfileOverrides[context.bundleID.lowercased()] {
+            return .builtIn(category)
+        }
+        if context.category != .general {
+            return .builtIn(context.category)
+        }
+        return defaultDictationStyle
+    }
+
+    // MARK: Built-in style overrides
+
+    /// Per-built-in-style instruction overrides, keyed by category rawValue.
+    private var styleOverrides: [String: String] {
+        get {
+            guard let data = defaults.data(forKey: Key.dictationStyleOverrides),
+                  let dict = try? JSONDecoder().decode([String: String].self, from: data)
+            else { return [:] }
+            return dict
+        }
+        set {
+            let data = try? JSONEncoder().encode(newValue)
+            set(data as Any, Key.dictationStyleOverrides)
+        }
+    }
+
+    /// The user's custom instruction for a built-in style, or nil if unset.
+    func dictationStyleOverride(for category: AppCategory) -> String? {
+        styleOverrides[category.rawValue]
+    }
+
+    /// Save a custom instruction for a built-in style. Empty text (or text
+    /// equal to the default) clears the override.
+    func setDictationStyleOverride(_ text: String, for category: AppCategory) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var dict = styleOverrides
+        if trimmed.isEmpty || trimmed == category.defaultInstruction {
+            dict[category.rawValue] = nil
+        } else {
+            dict[category.rawValue] = text
+        }
+        styleOverrides = dict
+    }
+
+    // MARK: User styles
+
+    /// The user's own dictation styles, persisted as JSON in creation order.
+    private(set) var userDictationStyles: [UserStyle] {
+        get {
+            guard let data = defaults.data(forKey: Key.userDictationStyles),
+                  let list = try? JSONDecoder().decode([UserStyle].self, from: data)
+            else { return [] }
+            return list
+        }
+        set {
+            let data = try? JSONEncoder().encode(newValue)
+            set(data as Any, Key.userDictationStyles)
+        }
+    }
+
+    @discardableResult
+    func addUserDictationStyle(name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        let style = UserStyle(
+            id: "user:\(UUID().uuidString)",
+            name: trimmed.isEmpty ? "Untitled" : trimmed,
+            instruction: "Clean up the text in a clear, natural style."
+        )
+        userDictationStyles.append(style)
+        return style.id
+    }
+
+    func updateUserDictationStyle(id: String, name: String? = nil, instruction: String? = nil) {
+        var list = userDictationStyles
+        guard let i = list.firstIndex(where: { $0.id == id }) else { return }
+        if let name = name {
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            list[i].name = trimmed.isEmpty ? "Untitled" : trimmed
+        }
+        if let instruction = instruction { list[i].instruction = instruction }
+        userDictationStyles = list
+    }
+
+    func deleteUserDictationStyle(id: String) {
+        userDictationStyles = userDictationStyles.filter { $0.id != id }
+    }
+
     // MARK: - Transcription Quality
 
     /// Fall back to Apple's on-device speech recognition when Groq is unreachable.
@@ -797,6 +919,51 @@ enum SummaryTemplate: Identifiable, Hashable {
         switch self {
         case .builtIn(let t): return t.summarySections
         case .user(let t):    return MeetingTemplate.parseSections(t.sections)
+        }
+    }
+}
+
+// MARK: - Dictation Styles
+
+/// A user-created dictation writing style: a name plus its free-text
+/// instruction. Persisted as JSON in AppSettings.
+struct UserStyle: Codable, Identifiable, Hashable {
+    var id: String        // "user:UUID"
+    var name: String
+    var instruction: String
+}
+
+/// A resolved dictation style — a built-in app category or a user style —
+/// consumed uniformly by the polisher and the style editor.
+enum DictationStyle: Identifiable, Hashable {
+    case builtIn(AppCategory)
+    case user(UserStyle)
+
+    var id: String {
+        switch self {
+        case .builtIn(let c): return c.rawValue
+        case .user(let s):    return s.id
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .builtIn(let c): return c.displayName
+        case .user(let s):    return s.name
+        }
+    }
+
+    var isBuiltIn: Bool {
+        if case .builtIn = self { return true }
+        return false
+    }
+
+    /// The writing-style instruction appended to the base polishing prompt —
+    /// a built-in's override or default, or the user style's own text.
+    var instruction: String {
+        switch self {
+        case .builtIn(let c): return AppSettings.shared.dictationStyleOverride(for: c) ?? c.defaultInstruction
+        case .user(let s):    return s.instruction
         }
     }
 }

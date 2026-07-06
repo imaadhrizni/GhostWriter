@@ -383,17 +383,161 @@ private struct DictationPane: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
+            SettingsGroup("Writing Styles") {
+                DictationStyleManager()
+            }
+
             SettingsGroup("Per-App Style Overrides") {
                 TextEditor(text: $settings.appProfiles)
                     .font(.system(.body, design: .monospaced))
                     .frame(height: 54)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
-                Text("Force a polishing style per app, one per line: bundle.id: style — styles: messaging, email, code, browser, notes, general (e.g. com.tinyspeck.slackmacgap: casual → use messaging).")
+                Text("Force a built-in style per app, one per line: bundle.id: style — styles: messaging, email, code, browser, notes, general (e.g. com.tinyspeck.slackmacgap: messaging). Custom styles apply via the default above.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }
     }
 
+}
+
+/// Manages dictation writing styles: pick one to edit, set the global default
+/// for unrecognized apps, add/rename/delete custom styles, and edit the
+/// instruction text of whichever is selected. Built-in styles (one per app
+/// category) are editable and resettable; custom styles are fully yours.
+private struct DictationStyleManager: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var selectedID: String = AppSettings.shared.defaultDictationStyleID
+    @State private var confirmingDelete = false
+
+    private var selected: DictationStyle {
+        settings.dictationStyle(withID: selectedID) ?? .builtIn(.general)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Style")
+                Spacer()
+                Picker("", selection: $selectedID) {
+                    ForEach(settings.allDictationStyles) { style in
+                        Text(style.displayName).tag(style.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 160)
+                Button {
+                    selectedID = settings.addUserDictationStyle(name: "New Style")
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .help("Add a new style")
+                if !selected.isBuiltIn {
+                    Button(role: .destructive) {
+                        confirmingDelete = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .help("Delete this style")
+                }
+            }
+            Text("Recognized apps (mail, chat, code editors, browsers, notes) auto-pick their matching style. Edit any style's instructions below, or add your own.")
+                .font(.caption).foregroundColor(.secondary)
+
+            if settings.defaultDictationStyleID == selectedID {
+                Label("Default for unrecognized apps", systemImage: "checkmark.circle.fill")
+                    .font(.caption).foregroundColor(.secondary)
+            } else {
+                Button("Set as default for unrecognized apps") {
+                    settings.defaultDictationStyleID = selectedID
+                }
+                .font(.caption)
+            }
+
+            if !selected.isBuiltIn {
+                DictationStyleNameField(id: selected.id, name: selected.displayName)
+            }
+
+            DictationStyleEditor(style: selected)
+        }
+        .alert("Delete “\(selected.displayName)”?", isPresented: $confirmingDelete) {
+            Button("Delete", role: .destructive) {
+                settings.deleteUserDictationStyle(id: selected.id)
+                selectedID = settings.defaultDictationStyleID
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This style will be removed. Any default pointing to it falls back to General.")
+        }
+    }
+}
+
+/// Rename field for a user dictation style, committing on change.
+private struct DictationStyleNameField: View {
+    let id: String
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var name: String
+
+    init(id: String, name: String) {
+        self.id = id
+        _name = State(initialValue: name)
+    }
+
+    var body: some View {
+        HStack {
+            Text("Name")
+            TextField("Style name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: name) { _, newValue in
+                    settings.updateUserDictationStyle(id: id, name: newValue)
+                }
+        }
+        .onChange(of: id) { _, _ in name = settings.dictationStyle(withID: id)?.displayName ?? "" }
+    }
+}
+
+/// Editor for the instruction text of the selected dictation style. Built-in
+/// overrides can be reset to defaults; user styles just save their text.
+private struct DictationStyleEditor: View {
+    let style: DictationStyle
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var text: String = ""
+
+    private var isBuiltInDefault: Bool {
+        if case .builtIn(let c) = style {
+            return settings.dictationStyleOverride(for: c) == nil
+        }
+        return true
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Instructions — how the model should clean up and format this text.")
+                    .font(.caption).foregroundColor(.secondary)
+                Spacer()
+                if case .builtIn(let c) = style {
+                    DefaultResetButton(isDefault: isBuiltInDefault) {
+                        settings.setDictationStyleOverride("", for: c)
+                        text = c.defaultInstruction
+                    }
+                }
+            }
+            TextEditor(text: $text)
+                .font(.system(.caption, design: .monospaced))
+                .frame(height: 90)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                .onChange(of: text) { _, newValue in save(newValue) }
+        }
+        .onAppear { text = style.instruction }
+        .onChange(of: style.id) { _, _ in text = style.instruction }
+    }
+
+    private func save(_ newValue: String) {
+        switch style {
+        case .builtIn(let c): settings.setDictationStyleOverride(newValue, for: c)
+        case .user(let s):    settings.updateUserDictationStyle(id: s.id, instruction: newValue)
+        }
+    }
 }
 
 // MARK: - Quick Notes

@@ -130,11 +130,64 @@ struct AppContext {
 
 // MARK: - App Category
 
-enum AppCategory: String {
+enum AppCategory: String, CaseIterable, Identifiable {
     case messaging  // Slack, Discord, Messages
     case email      // Mail, Outlook
     case code       // VS Code, Cursor, Xcode
     case browser    // Safari, Chrome
     case notes      // Notes, Notion, Obsidian
     case general    // Everything else
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .messaging: return "Messaging"
+        case .email:     return "Email"
+        case .code:      return "Code"
+        case .browser:   return "Browser"
+        case .notes:     return "Notes"
+        case .general:   return "General"
+        }
+    }
+
+    /// The built-in writing-style instruction for this category — the tone and
+    /// formatting guidance appended to the base polishing prompt. Editable and
+    /// resettable in Settings.
+    var defaultInstruction: String {
+        switch self {
+        case .messaging:
+            return """
+            The user is typing in a messaging app.
+            Keep it casual and concise. Emojis are okay if the tone suggests them.
+            Don't over-formalize. Short sentences are fine.
+            """
+        case .email:
+            return """
+            The user is composing an email.
+            Use professional tone. Proper paragraphs and punctuation.
+            No emojis unless explicitly dictated.
+            """
+        case .code:
+            return """
+            The user is in a code editor.
+            If the text sounds like a code comment, format it as a comment.
+            If it sounds like documentation, format it as documentation.
+            If it sounds like a commit message, format it concisely.
+            Otherwise, just clean it up as plain text.
+            """
+        case .browser:
+            return """
+            The user is typing in a web browser.
+            Clean, natural prose appropriate for web forms or messages.
+            """
+        case .notes:
+            return """
+            The user is in a notes/document app.
+            Clean paragraphs with proper formatting. Maintain a natural writing style.
+            """
+        case .general:
+            return "Clean up the text with standard professional English."
+        }
+    }
 }

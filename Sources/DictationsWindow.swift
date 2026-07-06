@@ -38,6 +38,13 @@ private struct DictationItem: Identifiable, Hashable {
     let app: String
     let style: String
     let preview: String
+    let seconds: Int
+
+    /// Compact duration: "12s" under a minute, "1:23" above.
+    var durationText: String {
+        guard seconds > 0 else { return "" }
+        return seconds < 60 ? "\(seconds)s" : String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
 
     private var stamp: String {
         url.deletingPathExtension().lastPathComponent
@@ -48,7 +55,7 @@ private struct DictationItem: Identifiable, Hashable {
         stamp.count > 11 ? String(stamp.dropFirst(11)).replacingOccurrences(of: "-", with: ":") : stamp
     }
 
-    /// Parse a dictation file: front-matter `app:`/`style:` and a body preview.
+    /// Parse a dictation file: front-matter `app:`/`style:`/`duration:` and a body preview.
     init(url: URL) {
         self.url = url
         let content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
@@ -64,6 +71,7 @@ private struct DictationItem: Identifiable, Hashable {
         }
 
         var app = "", style = "", body: [String] = []
+        var secs = 0
         var inFrontMatter = false
         for (i, line) in content.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             if i == 0, line == "---" { inFrontMatter = true; continue }
@@ -71,6 +79,12 @@ private struct DictationItem: Identifiable, Hashable {
                 if line == "---" { inFrontMatter = false; continue }
                 if line.hasPrefix("app:") { app = unquote(String(line.dropFirst(4))) }
                 if line.hasPrefix("style:") { style = unquote(String(line.dropFirst(6))) }
+                if line.hasPrefix("duration:") {
+                    // stored as "duration: 12s"
+                    let v = String(line.dropFirst(9)).trimmingCharacters(in: .whitespaces)
+                        .replacingOccurrences(of: "s", with: "")
+                    secs = Int(v) ?? 0
+                }
             } else {
                 // Everything outside the front-matter block is body content —
                 // works whether or not the file has front-matter.
@@ -81,6 +95,7 @@ private struct DictationItem: Identifiable, Hashable {
         self.app = app
         self.style = style
         self.preview = body.joined(separator: " ")
+        self.seconds = secs
     }
 
     static func loadAll(limit: Int = 500) -> [DictationItem] {
@@ -144,27 +159,34 @@ private struct DictationsView: View {
                 List {
                     ForEach(groups, id: \.day) { group in
                         Section(header: Text(DateDisplay.day(group.day))) {
+                            HStack {
+                                Text("App").frame(maxWidth: .infinity, alignment: .leading)
+                                Text("Style").frame(width: 110, alignment: .leading)
+                                Text("Duration").frame(width: 64, alignment: .trailing)
+                                Spacer().frame(width: 22)
+                            }
+                            .font(.caption2.bold()).foregroundColor(.secondary)
                             ForEach(group.items) { item in
                                 Button {
                                     NotesViewerWindowController.present(fileURL: item.url)
                                 } label: {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack {
-                                            Text(item.time).monospacedDigit()
-                                            if !item.app.isEmpty {
-                                                Text("· \(item.app)").foregroundColor(.secondary)
-                                            }
-                                            if !item.style.isEmpty {
-                                                Text("· \(item.style)").foregroundColor(.secondary)
-                                            }
-                                            Spacer()
-                                            Image(systemName: "arrow.up.forward.square").foregroundColor(.secondary)
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(item.app.isEmpty ? "—" : item.app).lineLimit(1)
+                                            Text(item.time)
+                                                .font(.caption2).foregroundColor(.secondary).monospacedDigit()
                                         }
-                                        .font(.caption)
-                                        if !item.preview.isEmpty {
-                                            Text(item.preview).lineLimit(2).font(.callout)
-                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        Text(item.style)
+                                            .frame(width: 110, alignment: .leading)
+                                            .foregroundColor(.secondary).lineLimit(1)
+                                        Text(item.durationText)
+                                            .frame(width: 64, alignment: .trailing)
+                                            .monospacedDigit().foregroundColor(.secondary)
+                                        Image(systemName: "arrow.up.forward.square")
+                                            .foregroundColor(.secondary).frame(width: 22)
                                     }
+                                    .font(.callout)
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)

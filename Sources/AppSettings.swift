@@ -57,6 +57,7 @@ final class AppSettings: ObservableObject {
         static let searchDepth            = "assistant.searchDepth"
         static let meetingTemplate        = "meeting.template"
         static let customTemplateSections = "meeting.customTemplateSections"
+        static let customTemplateFollowUp = "meeting.customTemplateFollowUp"
         static let userTemplates          = "meeting.userTemplates"
         static let dictationStyleOverrides = "dictation.styleOverrides"
         static let userDictationStyles     = "dictation.userStyles"
@@ -95,7 +96,7 @@ final class AppSettings: ObservableObject {
                           voiceCommandsEnabled, voiceCommandRules, streamingDictation,
                           streamChunkSeconds, maxSpeakers,
                           actionItemsLookback, searchDepth, meetingTemplate,
-                          customTemplateSections, userTemplates,
+                          customTemplateSections, customTemplateFollowUp, userTemplates,
                           dictationStyleOverrides, userDictationStyles, defaultDictationStyle,
                           quickNotesFolderPath, quickNoteNotify,
                           localOnlyMode, redactionEnabled, redactEmails, redactPhones, redactNumbers,
@@ -545,6 +546,40 @@ final class AppSettings: ObservableObject {
         templateOverrides = dict
     }
 
+    /// Per-built-in-template follow-up guidance overrides, keyed by rawValue.
+    /// Absent → the template uses its built-in follow-up guidance.
+    private var templateFollowUpOverrides: [String: String] {
+        get {
+            guard let data = defaults.data(forKey: Key.customTemplateFollowUp),
+                  let dict = try? JSONDecoder().decode([String: String].self, from: data)
+            else { return [:] }
+            return dict
+        }
+        set {
+            let data = try? JSONEncoder().encode(newValue)
+            set(data as Any, Key.customTemplateFollowUp)
+        }
+    }
+
+    /// The user's custom follow-up guidance for a built-in template, or nil if
+    /// none saved (meaning: use the built-in default).
+    func customTemplateFollowUp(for template: MeetingTemplate) -> String? {
+        templateFollowUpOverrides[template.rawValue]
+    }
+
+    /// Save custom follow-up guidance for a built-in template. Passing text
+    /// equal to the default (or empty) clears the override.
+    func setCustomTemplateFollowUp(_ text: String, for template: MeetingTemplate) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var dict = templateFollowUpOverrides
+        if trimmed.isEmpty || trimmed == template.followUpGuidance {
+            dict[template.rawValue] = nil
+        } else {
+            dict[template.rawValue] = text
+        }
+        templateFollowUpOverrides = dict
+    }
+
     // MARK: User templates
 
     /// The user's own templates, persisted as JSON in creation order.
@@ -575,7 +610,7 @@ final class AppSettings: ObservableObject {
     }
 
     /// Update a user template's name and/or sections.
-    func updateUserTemplate(id: String, name: String? = nil, sections: String? = nil) {
+    func updateUserTemplate(id: String, name: String? = nil, sections: String? = nil, followUp: String? = nil) {
         var list = userTemplates
         guard let i = list.firstIndex(where: { $0.id == id }) else { return }
         if let name = name {
@@ -583,6 +618,7 @@ final class AppSettings: ObservableObject {
             list[i].name = trimmed.isEmpty ? "Untitled" : trimmed
         }
         if let sections = sections { list[i].sections = sections }
+        if let followUp = followUp { list[i].followUp = followUp }
         userTemplates = list
     }
 
@@ -1109,6 +1145,9 @@ struct UserTemplate: Codable, Identifiable, Hashable {
     var id: String        // "user:UUID"
     var name: String
     var sections: String
+    /// Optional custom follow-up guidance; empty → a generic default is used.
+    /// Defaulted so JSON saved before this field existed still decodes.
+    var followUp: String = ""
 }
 
 /// A resolved template — built-in or user-defined — that the pickers, the
@@ -1153,12 +1192,27 @@ enum SummaryTemplate: Identifiable, Hashable {
         }
     }
 
-    /// How a follow-up for this meeting type should be shaped.
+    /// Generic follow-up guidance for a user template with no custom text.
+    static func genericFollowUp(name: String) -> String {
+        "Write a concise follow-up appropriate to a \(name) meeting, building on the notes: key outcomes and clear next steps with owners."
+    }
+
+    /// How a follow-up for this meeting type should be shaped — the resolved
+    /// guidance fed to the drafter (custom override, then built-in/generic default).
     var followUpGuidance: String {
         switch self {
-        case .builtIn(let t): return t.followUpGuidance
+        case .builtIn(let t): return AppSettings.shared.customTemplateFollowUp(for: t) ?? t.followUpGuidance
         case .user(let t):
-            return "Write a concise follow-up appropriate to a \(t.name) meeting, building on the notes: key outcomes and clear next steps with owners."
+            return t.followUp.isEmpty ? Self.genericFollowUp(name: t.name) : t.followUp
+        }
+    }
+
+    /// The editable follow-up text shown in the editor — a built-in's override
+    /// or default, or the user template's own (possibly the generic default).
+    var followUpText: String {
+        switch self {
+        case .builtIn(let t): return AppSettings.shared.customTemplateFollowUp(for: t) ?? t.followUpGuidance
+        case .user(let t):    return t.followUp.isEmpty ? Self.genericFollowUp(name: t.name) : t.followUp
         }
     }
 }

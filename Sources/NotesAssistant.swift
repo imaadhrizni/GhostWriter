@@ -87,6 +87,16 @@ enum NotesLibrary {
             .map(MeetingFile.init)
     }
 
+    /// The "M:SS" from a meeting note's `*Meeting duration: …*` footer, or "" if
+    /// the meeting didn't finish normally (no footer written).
+    static func meetingDuration(_ url: URL) -> String {
+        guard let content = try? String(contentsOf: url, encoding: .utf8),
+              let r = content.range(of: "Meeting duration: ") else { return "" }
+        let rest = content[r.upperBound...]
+        let end = rest.firstIndex(where: { $0 == "*" || $0 == "\n" }) ?? rest.endIndex
+        return String(rest[..<end]).trimmingCharacters(in: .whitespaces)
+    }
+
     struct SearchHit: Identifiable {
         let id = UUID()
         let file: MeetingFile
@@ -316,7 +326,12 @@ struct NotesAssistantView: View {
 // MARK: - Browse (all notes)
 
 private struct BrowseTab: View {
-    @State private var groups: [(day: String, meetings: [NotesLibrary.MeetingFile])] = []
+    private struct Row: Identifiable, Hashable {
+        let file: NotesLibrary.MeetingFile
+        let duration: String
+        var id: URL { file.url }
+    }
+    @State private var groups: [(day: String, rows: [Row])] = []
 
     var body: some View {
         Group {
@@ -331,17 +346,25 @@ private struct BrowseTab: View {
                 List {
                     ForEach(groups, id: \.day) { group in
                         Section(header: Text(DateDisplay.day(group.day))) {
-                            ForEach(group.meetings) { meeting in
+                            HStack {
+                                Text("Meeting").frame(maxWidth: .infinity, alignment: .leading)
+                                Text("Duration").frame(width: 70, alignment: .trailing)
+                                Spacer().frame(width: 22)
+                            }
+                            .font(.caption2.bold()).foregroundColor(.secondary)
+                            ForEach(group.rows) { row in
                                 Button {
-                                    NotesViewerWindowController.present(fileURL: meeting.url)
+                                    NotesViewerWindowController.present(fileURL: row.file.url)
                                 } label: {
                                     HStack {
-                                        Image(systemName: "doc.text")
-                                            .foregroundColor(.secondary)
-                                        Text(meeting.time)
+                                        Image(systemName: "doc.text").foregroundColor(.secondary)
+                                        Text(row.file.time)
                                         Spacer()
+                                        Text(row.duration)
+                                            .frame(width: 70, alignment: .trailing)
+                                            .monospacedDigit().foregroundColor(.secondary)
                                         Image(systemName: "arrow.up.forward.square")
-                                            .foregroundColor(.secondary)
+                                            .foregroundColor(.secondary).frame(width: 22)
                                     }
                                     .contentShape(Rectangle())
                                 }
@@ -352,7 +375,16 @@ private struct BrowseTab: View {
                 }
             }
         }
-        .onAppear { groups = NotesLibrary.meetingsByDay(limit: 500) }
+        // Reading each note's duration footer is I/O — do it off the main thread.
+        .task {
+            groups = await Task.detached(priority: .userInitiated) {
+                NotesLibrary.meetingsByDay(limit: 500).map { group in
+                    (group.day, group.meetings.map {
+                        Row(file: $0, duration: NotesLibrary.meetingDuration($0.url))
+                    })
+                }
+            }.value
+        }
     }
 }
 

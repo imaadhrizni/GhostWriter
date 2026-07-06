@@ -407,7 +407,7 @@ private struct DictationPane: View {
                             NotificationCenter.default.post(name: .dictationHistoryDisabled, object: nil)
                         }
                     }
-                Text("Enables ⌃⌥V to re-type your most recent dictation. Kept in memory only — cleared when disabled or when the app quits. (For an app/style/duration log, see Usage & Cost → Dictation Log.)")
+                Text("Enables ⌃⌥V to re-type your most recent dictation. Kept in memory only — cleared when disabled or when the app quits. (For a browsable app/style/duration history, enable “Save each dictation to a file” below and open Dictations… from the menu bar.)")
                     .font(.caption).foregroundColor(.secondary)
                 if settings.dictationHistoryEnabled {
                     HStack {
@@ -1051,6 +1051,7 @@ private struct TemplateManager: View {
             }
 
             TemplateSectionsEditor(template: selected)
+            TemplateFollowUpEditor(template: selected)
         }
         .alert("Delete “\(selected.displayName)”?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) { settings.deleteUserTemplate(id: selected.id) }
@@ -1134,6 +1135,54 @@ private struct TemplateSectionsEditor: View {
     }
 }
 
+/// Editor for the follow-up drafting guidance of the selected template — how
+/// the "Draft Follow-up" action shapes its recipient, tone, and content.
+/// Built-in overrides can be reset to defaults; user templates just save theirs.
+private struct TemplateFollowUpEditor: View {
+    let template: SummaryTemplate
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var text: String = ""
+
+    /// Built-in with no saved override → already at default.
+    private var isBuiltInDefault: Bool {
+        if case .builtIn(let t) = template {
+            return settings.customTemplateFollowUp(for: t) == nil
+        }
+        return true
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Follow-up guidance — how the “Draft Follow-up” action shapes the message (recipient, tone, what to include).")
+                    .font(.caption).foregroundColor(.secondary)
+                Spacer()
+                if case .builtIn(let t) = template {
+                    DefaultResetButton(isDefault: isBuiltInDefault) {
+                        settings.setCustomTemplateFollowUp("", for: t)
+                        text = t.followUpGuidance
+                    }
+                }
+            }
+            TextEditor(text: $text)
+                .font(.system(.caption, design: .monospaced))
+                .frame(height: 70)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                .onChange(of: text) { _, newValue in save(newValue) }
+        }
+        .onAppear { text = template.followUpText }
+        // Switching the picker re-points this editor at another template.
+        .onChange(of: template.id) { _, _ in text = template.followUpText }
+    }
+
+    private func save(_ newValue: String) {
+        switch template {
+        case .builtIn(let t): settings.setCustomTemplateFollowUp(newValue, for: t)
+        case .user(let t):    settings.updateUserTemplate(id: t.id, followUp: newValue)
+        }
+    }
+}
+
 // MARK: - Stats
 
 private struct StatsPane: View {
@@ -1166,8 +1215,6 @@ private struct StatsPane: View {
                 PriceField(label: "Output $/M tokens", value: $settings.priceOutputPerMTok, defaultValue: AppSettings.Default.priceOutputPerMTok)
             }
 
-            DictationLogGroup()
-
             SettingsGroup("Maintenance") {
                 HStack {
                     Text("Counters are stored locally and never leave this Mac.")
@@ -1195,58 +1242,6 @@ private struct StatRow: View {
             Text(value)
                 .monospacedDigit()
                 .foregroundColor(.secondary)
-        }
-    }
-}
-
-/// Recent dictations — app/host, style, and duration — with a clear button.
-private struct DictationLogGroup: View {
-    @ObservedObject private var log = DictationLog.shared
-
-    private static let timeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .short
-        f.timeStyle = .short
-        return f
-    }()
-
-    var body: some View {
-        SettingsGroup("Dictation Log") {
-            if log.entries.isEmpty {
-                Text("No dictations recorded yet. Each dictation logs the app, the writing style used, and its duration.")
-                    .font(.caption).foregroundColor(.secondary)
-            } else {
-                HStack {
-                    Text("App").frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Style").frame(width: 110, alignment: .leading)
-                    Text("Time").frame(width: 52, alignment: .trailing)
-                }
-                .font(.caption2.bold()).foregroundColor(.secondary)
-                Divider()
-                ForEach(log.entries.prefix(25)) { entry in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(entry.app).lineLimit(1)
-                            Text(Self.timeFormatter.string(from: entry.date))
-                                .font(.caption2).foregroundColor(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        Text(entry.style).frame(width: 110, alignment: .leading)
-                            .foregroundColor(.secondary).lineLimit(1)
-                        Text(UsageStats.hoursMinutes(entry.seconds))
-                            .frame(width: 52, alignment: .trailing)
-                            .monospacedDigit().foregroundColor(.secondary)
-                    }
-                    .font(.caption)
-                    Divider()
-                }
-                HStack {
-                    Text(log.entries.count > 25 ? "Showing 25 of \(log.entries.count) (up to 100 kept)." : "\(log.entries.count) recorded (up to 100 kept).")
-                        .font(.caption2).foregroundColor(.secondary)
-                    Spacer()
-                    Button("Clear", role: .destructive) { log.clear() }
-                }
-            }
         }
     }
 }

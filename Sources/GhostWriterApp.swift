@@ -882,7 +882,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let polishedText = try await textPolisher.polish(rawText: rawText, appContext: activeApp)
                 textInjector.inject(text: polishedText)
 
-                let appLabel = activeApp.host.map { "\(activeApp.appName) · \($0)" } ?? activeApp.appName
                 let words = polishedText.split(whereSeparator: \.isWhitespace).count
 
                 // Optional archive: one Markdown file per dictation, with metadata.
@@ -895,8 +894,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     UsageStats.shared.recordDictation(words: words, seconds: dictationDuration)
-                    DictationLog.shared.record(app: appLabel, style: style.displayName,
-                                               seconds: Int(dictationDuration.rounded()), words: words)
 
                     guard self.settings.dictationHistoryEnabled else { return }
                     self.dictationHistory.insert((Date(), polishedText, dictationDuration), at: 0)
@@ -1178,8 +1175,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setupMeetingAudioCallback() {
         let vad = VoiceActivityDetector()
-        vad.silenceDebounce = 0.1  // We handle our own longer debounce below
-
         systemAudioCapture.onAudioBuffer = { [weak self] buffer in
             guard let self, !self.isTranscriptionPaused else { return }
             let rms = vad.calculateRMS(from: buffer)

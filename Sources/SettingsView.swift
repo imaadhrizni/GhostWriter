@@ -232,6 +232,17 @@ private struct GeneralPane: View {
 
                 Divider()
 
+                ModelField(
+                    title: "Lightweight-tasks model",
+                    presets: Self.polishingModels,
+                    defaultValue: AppSettings.Default.fastModel,
+                    value: $settings.fastModel
+                )
+                Text("A cheaper, faster model for high-frequency background work — the live brief, agenda coverage, auto-tagging, and search-term expansion. Summaries, follow-ups, and Ask use the polishing model above.")
+                    .font(.caption).foregroundColor(.secondary)
+
+                Divider()
+
                 Toggle("Offline fallback (Apple on-device recognition)", isOn: $settings.offlineFallback)
                 Text("If Groq can't be reached, transcribe on-device instead of failing — applies to dictation, quick notes, and meetings. Lower accuracy and no AI polishing or summaries (transcription only), but zero network. Triggers on connectivity errors, not on API-key or server errors.")
                     .font(.caption)
@@ -1209,7 +1220,8 @@ private struct StatsPane: View {
             }
 
             SettingsGroup("Estimated Cost") {
-                StatRow(label: "Estimated Groq spend", value: UsageStats.currency(stats.estimatedCostUSD))
+                StatRow(label: "This month", value: UsageStats.currency(stats.costThisMonthUSD))
+                StatRow(label: "Estimated Groq spend (all time)", value: UsageStats.currency(stats.estimatedCostUSD))
                 StatRow(label: "Audio transcribed", value: UsageStats.hoursMinutes(stats.audioSecondsTranscribed))
                 StatRow(label: "LLM tokens (in / out)", value: "\(stats.inputTokens) / \(stats.outputTokens)")
                 Text("A rough estimate from local counters — actual billing on the Groq console is authoritative. Prices drift, so they're editable:")
@@ -1217,6 +1229,28 @@ private struct StatsPane: View {
                 PriceField(label: "Audio $/hour", value: $settings.priceAudioPerHour, defaultValue: AppSettings.Default.priceAudioPerHour)
                 PriceField(label: "Input $/M tokens", value: $settings.priceInputPerMTok, defaultValue: AppSettings.Default.priceInputPerMTok)
                 PriceField(label: "Output $/M tokens", value: $settings.priceOutputPerMTok, defaultValue: AppSettings.Default.priceOutputPerMTok)
+            }
+
+            SettingsGroup("Monthly Budget") {
+                PriceField(label: "Budget ($/month, 0 = off)", value: $settings.monthlyBudgetUSD, defaultValue: AppSettings.Default.monthlyBudgetUSD)
+                if let fraction = stats.budgetFraction {
+                    ProgressView(value: min(fraction, 1.0)) {
+                        HStack {
+                            Text("\(UsageStats.currency(stats.costThisMonthUSD)) of \(UsageStats.currency(settings.monthlyBudgetUSD))")
+                            Spacer()
+                            Text("\(Int(fraction * 100))%")
+                                .foregroundColor(stats.isOverBudget ? .red : .secondary)
+                        }
+                        .font(.caption)
+                    }
+                    .tint(stats.isOverBudget ? .red : .accentColor)
+                    if stats.isOverBudget {
+                        Label("Over budget this month — spend continues; this is a warning only.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundColor(.orange)
+                    }
+                }
+                Text("A soft cap: when this month's estimate crosses the budget, GhostWriter shows a warning (and notifies once). It never blocks transcription. Resets on the 1st.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Maintenance") {

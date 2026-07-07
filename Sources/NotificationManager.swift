@@ -61,6 +61,14 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
              sound: nil)
     }
 
+    /// "You've passed your monthly budget" — a soft, one-per-month heads-up.
+    func notifyBudgetExceeded(spent: String, budget: String) {
+        post(title: "Monthly Groq budget reached",
+             body: "Estimated spend this month is \(spent) (budget \(budget)). Transcription keeps working — adjust the budget in Settings → Usage & Cost.",
+             fileURL: nil,
+             sound: .default)
+    }
+
     /// "Something went wrong" — no click payload; also surfaced in the menu.
     func notifyError(_ message: String) {
         let clipped = message.count > 160 ? String(message.prefix(160)) + "…" : message

@@ -662,7 +662,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// After a meeting ends: append the AI summary (if enabled), then notify (if enabled).
-    private func finalizeMeetingNotes(startedAt start: Date) {
+    private func finalizeMeetingNotes(startedAt start: Date, agenda: [String] = []) {
         guard let fileURL = meetingNotes.lastCompletedFilePath else { return }
 
         let elapsed = Int(Date().timeIntervalSince(start))
@@ -674,25 +674,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let wantsSummary = self.settings.summariesEnabled
             let wantsActions = self.settings.actionItemsEnabled
             // Local-only mode never contacts the network — no LLM summary/tags.
+            // Each cloud feature below is independently toggleable; the shared
+            // gate is only "cloud allowed + enough real speech to work with".
             if !self.settings.localOnlyMode,
-               wantsSummary || wantsActions,
                let transcript = self.meetingNotes.transcriptText(of: fileURL),
                Self.dialogueLength(of: transcript) > 200 {  // measure actual speech, not header/markers
-                do {
-                    let raw = try await self.textPolisher.summarize(
-                        transcript: transcript,
-                        template: self.settings.selectedTemplate,
-                        includeSummary: wantsSummary,
-                        includeActionItems: wantsActions)
-                    if let summary = Self.sanitizedSummary(raw) {
-                        self.meetingNotes.appendSummary(summary, to: fileURL)
-                    } else {
-                        Log.meeting.info("⏭ Summary skipped — not enough content")
+                if wantsSummary || wantsActions {
+                    do {
+                        let raw = try await self.textPolisher.summarize(
+                            transcript: transcript,
+                            template: self.settings.selectedTemplate,
+                            includeSummary: wantsSummary,
+                            includeActionItems: wantsActions)
+                        if let summary = Self.sanitizedSummary(raw) {
+                            self.meetingNotes.appendSummary(summary, to: fileURL)
+                        } else {
+                            Log.meeting.info("⏭ Summary skipped — not enough content")
+                        }
+                    } catch {
+                        Log.meeting.error("❌ Summary failed: \(error.localizedDescription)")
+                        self.reportError("Meeting summary failed: \(error.localizedDescription)")
                     }
-                } catch {
-                    Log.meeting.error("❌ Summary failed: \(error.localizedDescription)")
-                    self.reportError("Meeting summary failed: \(error.localizedDescription)")
                 }
+
+                // Agenda section: planned items (covered?) + topics the meeting
+                // itself raised (dynamic). Independent of the summary toggle —
+                // writes whenever there's an agenda or discovered topics. Fast
+                // model — this is a notes footer, not a blocking decision.
+                let status = await self.textPolisher.agendaStatus(
+                    userAgenda: agenda, transcript: transcript, preferFast: true)
+                self.meetingNotes.appendAgenda(
+                    status.map { ($0.text, $0.covered, $0.dynamic) }, to: fileURL)
 
                 // Auto-tag topics + entities into the front-matter (needs front-matter on).
                 // Person names are only harvested when redaction is off.
@@ -710,7 +722,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if self.settings.notifyOnMeetingEnd {
                 NotificationManager.shared.notifyMeetingSaved(duration: duration, fileURL: fileURL)
             }
+            self.warnIfOverBudget()
         }
+    }
+
+    /// Fire a single monthly notification the first time the estimated spend
+    /// crosses the configured budget. Cheap to call after any billable work.
+    private func warnIfOverBudget() {
+        let stats = UsageStats.shared
+        guard stats.shouldWarnBudgetOnce() else { return }
+        NotificationManager.shared.notifyBudgetExceeded(
+            spent: UsageStats.currency(stats.costThisMonthUSD),
+            budget: UsageStats.currency(settings.monthlyBudgetUSD))
     }
 
     // MARK: - Notes & Pause Hotkeys
@@ -969,6 +992,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// stops a second dialog from stacking and double-starting the meeting.
     private var meetingStartPromptActive = false
 
+    /// Agenda items entered at meeting start (may be empty) — drives the
+    /// live coverage checklist and the end-of-meeting "did we cover it?" check.
+    private var meetingAgenda: [String] = []
+
     /// The single start-meeting dialog: template picker + confirm/decline.
     /// Both the manual (⌃⌥M / menu) and auto-detect paths run through here so
     /// they can't drift apart.
@@ -985,13 +1012,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: declineTitle)
         alert.alertStyle = .informational
 
-        // Template picker inline — what kind of meeting shapes the summary.
-        let picker = Self.makeTemplatePicker(selectedID: settings.selectedTemplateID)
-        alert.accessoryView = picker
+        // Template picker + optional agenda inline — the template shapes the
+        // summary; the agenda drives the end-of-meeting coverage check.
+        let accessory = Self.makeStartAccessory(selectedID: settings.selectedTemplateID)
+        alert.accessoryView = accessory
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
-            applyTemplateSelection(from: picker)
+            applyTemplateSelection(from: accessory.picker)
+            meetingAgenda = Self.parseAgenda(accessory.agendaField.stringValue)
             // Hold the prompt flag through the async start so a queued ⌃⌥M
             // can't open a spurious second dialog before isMeetingMode flips.
             Task { @MainActor in
@@ -1004,10 +1033,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// A framed popup of meeting templates (an accessory view without an
-    /// explicit frame renders but doesn't receive clicks in NSAlert).
-    private static func makeTemplatePicker(selectedID: String) -> NSPopUpButton {
-        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 26), pullsDown: false)
+    /// Accessory view for the start dialog: a template popup plus an optional
+    /// agenda field. Exposes both subviews so the caller can read them back.
+    private final class StartAccessory: NSView {
+        let picker = NSPopUpButton(frame: .zero, pullsDown: false)
+        let agendaField = NSTextField(frame: .zero)
+    }
+
+    /// Build the start-dialog accessory (template picker + agenda field). An
+    /// accessory view without an explicit frame renders but doesn't receive
+    /// clicks in NSAlert, so everything is laid out with explicit frames.
+    private static func makeStartAccessory(selectedID: String) -> StartAccessory {
+        let width: CGFloat = 260
+        let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: 78))
+
+        let picker = container.picker
+        picker.frame = NSRect(x: 0, y: 52, width: width, height: 26)
         let templates = AppSettings.shared.allTemplates
         for template in templates {
             picker.addItem(withTitle: template.displayName)
@@ -1016,7 +1057,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let index = templates.firstIndex(where: { $0.id == selectedID }) {
             picker.selectItem(at: index)
         }
-        return picker
+        container.addSubview(picker)
+
+        let field = container.agendaField
+        field.frame = NSRect(x: 0, y: 0, width: width, height: 44)
+        field.placeholderString = "Agenda (optional) — separate items with commas"
+        field.usesSingleLineMode = false
+        field.cell?.wraps = true
+        field.cell?.isScrollable = false
+        field.lineBreakMode = .byWordWrapping
+        field.font = .systemFont(ofSize: 12)
+        container.addSubview(field)
+
+        return container
+    }
+
+    /// Split a comma / newline / semicolon-separated agenda string into items.
+    private static func parseAgenda(_ raw: String) -> [String] {
+        raw.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     private func applyTemplateSelection(from picker: NSPopUpButton) {
@@ -1038,7 +1098,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
-            stopMeetingMode()
+            Task { @MainActor in await confirmEndAndStopMeeting() }
         }
     }
 
@@ -1046,11 +1106,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleMeetingMode() {
         if appState.isMeetingMode {
-            stopMeetingMode()
+            Task { @MainActor in await confirmEndAndStopMeeting() }
         } else {
             promptTemplateAndStartMeeting()
         }
     }
+
+    /// "Ask before it ends": when the user deliberately ends a meeting, check
+    /// whether the agenda was covered (or, with no agenda, whether anything was
+    /// left unresolved) and offer to keep recording. Best-effort and cloud-only
+    /// — skipped in Local-only mode, without an API key, or for a thin meeting.
+    @MainActor
+    private func confirmEndAndStopMeeting() async {
+        guard !endCoverageChecking else { return }
+        let settings = AppSettings.shared
+
+        // Only worth a check when there's real spoken content and a cloud path.
+        let transcript = meetingNotes.currentFilePath.flatMap { meetingNotes.transcriptText(of: $0) } ?? ""
+        let bodyText = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let spoken = Self.dialogueLength(of: transcript)   // ignore header/markers
+        guard !settings.localOnlyMode, KeychainService.groqAPIKey() != nil, spoken > 200 else {
+            Log.meeting.info("⏭ End-coverage skipped (local=\(settings.localOnlyMode), spoken=\(spoken))")
+            stopMeetingMode(); return
+        }
+
+        endCoverageChecking = true
+        meetingModeMenuItem?.title = "Checking coverage…"
+        // Once-per-meeting — use the reliable model, not the fast one.
+        let status = await textPolisher.agendaStatus(userAgenda: meetingAgenda, transcript: bodyText, preferFast: false)
+        // Unresolved = user items not covered, and raised-but-open dynamic topics.
+        let items = status.filter { !$0.covered }.map { $0.dynamic ? "\($0.text) (came up, unresolved)" : $0.text }
+        let agendaCount = meetingAgenda.count, entryCount = status.count, flaggedCount = items.count
+        Log.meeting.info("🔎 End-coverage: agenda=\(agendaCount), entries=\(entryCount), flagged=\(flaggedCount)")
+        endCoverageChecking = false
+        meetingModeMenuItem?.title = appState.isMeetingMode ? "End Meeting" : "Start Meeting"
+
+        // The meeting may have been stopped another way while we were checking.
+        guard appState.isMeetingMode else { return }
+        guard !items.isEmpty else { stopMeetingMode(); return }
+
+        let alert = NSAlert()
+        alert.messageText = "Before you end this meeting"
+        alert.informativeText = "These points don't look resolved yet:\n\n" + items.map { "•  \($0)" }.joined(separator: "\n")
+        alert.addButton(withTitle: "Keep Recording")
+        alert.addButton(withTitle: "End Anyway")
+        alert.alertStyle = .informational
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() != .alertFirstButtonReturn {
+            stopMeetingMode()   // "End Anyway"
+        }
+    }
+
+    private var endCoverageChecking = false
 
     /// Manual start (menu or ⌃⌥M): confirm the meeting template first so the
     /// summary matches the kind of meeting.
@@ -1104,7 +1211,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let url = self?.meetingNotes.currentFilePath else { return nil }
                 return self?.meetingNotes.transcriptText(of: url)
             },
-            template: settings.selectedTemplate)
+            template: settings.selectedTemplate,
+            agenda: meetingAgenda)
 
         // Menu-bar elapsed timer — doubles as a "still recording" indicator
         startMeetingTimer()
@@ -1148,6 +1256,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingTimer?.invalidate()
         meetingTimer = nil
         statusItem?.button?.title = ""
+        // Hand the agenda to the finalizer (for the notes' Agenda section)
+        // before clearing it for the next meeting.
+        let agendaForNotes = meetingAgenda
+        meetingAgenda = []
 
         micCapture.stop()
         systemAudioCapture.stop()
@@ -1183,7 +1295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 await self.waitForPendingTranscriptions(timeout: 20)
                 await self.finalRetryPass()
                 self.meetingNotes.endSession(startedAt: start)
-                self.finalizeMeetingNotes(startedAt: start)
+                self.finalizeMeetingNotes(startedAt: start, agenda: agendaForNotes)
             }
         }
 
@@ -1551,6 +1663,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Surface the running cost estimate when there's been any spend.
             if !settings.localOnlyMode, stats.estimatedCostUSD >= 0.01 {
                 statsLine += " · ~\(UsageStats.currency(stats.estimatedCostUSD))"
+                // Flag when this month's spend has crossed the soft budget.
+                if stats.isOverBudget {
+                    statsLine += " ⚠️ over budget"
+                }
             }
             statsMenuItem?.title = statsLine
             // Pause only makes sense mid-meeting — hide it otherwise.

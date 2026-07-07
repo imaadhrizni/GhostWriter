@@ -19,6 +19,7 @@ final class AppSettings: ObservableObject {
     private enum Key {
         static let transcriptionModel     = "api.transcriptionModel"
         static let polishingModel         = "api.polishingModel"
+        static let fastModel              = "api.fastModel"
         static let pttKeyCode             = "dictation.pttKeyCode"
         static let preferBuiltInMic       = "audio.preferBuiltInMic"
         static let meetingMicThreshold    = "meeting.micThresholdDBFS"
@@ -81,8 +82,9 @@ final class AppSettings: ObservableObject {
         static let priceAudioPerHour      = "cost.audioPerHour"
         static let priceInputPerMTok      = "cost.inputPerMTok"
         static let priceOutputPerMTok     = "cost.outputPerMTok"
+        static let monthlyBudgetUSD       = "cost.monthlyBudgetUSD"
 
-        static let all = [transcriptionModel, polishingModel, pttKeyCode,
+        static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
                           preferBuiltInMic,
                           meetingMicThreshold, systemAudioThreshold,
                           silenceDebounce, maxSegmentSeconds, echoGateWindow,
@@ -105,7 +107,8 @@ final class AppSettings: ObservableObject {
                           autoTagging, errorNotifications, uiDateFormat,
                           browserTabDetection, domainStyleRules,
                           saveDictations, dictationsFolderPath, dictationOrganization,
-                          priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok]
+                          priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok,
+                          monthlyBudgetUSD]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -113,6 +116,7 @@ final class AppSettings: ObservableObject {
     enum Default {
         static let transcriptionModel              = "whisper-large-v3"
         static let polishingModel                  = "llama-3.3-70b-versatile"
+        static let fastModel                       = "llama-3.1-8b-instant"
         static let pttKeyCode: Int                 = 61     // Right Option
         static let preferBuiltInMic                = false  // use the system default input
         static let meetingMicThreshold: Float      = -40.0
@@ -176,6 +180,7 @@ final class AppSettings: ObservableObject {
         static let priceAudioPerHour               = 0.111   // whisper-large-v3
         static let priceInputPerMTok               = 0.59    // llama-3.3-70b input
         static let priceOutputPerMTok              = 0.79    // llama-3.3-70b output
+        static let monthlyBudgetUSD                = 0.0     // 0 = no budget set
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -195,6 +200,13 @@ final class AppSettings: ObservableObject {
     var polishingModel: String {
         get { string(Key.polishingModel, Default.polishingModel) }
         set { set(newValue, Key.polishingModel) }
+    }
+
+    /// Cheap/fast model for lightweight, high-frequency tasks (live brief,
+    /// tagging, query expansion, agenda coverage) — keeps cost and latency down.
+    var fastModel: String {
+        get { string(Key.fastModel, Default.fastModel) }
+        set { set(newValue, Key.fastModel) }
     }
 
     // MARK: - Dictation
@@ -840,6 +852,13 @@ final class AppSettings: ObservableObject {
     var priceOutputPerMTok: Double {
         get { double(Key.priceOutputPerMTok, Default.priceOutputPerMTok) }
         set { set(newValue, Key.priceOutputPerMTok) }
+    }
+
+    /// Soft monthly spend cap in USD. 0 = no budget. When this month's estimated
+    /// Groq spend crosses it, GhostWriter warns (banner + one notification).
+    var monthlyBudgetUSD: Double {
+        get { double(Key.monthlyBudgetUSD, Default.monthlyBudgetUSD) }
+        set { set(newValue, Key.monthlyBudgetUSD) }
     }
 
     // MARK: - Transcription Quality

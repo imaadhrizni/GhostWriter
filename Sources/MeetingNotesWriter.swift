@@ -279,6 +279,20 @@ final class MeetingNotesWriter {
         Log.meeting.info("📝 Summary appended")
     }
 
+    /// Append an Agenda section as a Markdown checklist. `entries` are
+    /// (text, covered, dynamic) — dynamic items are the topics the meeting
+    /// itself raised, marked so they read apart from the planned agenda.
+    func appendAgenda(_ entries: [(text: String, covered: Bool, dynamic: Bool)], to fileURL: URL) {
+        guard !entries.isEmpty else { return }
+        let lines = entries.map { e -> String in
+            let box = e.covered ? "- [x]" : "- [ ]"
+            let tag = e.dynamic ? " _(raised in meeting)_" : ""
+            return "\(box) \(e.text)\(tag)"
+        }
+        append("\n# Agenda\n\n\(lines.joined(separator: "\n"))\n", to: fileURL)
+        Log.meeting.info("🗒 Agenda appended")
+    }
+
     /// Merge topic tags into the YAML front-matter `tags: [...]` line. No-op if
     /// the file has no front-matter (tags require it) or no new tags.
     static func addFrontMatterTags(_ tags: [String], to fileURL: URL) {

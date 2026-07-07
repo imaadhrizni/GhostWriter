@@ -17,6 +17,11 @@ final class LiveMeetingAssistant: ObservableObject {
     @Published private(set) var brief = TextPolisher.LiveBrief(tldr: [], actions: [])
     @Published private(set) var updating = false
     @Published private(set) var lastUpdate: Date?
+
+    /// Live agenda coverage — user-typed items plus topics the meeting itself
+    /// raised ("dynamic"). Empty until something is on the agenda or discovered.
+    struct AgendaItem: Identifiable { let id: Int; let text: String; var covered: Bool; var dynamic: Bool }
+    @Published private(set) var coverage: [AgendaItem] = []
     @Published var collapsed = false
     /// Whether the floating panel is on screen (toggled via the menu / close button).
     @Published private(set) var visible = false
@@ -32,6 +37,7 @@ final class LiveMeetingAssistant: ObservableObject {
 
     private var transcriptProvider: (() -> String?)?
     private var template: SummaryTemplate = .builtIn(.general)
+    private var agenda: [String] = []
     private var lastBriefedLength = 0
 
     // Cadence knobs: check often, but only spend a call when the transcript has
@@ -42,13 +48,15 @@ final class LiveMeetingAssistant: ObservableObject {
     /// Begin briefing for a meeting. `transcriptProvider` returns the current
     /// notes text (nil if unavailable). No-op if the toggle is off, there's no
     /// API key, or Local-only mode is on.
-    func start(transcriptProvider: @escaping () -> String?, template: SummaryTemplate) {
+    func start(transcriptProvider: @escaping () -> String?, template: SummaryTemplate, agenda: [String] = []) {
         let settings = AppSettings.shared
         guard settings.liveAssistantEnabled, !settings.localOnlyMode,
               KeychainService.groqAPIKey() != nil else { return }
 
         self.transcriptProvider = transcriptProvider
         self.template = template
+        self.agenda = agenda
+        self.coverage = agenda.enumerated().map { AgendaItem(id: $0.offset, text: $0.element, covered: false, dynamic: false) }
         self.brief = TextPolisher.LiveBrief(tldr: [], actions: [])
         self.lastUpdate = nil
         self.lastBriefedLength = 0
@@ -66,6 +74,8 @@ final class LiveMeetingAssistant: ObservableObject {
         loop?.cancel()
         loop = nil
         transcriptProvider = nil
+        agenda = []
+        coverage = []
         panel?.orderOut(nil)
         visible = false
         updating = false
@@ -119,6 +129,14 @@ final class LiveMeetingAssistant: ObservableObject {
         } catch {
             Log.meeting.error("❌ Live brief failed: \(error.localizedDescription)")
             // Keep the last good brief on screen; try again next tick.
+        }
+
+        // Refresh agenda status alongside the brief (fast model): user items'
+        // coverage plus any topics the meeting itself raised (dynamic agenda).
+        let status = await polisher.agendaStatus(userAgenda: agenda, transcript: transcript)
+        coverage = status.enumerated().map {
+            AgendaItem(id: $0.offset, text: $0.element.text,
+                       covered: $0.element.covered, dynamic: $0.element.dynamic)
         }
     }
 
@@ -221,6 +239,9 @@ private struct LiveAssistantView: View {
                         section("Open actions", assistant.brief.actions, systemImage: "checklist")
                     }
                 }
+                if !assistant.coverage.isEmpty {
+                    agendaChecklist
+                }
                 if let t = assistant.lastUpdate {
                     Text("Updated \(t.formatted(date: .omitted, time: .shortened))")
                         .font(.caption2).foregroundColor(.secondary)
@@ -309,6 +330,33 @@ private struct LiveAssistantView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.15)) { assistant.collapsed.toggle() }
+        }
+    }
+
+    // Agenda coverage — a live checklist so you can see what's still open.
+    private var agendaChecklist: some View {
+        let done = assistant.coverage.filter(\.covered).count
+        return VStack(alignment: .leading, spacing: 3) {
+            Label("Agenda (\(done)/\(assistant.coverage.count))", systemImage: "list.bullet.clipboard")
+                .font(.caption2.weight(.semibold)).foregroundColor(.secondary)
+            ForEach(assistant.coverage) { item in
+                HStack(alignment: .top, spacing: 5) {
+                    Image(systemName: item.covered ? "checkmark.circle.fill" : "circle")
+                        .font(.caption2)
+                        .foregroundColor(item.covered ? .green : .secondary)
+                    Text(item.text)
+                        .font(.caption)
+                        .foregroundColor(item.covered ? .secondary : .primary)
+                        .strikethrough(item.covered, color: .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if item.dynamic {
+                        Image(systemName: "sparkle")
+                            .font(.system(size: 7))
+                            .foregroundStyle(.tint)
+                            .help("Surfaced from the discussion")
+                    }
+                }
+            }
         }
     }
 

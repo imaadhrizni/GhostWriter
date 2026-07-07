@@ -17,6 +17,9 @@ final class TextPolisher {
     private let baseURL = "https://api.groq.com/openai/v1"
     private let session = URLSession.shared
     private var model: String { AppSettings.shared.polishingModel }  // user-configurable in Settings
+    /// Cheap/fast model for lightweight, high-frequency work (live brief,
+    /// tagging, query expansion, agenda coverage) — keeps latency and cost low.
+    private var fastModel: String { AppSettings.shared.fastModel }
 
     // MARK: - Polishing
 
@@ -186,7 +189,7 @@ final class TextPolisher {
         guard !apiKey.isEmpty else { return fallback }
 
         let requestBody = ChatRequest(
-            model: model,
+            model: fastModel,
             messages: [
                 .init(role: "system", content: """
                 Extract search keywords from the user's question for finding relevant lines in meeting transcripts.
@@ -284,7 +287,7 @@ final class TextPolisher {
         // Recent context only — the running meeting, not the whole archive.
         let clipped = String(transcript.suffix(9_000))
         let body = ChatRequest(
-            model: model,
+            model: fastModel,
             messages: [
                 .init(role: "system", content: """
                 You keep a live brief of an ongoing meeting. From the transcript so far,
@@ -315,6 +318,70 @@ final class TextPolisher {
                 .prefix(cap).map { $0 }
         }
         return LiveBrief(tldr: list("tldr", 4), actions: list("actions", 5))
+    }
+
+    // MARK: - Agenda status ("ask before it ends" + dynamic agenda)
+
+    /// A single agenda line and whether the transcript shows it was covered.
+    /// `dynamic` items were surfaced by the model from the discussion itself
+    /// (topics that came up but the user didn't list); `dynamic == false` items
+    /// came from the user's typed agenda.
+    struct AgendaEntry {
+        let text: String
+        let covered: Bool
+        let dynamic: Bool
+    }
+
+    /// Combined agenda status: how each user-agenda item is tracking, plus any
+    /// additional topics the meeting itself raised ("dynamic" agenda). For
+    /// dynamic items, `covered` means the topic was actually resolved/decided
+    /// rather than merely raised — so uncovered dynamic items double as the
+    /// "loose ends" list when there's no user agenda. Best-effort: on any
+    /// failure returns user items as uncovered and no dynamic items.
+    func agendaStatus(userAgenda: [String], transcript: String, preferFast: Bool = true) async -> [AgendaEntry] {
+        let items = userAgenda.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        let fallback = items.map { AgendaEntry(text: $0, covered: false, dynamic: false) }
+        guard !apiKey.isEmpty else { return fallback }
+
+        let clipped = String(transcript.suffix(14_000))
+        let numbered = items.isEmpty
+            ? "(none provided)"
+            : items.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+        let body = ChatRequest(
+            model: preferFast ? fastModel : model,
+            messages: [
+                .init(role: "system", content: """
+                You track a meeting's agenda. Given the user's numbered agenda (may be "(none provided)")
+                and the transcript so far, respond with ONLY a JSON object, no prose:
+                "covered": array of the user's item numbers (integers) that were meaningfully discussed —
+                  actually addressed, not merely name-dropped. Omit items that were skipped.
+                "discovered": up to 5 objects for substantive topics that came up but are NOT in the
+                  user's agenda, each {"topic": short string, "resolved": bool} where resolved is true
+                  if the topic reached a conclusion/decision and false if it was raised but left open.
+                Use only what's in the transcript — do not invent. Empty arrays are fine.
+                """),
+                .init(role: "user", content: "AGENDA:\n\(numbered)\n\nTRANSCRIPT:\n\(clipped)")
+            ],
+            temperature: 0.1,
+            max_tokens: 300
+        )
+        guard let content = try? await send(body, timeout: 18),
+              let start = content.firstIndex(of: "{"), let end = content.lastIndex(of: "}"),
+              let data = String(content[start...end]).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return fallback }
+
+        let coveredNums = Set((obj["covered"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue ?? Int("\($0)") })
+        var entries = items.enumerated().map {
+            AgendaEntry(text: $0.element, covered: coveredNums.contains($0.offset + 1), dynamic: false)
+        }
+        for case let d as [String: Any] in (obj["discovered"] as? [Any] ?? []) {
+            guard let topic = (d["topic"] as? String)?.trimmingCharacters(in: .whitespaces), !topic.isEmpty else { continue }
+            let resolved = (d["resolved"] as? Bool) ?? false
+            entries.append(AgendaEntry(text: topic, covered: resolved, dynamic: true))
+            if entries.count >= items.count + 5 { break }
+        }
+        return entries
     }
 
     // MARK: - Follow-up & Tags
@@ -371,7 +438,7 @@ final class TextPolisher {
             ? #""people": array of participant/person names mentioned (proper case, e.g. ["Priya Fernando"]),"#
             : #""people": [] (leave empty),"#
         let body = ChatRequest(
-            model: model,
+            model: fastModel,
             messages: [
                 .init(role: "system", content: """
                 Identify what this meeting is about. Respond with ONLY a JSON object, no prose, with keys:

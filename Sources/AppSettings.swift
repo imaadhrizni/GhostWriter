@@ -839,13 +839,24 @@ final class AppSettings: ObservableObject {
     }
 
     /// Vocabulary flattened to a single Whisper prompt hint (≤400 chars kept).
-    var vocabularyPrompt: String {
-        let terms = vocabulary
-            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+    var vocabularyPrompt: String { vocabularyHint() }
+
+    /// The glossary prompt hint: the user's own vocabulary plus any auto-
+    /// harvested `extraTerms` (the per-meeting seed), deduplicated
+    /// case-insensitively and capped to Whisper's prompt budget. The user's
+    /// terms lead so they take precedence when the cap trims the tail. Empty
+    /// when there are no terms at all.
+    func vocabularyHint(extraTerms: [String] = []) -> String {
+        let raw = vocabulary.components(separatedBy: CharacterSet(charactersIn: ",\n")) + extraTerms
+        var seen = Set<String>()
+        var terms: [String] = []
+        for candidate in raw {
+            let term = candidate.trimmingCharacters(in: .whitespaces)
+            guard !term.isEmpty, seen.insert(term.lowercased()).inserted else { continue }
+            terms.append(term)
+        }
         guard !terms.isEmpty else { return "" }
-        return String("Glossary: " + terms.joined(separator: ", ")).prefix(400).description
+        return String(("Glossary: " + terms.joined(separator: ", ")).prefix(400))
     }
 
     /// Parsed per-app style overrides: bundleID → category.

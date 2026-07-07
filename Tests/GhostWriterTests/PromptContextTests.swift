@@ -57,4 +57,41 @@ import Testing
                                                          context: "WSO2 again")
         #expect(hints.filter { $0.lowercased() == "wso2" }.count == 1)
     }
+
+    @Test func contextualStringsIncludesExtraHarvestedTerms() {
+        let hints = OfflineTranscriber.contextualStrings(
+            vocabulary: "", context: "", extraTerms: ["Zain Iraq", "TIBCO"])
+        #expect(hints.contains("Zain Iraq"))
+        #expect(hints.contains("TIBCO"))
+    }
+
+    // MARK: MeetingVocabulary.extractTerms (auto-harvested glossary)
+
+    @Test func extractPicksUpAcronymsAndProducts() {
+        let notes = """
+        We are migrating the ESB to WSO2. The RFP mentions WSO2 again.
+        TIBCO is the incumbent. WSO2 wins on API management.
+        """
+        let terms = MeetingVocabulary.extractTerms(from: notes)
+        #expect(terms.contains("WSO2"))
+        #expect(terms.contains("ESB"))
+        #expect(terms.contains("TIBCO"))
+    }
+
+    @Test func extractRanksFrequentTermsFirst() {
+        let notes = "WSO2 WSO2 WSO2 handles the ESB migration once."
+        let terms = MeetingVocabulary.extractTerms(from: notes)
+        #expect(terms.first == "WSO2")   // most-mentioned leads
+    }
+
+    @Test func extractFiltersCommonAcronymNoise() {
+        let terms = MeetingVocabulary.extractTerms(from: "OK so the ETA is fine, FYI.")
+        #expect(!terms.contains("OK"))
+        #expect(!terms.contains("ETA"))
+        #expect(!terms.contains("FYI"))
+    }
+
+    @Test func extractHandlesEmptyText() {
+        #expect(MeetingVocabulary.extractTerms(from: "").isEmpty)
+    }
 }

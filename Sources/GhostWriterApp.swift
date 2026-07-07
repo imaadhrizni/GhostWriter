@@ -617,19 +617,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// meetings. Local-only mode goes straight to on-device recognition; other-
     /// wise Groq first, falling back on-device when the network is down. The
     /// result is passed through optional redaction before anyone sees it.
-    private func transcribeWithFallback(_ audioData: Data, context: String = "") async throws -> String {
+    private func transcribeWithFallback(_ audioData: Data, context: String = "", glossaryTerms: [String] = []) async throws -> String {
         let text: String
         if settings.localOnlyMode {
-            text = try await offlineTranscriber.transcribe(audioData: audioData, context: context)
+            text = try await offlineTranscriber.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
         } else {
             do {
-                text = try await groqService.transcribe(audioData: audioData, context: context)
+                text = try await groqService.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
             } catch {
                 // Fall back on ANY Groq failure — network down, 5xx, rate
                 // limit, bad response — not just connectivity errors.
                 guard settings.offlineFallback else { throw error }
                 Log.api.warning("⚠️ Groq transcription failed (\(error.localizedDescription)) — falling back to on-device recognition")
-                text = try await offlineTranscriber.transcribe(audioData: audioData, context: context)
+                text = try await offlineTranscriber.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
             }
         }
         return Redactor.redact(text)
@@ -1234,7 +1234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             defer { self.endPendingTranscription() }
             do {
-                let text = try await transcribeWithFallback(captured, context: self.meetingNotes.promptContext)
+                let text = try await transcribeWithFallback(captured, context: self.meetingNotes.promptContext, glossaryTerms: self.meetingNotes.seedGlossary)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty,
                       !self.whisperHallucinations.contains(trimmed.lowercased()) else { return }
@@ -1317,7 +1317,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             for var segment in pending {
                 do {
-                    let text = try await self.transcribeWithFallback(segment.audio, context: self.meetingNotes.promptContext)
+                    let text = try await self.transcribeWithFallback(segment.audio, context: self.meetingNotes.promptContext, glossaryTerms: self.meetingNotes.seedGlossary)
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty, !self.whisperHallucinations.contains(trimmed.lowercased()) {
                         self.meetingNotes.append(segment: trimmed, speaker: segment.speaker, at: segment.capturedAt)
@@ -1366,7 +1366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         for segment in pending {
             do {
-                let text = try await transcribeWithFallback(segment.audio, context: meetingNotes.promptContext)
+                let text = try await transcribeWithFallback(segment.audio, context: meetingNotes.promptContext, glossaryTerms: meetingNotes.seedGlossary)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty, !whisperHallucinations.contains(trimmed.lowercased()) {
                     meetingNotes.append(segment: trimmed, speaker: segment.speaker, at: segment.capturedAt)
@@ -1417,7 +1417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             defer { self.endPendingTranscription() }
             do {
-                let text = try await transcribeWithFallback(capturedAudio, context: self.meetingNotes.promptContext)
+                let text = try await transcribeWithFallback(capturedAudio, context: self.meetingNotes.promptContext, glossaryTerms: self.meetingNotes.seedGlossary)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
 

@@ -35,6 +35,22 @@ final class MeetingNotesWriter {
         }
     }
 
+    // Per-meeting glossary auto-harvested at session start (people, orgs,
+    // products, acronyms) so first-occurrence names transcribe correctly.
+    // Populated off the main thread; empty until harvesting finishes, so early
+    // segments simply run without it — best-effort, like `promptContext`.
+    private let seedLock = NSLock()
+    private var _seedGlossary: [String] = []
+
+    var seedGlossary: [String] {
+        seedLock.lock(); defer { seedLock.unlock() }
+        return _seedGlossary
+    }
+
+    private func setSeedGlossary(_ terms: [String]) {
+        seedLock.lock(); _seedGlossary = terms; seedLock.unlock()
+    }
+
     /// Read live from settings so a folder change applies to the next session.
     /// Includes the Year/Month subfolder when organization is enabled.
     private var notesDirectory: URL { AppSettings.shared.meetingDestinationFolder() }
@@ -200,6 +216,16 @@ final class MeetingNotesWriter {
     func beginSession() {
         nameOverrides.removeAll()
         contextLock.lock(); recentSegments.removeAll(); contextLock.unlock()
+        setSeedGlossary([])
+        // Harvest a glossary from recent notes off the main thread — file I/O
+        // plus on-device NER shouldn't delay the meeting starting.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let terms = MeetingVocabulary.seedFromRecentNotes()
+            self?.setSeedGlossary(terms)
+            if !terms.isEmpty {
+                Log.meeting.info("📚 Seeded meeting glossary with \(terms.count) term(s)")
+            }
+        }
         do {
             try FileManager.default.createDirectory(at: notesDirectory, withIntermediateDirectories: true)
 

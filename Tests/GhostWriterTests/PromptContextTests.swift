@@ -95,3 +95,49 @@ import Testing
         #expect(MeetingVocabulary.extractTerms(from: "").isEmpty)
     }
 }
+
+/// Project scoping/inheritance — the pure operations over a project list.
+@Suite struct ProjectsTests {
+
+    private var sample: [Project] {
+        [
+            Project(id: "wso2", name: "WSO2", parentID: nil, terms: ["WSO2", "ESB"]),
+            Project(id: "zain", name: "Zain Iraq", parentID: "wso2", terms: ["Zain Iraq", "Muazzam"]),
+            Project(id: "mba", name: "MBA", parentID: nil, terms: ["Porter", "NPV"])
+        ]
+    }
+
+    @Test func topLevelExcludesChildren() {
+        let tops = Projects.topLevel(in: sample).map(\.id)
+        #expect(tops == ["wso2", "mba"])
+    }
+
+    @Test func childrenOfParent() {
+        #expect(Projects.children(of: "wso2", in: sample).map(\.id) == ["zain"])
+        #expect(Projects.children(of: "mba", in: sample).isEmpty)
+    }
+
+    @Test func lineageOfChildIncludesParent() {
+        #expect(Projects.lineage(of: "zain", in: sample) == ["zain", "wso2"])
+        #expect(Projects.lineage(of: "wso2", in: sample) == ["wso2"])
+    }
+
+    @Test func displayPathShowsParent() {
+        #expect(Projects.displayPath(of: "zain", in: sample) == "WSO2 › Zain Iraq")
+        #expect(Projects.displayPath(of: "wso2", in: sample) == "WSO2")
+    }
+
+    /// A child inherits the parent's terms (its own first), and sibling terms
+    /// never leak — the whole point of scoping.
+    @Test func manualTermsInheritParentNotSiblings() {
+        let terms = Projects.manualTerms(forID: "zain", in: sample)
+        #expect(terms == ["Zain Iraq", "Muazzam", "WSO2", "ESB"])
+        #expect(!terms.contains("Porter"))    // MBA is a different bucket
+    }
+
+    @Test func brokenParentLinkResolvesToSelf() {
+        let orphan = [Project(id: "x", name: "X", parentID: "missing", terms: ["Xterm"])]
+        #expect(Projects.lineage(of: "x", in: orphan) == ["x"])
+        #expect(Projects.manualTerms(forID: "x", in: orphan) == ["Xterm"])
+    }
+}

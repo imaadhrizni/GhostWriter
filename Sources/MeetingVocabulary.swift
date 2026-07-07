@@ -9,24 +9,39 @@ import NaturalLanguage
 // transcription prompt (the rolling transcript is the "context" slot); it
 // leads the prompt so Whisper is primed before the term is ever spoken.
 //
-// Phase A source needs no extra permissions: the user's own recent meeting
-// notes. Terms recur across a person's meetings (their company, products,
-// teammates), so notes are a strong, private, zero-setup signal.
+// The source needs no extra permissions: the user's own past notes. But it is
+// scoped to the meeting's PROJECT (and its parent) — never the whole history —
+// so terms from unrelated projects (a different customer, your studies) can't
+// contaminate the prompt. Manual per-project terms lead, so a brand-new
+// project's first call is still seeded before it has any notes.
 
 enum MeetingVocabulary {
 
-    /// Harvest a seed glossary from recent meeting notes. Best-effort, cheap
-    /// (on-device NER, no network) and bounded; returns [] if nothing useful.
-    static func seedFromRecentNotes(limit: Int = 12, maxTerms: Int = 40) -> [String] {
-        let files = MeetingNotesWriter.allMeetingFiles(under: AppSettings.shared.notesFolder)
-            .prefix(limit)
+    /// Build a scoped seed glossary for a meeting in `projectID`: the project's
+    /// (and parent's) manual terms first, then terms harvested on-device from
+    /// that project's past notes. Unfiled meetings (nil / unknown project) get
+    /// [] — no seed is safer than a cross-project one. Best-effort and bounded.
+    static func seed(forProjectID projectID: String?, maxTerms: Int = 40) -> [String] {
+        let settings = AppSettings.shared
+        guard let projectID, settings.project(withID: projectID) != nil else { return [] }
+
+        let manual = settings.manualTerms(forProjectID: projectID)
+
         var corpus = ""
-        for url in files {
+        for url in settings.noteFiles(inLineageOf: projectID).prefix(20) {
             guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
             corpus += "\n" + text
             if corpus.count > 40_000 { break }   // bound the NER work
         }
-        return extractTerms(from: corpus, maxTerms: maxTerms)
+        let harvested = extractTerms(from: corpus, maxTerms: maxTerms)
+
+        // Manual terms first — they win when the cap trims the tail.
+        var seen = Set<String>()
+        var out: [String] = []
+        for term in manual + harvested where seen.insert(term.lowercased()).inserted {
+            out.append(term)
+        }
+        return Array(out.prefix(maxTerms))
     }
 
     /// On-device named-entity + acronym extraction, ranked by frequency.

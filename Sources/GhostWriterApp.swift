@@ -942,23 +942,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: declineTitle)
         alert.alertStyle = .informational
 
-        // Template picker inline — what kind of meeting shapes the summary.
-        let picker = Self.makeTemplatePicker(selectedID: settings.selectedTemplateID)
-        alert.accessoryView = picker
+        // Inline pickers: which project this call belongs to (scopes the
+        // glossary so unrelated projects can't contaminate it) and the meeting
+        // template (shapes the summary).
+        let accessory = Self.makeStartAccessory(templateID: settings.selectedTemplateID,
+                                                lastProjectID: settings.lastProjectID)
+        alert.accessoryView = accessory.view
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
-            applyTemplateSelection(from: picker)
+            applyTemplateSelection(from: accessory.template)
+            var projectID = accessory.project.selectedItem?.representedObject as? String
+            if projectID == Self.newProjectSentinel { projectID = promptNewProject() }
+            let resolved = (projectID?.isEmpty ?? true) ? nil : projectID
+            settings.lastProjectID = resolved ?? ""
             // Hold the prompt flag through the async start so a queued ⌃⌥M
             // can't open a spurious second dialog before isMeetingMode flips.
             Task { @MainActor in
-                await startMeetingMode()
+                await startMeetingMode(projectID: resolved)
                 meetingStartPromptActive = false
             }
         } else {
             meetingStartPromptActive = false
             onDecline?()
         }
+    }
+
+    /// Sentinel `representedObject` for the "New Project…" item in the picker.
+    private static let newProjectSentinel = "__new_project__"
+
+    /// Build the start-dialog accessory: a Project popup (grouped, children
+    /// indented) above the meeting-template popup. Returns the container plus
+    /// the two popups so the caller can read the selections.
+    private static func makeStartAccessory(templateID: String, lastProjectID: String)
+        -> (view: NSView, template: NSPopUpButton, project: NSPopUpButton) {
+        let width: CGFloat = 300
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 92))
+
+        func label(_ text: String, y: CGFloat) -> NSTextField {
+            let field = NSTextField(labelWithString: text)
+            field.frame = NSRect(x: 0, y: y, width: width, height: 15)
+            field.font = .boldSystemFont(ofSize: 11)
+            field.textColor = .secondaryLabelColor
+            return field
+        }
+
+        let project = makeProjectPicker(lastProjectID: lastProjectID)
+        project.frame = NSRect(x: 0, y: 51, width: width, height: 26)
+        let template = makeTemplatePicker(selectedID: templateID)
+        template.frame = NSRect(x: 0, y: 0, width: width, height: 26)
+
+        container.addSubview(label("Project", y: 77))
+        container.addSubview(project)
+        container.addSubview(label("Meeting type", y: 26))
+        container.addSubview(template)
+        return (container, template, project)
+    }
+
+    /// Project popup: "Unfiled", then top-level projects with their children
+    /// indented, then "➕ New Project…". Type-to-jump gives quick search.
+    private static func makeProjectPicker(lastProjectID: String) -> NSPopUpButton {
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 26), pullsDown: false)
+        let settings = AppSettings.shared
+
+        picker.addItem(withTitle: "Unfiled — no glossary")
+        picker.lastItem?.representedObject = ""
+
+        for top in settings.topLevelProjects {
+            picker.addItem(withTitle: top.name)
+            picker.lastItem?.representedObject = top.id
+            for child in settings.childProjects(of: top.id) {
+                picker.addItem(withTitle: "    " + child.name)
+                picker.lastItem?.representedObject = child.id
+            }
+        }
+
+        picker.menu?.addItem(.separator())
+        picker.addItem(withTitle: "➕ New Project…")
+        picker.lastItem?.representedObject = newProjectSentinel
+
+        if let item = picker.itemArray.first(where: { ($0.representedObject as? String) == lastProjectID }) {
+            picker.select(item)
+        }
+        return picker
+    }
+
+    /// Prompt for a new project's name and optional parent, create it, and
+    /// return its id (nil if cancelled or left blank).
+    private func promptNewProject() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "New Project"
+        alert.informativeText = "Name this bucket (e.g. WSO2, MBA). Optionally nest it under a top-level project."
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+
+        let width: CGFloat = 260
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 56))
+        let nameField = NSTextField(frame: NSRect(x: 0, y: 30, width: width, height: 24))
+        nameField.placeholderString = "Project name"
+        let parentPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: width, height: 26), pullsDown: false)
+        parentPicker.addItem(withTitle: "Top-level project")
+        parentPicker.lastItem?.representedObject = ""
+        for top in settings.topLevelProjects {
+            parentPicker.addItem(withTitle: "Under: \(top.name)")
+            parentPicker.lastItem?.representedObject = top.id
+        }
+        container.addSubview(nameField)
+        container.addSubview(parentPicker)
+        alert.accessoryView = container
+        alert.window.initialFirstResponder = nameField
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let parentID = parentPicker.selectedItem?.representedObject as? String
+        let id = settings.addProject(name: name, parentID: (parentID?.isEmpty ?? true) ? nil : parentID)
+        return id.isEmpty ? nil : id
     }
 
     /// A framed popup of meeting templates (an accessory view without an
@@ -1020,7 +1119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @MainActor
-    private func startMeetingMode() async {
+    private func startMeetingMode(projectID: String? = nil) async {
         // Re-entrancy guard: two confirm dialogs (or a dialog + hotkey) must
         // never double-start the capture chain and leak timers.
         guard !appState.isMeetingMode else { return }
@@ -1049,7 +1148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingModeMenuItem?.title = "End Meeting"
         meetingStartTime = Date()
         meetingDetector.suppressed = true
-        meetingNotes.beginSession()
+        meetingNotes.beginSession(projectID: projectID)
 
         // Reset the speaker profiles for the new session (safe to touch
         // directly — the capture callbacks haven't started yet)

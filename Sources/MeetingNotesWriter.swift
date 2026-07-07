@@ -10,6 +10,8 @@ final class MeetingNotesWriter {
     private(set) var currentFilePath: URL?
     /// The most recently finished session's file (survives endSession).
     private(set) var lastCompletedFilePath: URL?
+    /// The project bucket this session belongs to, if any (scopes the glossary).
+    private(set) var currentProjectID: String?
 
     // Rolling recent-transcript context used to self-prime the next segment's
     // transcription (Whisper attends to prior text, so names/jargon stay
@@ -213,14 +215,15 @@ final class MeetingNotesWriter {
     // MARK: - Session Lifecycle
 
     /// Call when meeting mode starts. Creates the notes file and writes the header.
-    func beginSession() {
+    func beginSession(projectID: String? = nil) {
+        currentProjectID = projectID
         nameOverrides.removeAll()
         contextLock.lock(); recentSegments.removeAll(); contextLock.unlock()
         setSeedGlossary([])
-        // Harvest a glossary from recent notes off the main thread — file I/O
-        // plus on-device NER shouldn't delay the meeting starting.
+        // Harvest a glossary scoped to this meeting's project off the main
+        // thread — file I/O plus on-device NER shouldn't delay the start.
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let terms = MeetingVocabulary.seedFromRecentNotes()
+            let terms = MeetingVocabulary.seed(forProjectID: projectID)
             self?.setSeedGlossary(terms)
             if !terms.isEmpty {
                 Log.meeting.info("📚 Seeded meeting glossary with \(terms.count) term(s)")
@@ -255,6 +258,7 @@ final class MeetingNotesWriter {
             try header.write(to: fileURL, atomically: true, encoding: .utf8)
 
             currentFilePath = fileURL
+            AppSettings.shared.assignNote(fileURL.lastPathComponent, toProjectID: projectID)
             Self.invalidateFileCache()
             Log.meeting.info("📝 Meeting notes → \(fileURL.path)")
         } catch {

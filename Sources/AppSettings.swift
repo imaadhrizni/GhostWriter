@@ -891,6 +891,9 @@ final class AppSettings: ObservableObject {
         projectAssignments = projectAssignments.filter { !doomed.contains($0.value) }
     }
 
+    /// The project a meeting file is currently assigned to, if any.
+    func projectID(forNote filename: String) -> String? { projectAssignments[filename] }
+
     /// Record which project a meeting file belongs to (keyed by filename;
     /// the timestamped name is unique across the notes tree).
     func assignNote(_ filename: String, toProjectID id: String?) {

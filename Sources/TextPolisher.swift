@@ -332,56 +332,82 @@ final class TextPolisher {
         let dynamic: Bool
     }
 
-    /// Combined agenda status: how each user-agenda item is tracking, plus any
-    /// additional topics the meeting itself raised ("dynamic" agenda). For
-    /// dynamic items, `covered` means the topic was actually resolved/decided
-    /// rather than merely raised — so uncovered dynamic items double as the
-    /// "loose ends" list when there's no user agenda. Best-effort: on any
-    /// failure returns user items as uncovered and no dynamic items.
-    func agendaStatus(userAgenda: [String], transcript: String, preferFast: Bool = true) async -> [AgendaEntry] {
-        let items = userAgenda.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        let fallback = items.map { AgendaEntry(text: $0, covered: false, dynamic: false) }
-        guard !apiKey.isEmpty else { return fallback }
+    /// One update of agenda status, designed to be applied on top of prior
+    /// state so the dynamic agenda is stable across ticks (see the caller).
+    struct AgendaStatus {
+        /// Coverage per user-agenda item, aligned to the non-empty items in order.
+        var userCovered: [Bool] = []
+        /// Which of the already-known dynamic topics are now resolved (verbatim text).
+        var resolvedKnown: Set<String> = []
+        /// Genuinely new substantive topics not already known, with resolved state.
+        var newTopics: [(text: String, resolved: Bool)] = []
+    }
 
-        let clipped = String(transcript.suffix(14_000))
-        let numbered = items.isEmpty
+    /// Stateful agenda update. Pass the user's agenda, the dynamic topics already
+    /// discovered so far (`knownDynamic`, verbatim), and the transcript. The model
+    /// (a) marks which user items were covered, (b) says which known topics are now
+    /// resolved, and (c) proposes only genuinely NEW substantive topics — real
+    /// discussion themes/decisions worth a line in the minutes, not keywords. The
+    /// caller keeps `knownDynamic` stable across calls and merges the result, so
+    /// the list accumulates instead of churning. Best-effort: empty status on failure.
+    func agendaStatus(userAgenda: [String], knownDynamic: [String] = [],
+                      transcript: String, preferFast: Bool = true) async -> AgendaStatus {
+        let items = userAgenda.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard !apiKey.isEmpty else { return AgendaStatus(userCovered: Array(repeating: false, count: items.count)) }
+
+        // Discovery reads the whole meeting, not just the tail, so a topic from
+        // early on isn't forgotten once it scrolls out of the recent window.
+        let clipped = String(transcript.suffix(24_000))
+        let numberedAgenda = items.isEmpty
             ? "(none provided)"
             : items.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+        let knownList = knownDynamic.isEmpty
+            ? "(none yet)"
+            : knownDynamic.map { "- \($0)" }.joined(separator: "\n")
+
         let body = ChatRequest(
             model: preferFast ? fastModel : model,
             messages: [
                 .init(role: "system", content: """
-                You track a meeting's agenda. Given the user's numbered agenda (may be "(none provided)")
-                and the transcript so far, respond with ONLY a JSON object, no prose:
-                "covered": array of the user's item numbers (integers) that were meaningfully discussed —
-                  actually addressed, not merely name-dropped. Omit items that were skipped.
-                "discovered": up to 5 objects for substantive topics that came up but are NOT in the
-                  user's agenda, each {"topic": short string, "resolved": bool} where resolved is true
-                  if the topic reached a conclusion/decision and false if it was raised but left open.
-                Use only what's in the transcript — do not invent. Empty arrays are fine.
+                You maintain a meeting's agenda as it unfolds. Inputs: the user's numbered agenda
+                (may be "(none provided)"), the discussion topics ALREADY identified so far, and the
+                transcript. Respond with ONLY a JSON object, no prose:
+                "covered": array of the user's item numbers (integers) meaningfully discussed (actually
+                  addressed, not just name-dropped).
+                "resolved_known": array of the already-identified topics (copy their text verbatim)
+                  that have now reached a conclusion or decision.
+                "new_topics": at most 2 GENUINELY NEW substantive topics not already listed above —
+                  each a real theme, decision, or open question worth a line in the minutes, phrased as
+                  a short noun phrase (e.g. "Q3 hiring plan", not "hiring"). Each {"topic": ..., "resolved": bool}.
+                Rules: Do NOT output keywords or single words. Do NOT restate or rephrase known topics as
+                new ones. Prefer returning an empty "new_topics" over adding something marginal. Only use
+                what's in the transcript.
                 """),
-                .init(role: "user", content: "AGENDA:\n\(numbered)\n\nTRANSCRIPT:\n\(clipped)")
+                .init(role: "user", content: "AGENDA:\n\(numberedAgenda)\n\nKNOWN TOPICS:\n\(knownList)\n\nTRANSCRIPT:\n\(clipped)")
             ],
-            temperature: 0.1,
-            max_tokens: 300
+            temperature: 0,
+            max_tokens: 260
         )
         guard let content = try? await send(body, timeout: 18),
               let start = content.firstIndex(of: "{"), let end = content.lastIndex(of: "}"),
               let data = String(content[start...end]).data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return fallback }
+        else { return AgendaStatus(userCovered: Array(repeating: false, count: items.count)) }
 
         let coveredNums = Set((obj["covered"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue ?? Int("\($0)") })
-        var entries = items.enumerated().map {
-            AgendaEntry(text: $0.element, covered: coveredNums.contains($0.offset + 1), dynamic: false)
+        var status = AgendaStatus()
+        status.userCovered = (0..<items.count).map { coveredNums.contains($0 + 1) }
+        status.resolvedKnown = Set((obj["resolved_known"] as? [Any] ?? []).compactMap {
+            ($0 as? String)?.trimmingCharacters(in: .whitespaces)
+        }.filter { !$0.isEmpty })
+        let knownSet = Set(knownDynamic.map { $0.lowercased() })
+        for case let d as [String: Any] in (obj["new_topics"] as? [Any] ?? []) {
+            guard let topic = (d["topic"] as? String)?.trimmingCharacters(in: .whitespaces),
+                  topic.count > 2, !knownSet.contains(topic.lowercased()) else { continue }
+            status.newTopics.append((topic, (d["resolved"] as? Bool) ?? false))
+            if status.newTopics.count >= 2 { break }
         }
-        for case let d as [String: Any] in (obj["discovered"] as? [Any] ?? []) {
-            guard let topic = (d["topic"] as? String)?.trimmingCharacters(in: .whitespaces), !topic.isEmpty else { continue }
-            let resolved = (d["resolved"] as? Bool) ?? false
-            entries.append(AgendaEntry(text: topic, covered: resolved, dynamic: true))
-            if entries.count >= items.count + 5 { break }
-        }
-        return entries
+        return status
     }
 
     // MARK: - Follow-up & Tags

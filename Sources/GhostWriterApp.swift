@@ -701,10 +701,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // itself raised (dynamic). Independent of the summary toggle —
                 // writes whenever there's an agenda or discovered topics. Fast
                 // model — this is a notes footer, not a blocking decision.
-                let status = await self.textPolisher.agendaStatus(
-                    userAgenda: agenda, transcript: transcript, preferFast: true)
-                self.meetingNotes.appendAgenda(
-                    status.map { ($0.text, $0.covered, $0.dynamic) }, to: fileURL)
+                // Prefer the live panel's accumulated agenda (the full 6–8 the
+                // user watched build up) over a fresh one-shot, which would only
+                // rediscover a couple of topics.
+                let liveAgenda = await LiveMeetingAssistant.shared.coverageSnapshot
+                if !liveAgenda.isEmpty {
+                    self.meetingNotes.appendAgenda(liveAgenda, to: fileURL)
+                } else {
+                    let status = await self.textPolisher.agendaStatus(
+                        userAgenda: agenda, transcript: transcript, preferFast: true)
+                    let userEntries = zip(agenda, status.userCovered).map { (text: $0.0, covered: $0.1, dynamic: false) }
+                    let dynEntries = status.newTopics.map { (text: $0.text, covered: $0.resolved, dynamic: true) }
+                    self.meetingNotes.appendAgenda(userEntries + dynEntries, to: fileURL)
+                }
 
                 // Auto-tag topics + entities into the front-matter (needs front-matter on).
                 // Person names are only harvested when redaction is off.
@@ -1112,42 +1121,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// "Ask before it ends": when the user deliberately ends a meeting, check
-    /// whether the agenda was covered (or, with no agenda, whether anything was
-    /// left unresolved) and offer to keep recording. Best-effort and cloud-only
-    /// — skipped in Local-only mode, without an API key, or for a thin meeting.
+    /// "Ask before it ends": when the user deliberately ends a meeting, warn
+    /// about anything still open — the user's uncovered agenda items AND any
+    /// dynamically-discovered topics raised but left unresolved — and offer to
+    /// keep recording. Stops straight away if there's nothing outstanding.
     @MainActor
     private func confirmEndAndStopMeeting() async {
         guard !endCoverageChecking else { return }
-        let settings = AppSettings.shared
 
-        // Only worth a check when there's real spoken content and a cloud path.
-        let transcript = meetingNotes.currentFilePath.flatMap { meetingNotes.transcriptText(of: $0) } ?? ""
-        let bodyText = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        let spoken = Self.dialogueLength(of: transcript)   // ignore header/markers
-        guard !settings.localOnlyMode, KeychainService.groqAPIKey() != nil, spoken > 200 else {
-            Log.meeting.info("⏭ End-coverage skipped (local=\(settings.localOnlyMode), spoken=\(spoken))")
-            stopMeetingMode(); return
+        let assistant = LiveMeetingAssistant.shared
+        var uncovered: [String]
+        if assistant.isActive {
+            // Reuse the live panel's accumulated coverage (user ticks + the
+            // discovered topics and their resolved state) — no extra model call.
+            uncovered = assistant.coverageSnapshot.filter { !$0.covered }
+                .map { $0.dynamic ? "\($0.text) (raised, unresolved)" : $0.text }
+            Log.meeting.info("🔎 End-coverage (live): flagged=\(uncovered.count)")
+        } else {
+            // No live panel — do a one-shot read, if there's a cloud path and content.
+            let settings = AppSettings.shared
+            let transcript = meetingNotes.currentFilePath.flatMap { meetingNotes.transcriptText(of: $0) } ?? ""
+            let spoken = Self.dialogueLength(of: transcript)
+            guard !settings.localOnlyMode, KeychainService.groqAPIKey() != nil, spoken > 200 else {
+                Log.meeting.info("⏭ End-coverage skipped (local=\(settings.localOnlyMode), spoken=\(spoken))")
+                stopMeetingMode(); return
+            }
+            endCoverageChecking = true
+            meetingModeMenuItem?.title = "Checking coverage…"
+            let status = await textPolisher.agendaStatus(
+                userAgenda: meetingAgenda,
+                transcript: transcript.trimmingCharacters(in: .whitespacesAndNewlines),
+                preferFast: false)
+            endCoverageChecking = false
+            meetingModeMenuItem?.title = appState.isMeetingMode ? "End Meeting" : "Start Meeting"
+            let userUncovered = zip(meetingAgenda, status.userCovered).filter { !$0.1 }.map { $0.0 }
+            let openTopics = status.newTopics.filter { !$0.resolved }.map { "\($0.text) (raised, unresolved)" }
+            uncovered = userUncovered + openTopics
+            Log.meeting.info("🔎 End-coverage (model): flagged=\(uncovered.count)")
         }
-
-        endCoverageChecking = true
-        meetingModeMenuItem?.title = "Checking coverage…"
-        // Once-per-meeting — use the reliable model, not the fast one.
-        let status = await textPolisher.agendaStatus(userAgenda: meetingAgenda, transcript: bodyText, preferFast: false)
-        // Unresolved = user items not covered, and raised-but-open dynamic topics.
-        let items = status.filter { !$0.covered }.map { $0.dynamic ? "\($0.text) (came up, unresolved)" : $0.text }
-        let agendaCount = meetingAgenda.count, entryCount = status.count, flaggedCount = items.count
-        Log.meeting.info("🔎 End-coverage: agenda=\(agendaCount), entries=\(entryCount), flagged=\(flaggedCount)")
-        endCoverageChecking = false
-        meetingModeMenuItem?.title = appState.isMeetingMode ? "End Meeting" : "Start Meeting"
 
         // The meeting may have been stopped another way while we were checking.
         guard appState.isMeetingMode else { return }
-        guard !items.isEmpty else { stopMeetingMode(); return }
+        guard !uncovered.isEmpty else { stopMeetingMode(); return }
 
         let alert = NSAlert()
         alert.messageText = "Before you end this meeting"
-        alert.informativeText = "These points don't look resolved yet:\n\n" + items.map { "•  \($0)" }.joined(separator: "\n")
+        alert.informativeText = "These points still look open:\n\n" + uncovered.map { "•  \($0)" }.joined(separator: "\n")
         alert.addButton(withTitle: "Keep Recording")
         alert.addButton(withTitle: "End Anyway")
         alert.alertStyle = .informational

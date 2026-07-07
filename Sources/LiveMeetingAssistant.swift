@@ -38,7 +38,27 @@ final class LiveMeetingAssistant: ObservableObject {
     private var transcriptProvider: (() -> String?)?
     private var template: SummaryTemplate = .builtIn(.general)
     private var agenda: [String] = []
+    // Accumulated agenda state across ticks (kept stable so the list doesn't churn).
+    private var dynamicItems: [(text: String, covered: Bool)] = []
+    // Manual tick overrides by item id — authoritative over the model, so a
+    // hand-checked item stays as the user set it across refreshes.
+    private var manualOverrides: [Int: Bool] = [:]
     private var lastBriefedLength = 0
+
+    /// The full accumulated agenda (user + discovered, with covered state) for
+    /// writing into the notes. Survives `stop()` so the finalizer can read it.
+    var coverageSnapshot: [(text: String, covered: Bool, dynamic: Bool)] {
+        coverage.map { ($0.text, $0.covered, $0.dynamic) }
+    }
+
+    /// Toggle an agenda item's done state by hand (tap in the panel). The manual
+    /// value wins over the model so it doesn't get flipped back on the next tick.
+    func toggleCoverage(_ id: Int) {
+        guard let idx = coverage.firstIndex(where: { $0.id == id }) else { return }
+        let newValue = !coverage[idx].covered
+        manualOverrides[id] = newValue
+        coverage[idx].covered = newValue
+    }
 
     // Cadence knobs: check often, but only spend a call when the transcript has
     // grown enough since the last brief.
@@ -56,6 +76,8 @@ final class LiveMeetingAssistant: ObservableObject {
         self.transcriptProvider = transcriptProvider
         self.template = template
         self.agenda = agenda
+        self.dynamicItems = []
+        self.manualOverrides = [:]
         self.coverage = agenda.enumerated().map { AgendaItem(id: $0.offset, text: $0.element, covered: false, dynamic: false) }
         self.brief = TextPolisher.LiveBrief(tldr: [], actions: [])
         self.lastUpdate = nil
@@ -74,8 +96,9 @@ final class LiveMeetingAssistant: ObservableObject {
         loop?.cancel()
         loop = nil
         transcriptProvider = nil
-        agenda = []
-        coverage = []
+        // Note: agenda/coverage state is deliberately NOT cleared here — the
+        // finalizer reads `coverageSnapshot` to write the notes' Agenda section.
+        // start() resets all of it for the next meeting.
         panel?.orderOut(nil)
         visible = false
         updating = false
@@ -131,13 +154,33 @@ final class LiveMeetingAssistant: ObservableObject {
             // Keep the last good brief on screen; try again next tick.
         }
 
-        // Refresh agenda status alongside the brief (fast model): user items'
-        // coverage plus any topics the meeting itself raised (dynamic agenda).
-        let status = await polisher.agendaStatus(userAgenda: agenda, transcript: transcript)
-        coverage = status.enumerated().map {
-            AgendaItem(id: $0.offset, text: $0.element.text,
-                       covered: $0.element.covered, dynamic: $0.element.dynamic)
+        // Refresh agenda status alongside the brief. Stateful: we pass the
+        // dynamic topics discovered so far so the model keeps them stable and
+        // only appends genuinely new ones — the list accumulates rather than
+        // churning on each batch's "hot words".
+        let known = dynamicItems.map { $0.text }
+        let status = await polisher.agendaStatus(userAgenda: agenda, knownDynamic: known, transcript: transcript)
+
+        // Known dynamic topics persist; resolution is monotonic (once resolved,
+        // stays resolved), then any new topics are appended.
+        dynamicItems = dynamicItems.map { item in
+            (text: item.text, covered: item.covered || status.resolvedKnown.contains(item.text))
         }
+        for t in status.newTopics where !dynamicItems.contains(where: { $0.text.lowercased() == t.text.lowercased() }) {
+            dynamicItems.append((text: t.text, covered: t.resolved))
+        }
+
+        // The user's own agenda items are completed BY HAND (tap), never
+        // auto-marked by the model — so they don't light up green on refresh.
+        let userItems = agenda.enumerated().map { i, text in
+            AgendaItem(id: i, text: text, covered: manualOverrides[i] ?? false, dynamic: false)
+        }
+        // Discovered topics carry the model's resolved state, still overridable by tap.
+        let dynEntries = dynamicItems.enumerated().map { i, d in
+            let id = agenda.count + i
+            return AgendaItem(id: id, text: d.text, covered: manualOverrides[id] ?? d.covered, dynamic: true)
+        }
+        coverage = userItems + dynEntries
     }
 
     /// Answer a question grounded in the meeting transcript so far.
@@ -341,9 +384,13 @@ private struct LiveAssistantView: View {
                 .font(.caption2.weight(.semibold)).foregroundColor(.secondary)
             ForEach(assistant.coverage) { item in
                 HStack(alignment: .top, spacing: 5) {
-                    Image(systemName: item.covered ? "checkmark.circle.fill" : "circle")
-                        .font(.caption2)
-                        .foregroundColor(item.covered ? .green : .secondary)
+                    Button { assistant.toggleCoverage(item.id) } label: {
+                        Image(systemName: item.covered ? "checkmark.circle.fill" : "circle")
+                            .font(.caption2)
+                            .foregroundColor(item.covered ? .green : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Tap to mark done / not done")
                     Text(item.text)
                         .font(.caption)
                         .foregroundColor(item.covered ? .secondary : .primary)

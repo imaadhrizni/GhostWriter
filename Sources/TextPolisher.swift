@@ -322,34 +322,23 @@ final class TextPolisher {
 
     // MARK: - Agenda status ("ask before it ends" + dynamic agenda)
 
-    /// A single agenda line and whether the transcript shows it was covered.
-    /// `dynamic` items were surfaced by the model from the discussion itself
-    /// (topics that came up but the user didn't list); `dynamic == false` items
-    /// came from the user's typed agenda.
-    struct AgendaEntry {
-        let text: String
-        let covered: Bool
-        let dynamic: Bool
-    }
-
     /// One update of agenda status, designed to be applied on top of prior
     /// state so the dynamic agenda is stable across ticks (see the caller).
+    /// The model only *surfaces* topics — it never decides they're resolved
+    /// (completion is always the user's to mark), so there's no resolved state here.
     struct AgendaStatus {
         /// Coverage per user-agenda item, aligned to the non-empty items in order.
         var userCovered: [Bool] = []
-        /// Which of the already-known dynamic topics are now resolved (verbatim text).
-        var resolvedKnown: Set<String> = []
-        /// Genuinely new substantive topics not already known, with resolved state.
-        var newTopics: [(text: String, resolved: Bool)] = []
+        /// Genuinely new substantive topics not already known (verbatim text).
+        var newTopics: [String] = []
     }
 
     /// Stateful agenda update. Pass the user's agenda, the dynamic topics already
     /// discovered so far (`knownDynamic`, verbatim), and the transcript. The model
-    /// (a) marks which user items were covered, (b) says which known topics are now
-    /// resolved, and (c) proposes only genuinely NEW substantive topics — real
-    /// discussion themes/decisions worth a line in the minutes, not keywords. The
-    /// caller keeps `knownDynamic` stable across calls and merges the result, so
-    /// the list accumulates instead of churning. Best-effort: empty status on failure.
+    /// (a) marks which user items were covered and (b) proposes only genuinely NEW
+    /// substantive topics — real discussion themes worth a line in the minutes, not
+    /// keywords. The caller keeps `knownDynamic` stable across calls and merges the
+    /// result, so the list accumulates instead of churning. Best-effort: empty on failure.
     func agendaStatus(userAgenda: [String], knownDynamic: [String] = [],
                       transcript: String, preferFast: Bool = true) async -> AgendaStatus {
         let items = userAgenda.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -374,11 +363,9 @@ final class TextPolisher {
                 transcript. Respond with ONLY a JSON object, no prose:
                 "covered": array of the user's item numbers (integers) meaningfully discussed (actually
                   addressed, not just name-dropped).
-                "resolved_known": array of the already-identified topics (copy their text verbatim)
-                  that have now reached a conclusion or decision.
                 "new_topics": at most 2 GENUINELY NEW substantive topics not already listed above —
                   each a real theme, decision, or open question worth a line in the minutes, phrased as
-                  a short noun phrase (e.g. "Q3 hiring plan", not "hiring"). Each {"topic": ..., "resolved": bool}.
+                  a short noun phrase (e.g. "Q3 hiring plan", not "hiring"). Array of short strings.
                 Rules: Do NOT output keywords or single words. Do NOT restate or rephrase known topics as
                 new ones. Prefer returning an empty "new_topics" over adding something marginal. Only use
                 what's in the transcript.
@@ -386,7 +373,7 @@ final class TextPolisher {
                 .init(role: "user", content: "AGENDA:\n\(numberedAgenda)\n\nKNOWN TOPICS:\n\(knownList)\n\nTRANSCRIPT:\n\(clipped)")
             ],
             temperature: 0,
-            max_tokens: 260
+            max_tokens: 220
         )
         guard let content = try? await send(body, timeout: 18),
               let start = content.firstIndex(of: "{"), let end = content.lastIndex(of: "}"),
@@ -397,14 +384,13 @@ final class TextPolisher {
         let coveredNums = Set((obj["covered"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue ?? Int("\($0)") })
         var status = AgendaStatus()
         status.userCovered = (0..<items.count).map { coveredNums.contains($0 + 1) }
-        status.resolvedKnown = Set((obj["resolved_known"] as? [Any] ?? []).compactMap {
-            ($0 as? String)?.trimmingCharacters(in: .whitespaces)
-        }.filter { !$0.isEmpty })
         let knownSet = Set(knownDynamic.map { $0.lowercased() })
-        for case let d as [String: Any] in (obj["new_topics"] as? [Any] ?? []) {
-            guard let topic = (d["topic"] as? String)?.trimmingCharacters(in: .whitespaces),
+        // Tolerate both ["topic", …] and [{"topic": …}, …] shapes.
+        for element in (obj["new_topics"] as? [Any] ?? []) {
+            let raw = (element as? String) ?? ((element as? [String: Any])?["topic"] as? String)
+            guard let topic = raw?.trimmingCharacters(in: .whitespaces),
                   topic.count > 2, !knownSet.contains(topic.lowercased()) else { continue }
-            status.newTopics.append((topic, (d["resolved"] as? Bool) ?? false))
+            status.newTopics.append(topic)
             if status.newTopics.count >= 2 { break }
         }
         return status

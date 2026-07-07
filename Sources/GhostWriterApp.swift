@@ -130,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installEditMenu()
         setupStatusItem()
         setupOverlayPanel()
         setupHotkeyCallbacks()
@@ -225,6 +226,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - Setup
+
+    /// Install a minimal main menu with a standard Edit menu. As an accessory
+    /// app (LSUIElement) GhostWriter has no menu bar of its own, so without this
+    /// the ⌘X/⌘C/⌘V/⌘A/⌘Z key equivalents have no menu items to dispatch to the
+    /// focused text field — copy/paste appears "broken" in every text field
+    /// (API key, agenda, Ask, settings, the notes editor). The menu bar stays
+    /// hidden; only the shortcuts get wired into the responder chain.
+    private func installEditMenu() {
+        let mainMenu = NSMenu()
+
+        // App menu — the first submenu is conventionally the app menu.
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Quit GhostWriter",
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+
+        // Edit menu — nil targets so each item routes to the first responder
+        // (the focused field editor), which implements these selectors.
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+
+        NSApp.mainMenu = mainMenu
+    }
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -711,7 +746,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let status = await self.textPolisher.agendaStatus(
                         userAgenda: agenda, transcript: transcript, preferFast: true)
                     let userEntries = zip(agenda, status.userCovered).map { (text: $0.0, covered: $0.1, dynamic: false) }
-                    let dynEntries = status.newTopics.map { (text: $0.text, covered: $0.resolved, dynamic: true) }
+                    // Discovered topics are surfaced, never auto-completed.
+                    let dynEntries = status.newTopics.map { (text: $0, covered: false, dynamic: true) }
                     self.meetingNotes.appendAgenda(userEntries + dynEntries, to: fileURL)
                 }
 
@@ -1155,7 +1191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             endCoverageChecking = false
             meetingModeMenuItem?.title = appState.isMeetingMode ? "End Meeting" : "Start Meeting"
             let userUncovered = zip(meetingAgenda, status.userCovered).filter { !$0.1 }.map { $0.0 }
-            let openTopics = status.newTopics.filter { !$0.resolved }.map { "\($0.text) (raised, unresolved)" }
+            let openTopics = status.newTopics.map { "\($0) (raised, unresolved)" }
             uncovered = userUncovered + openTopics
             Log.meeting.info("🔎 End-coverage (model): flagged=\(uncovered.count)")
         }

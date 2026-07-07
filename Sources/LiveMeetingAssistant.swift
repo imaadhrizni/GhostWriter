@@ -39,7 +39,8 @@ final class LiveMeetingAssistant: ObservableObject {
     private var template: SummaryTemplate = .builtIn(.general)
     private var agenda: [String] = []
     // Accumulated agenda state across ticks (kept stable so the list doesn't churn).
-    private var dynamicItems: [(text: String, covered: Bool)] = []
+    private var dynamicItems: [String] = []   // discovered topic texts, in discovery order
+    private var dismissedTopics: Set<String> = []   // lowercased texts the user waved off
     // Manual tick overrides by item id — authoritative over the model, so a
     // hand-checked item stays as the user set it across refreshes.
     private var manualOverrides: [Int: Bool] = [:]
@@ -60,6 +61,16 @@ final class LiveMeetingAssistant: ObservableObject {
         coverage[idx].covered = newValue
     }
 
+    /// Dismiss a discovered (dynamic) topic as false/irrelevant. It disappears
+    /// from the panel, won't be re-suggested, and won't show in the end prompt
+    /// or notes. Only dynamic items can be dismissed (user agenda items can't).
+    func dismissTopic(_ id: Int) {
+        guard let item = coverage.first(where: { $0.id == id }), item.dynamic else { return }
+        dismissedTopics.insert(item.text.lowercased())
+        manualOverrides[id] = nil
+        coverage.removeAll { $0.id == id }
+    }
+
     // Cadence knobs: check often, but only spend a call when the transcript has
     // grown enough since the last brief.
     private let tickSeconds: UInt64 = 25
@@ -77,6 +88,7 @@ final class LiveMeetingAssistant: ObservableObject {
         self.template = template
         self.agenda = agenda
         self.dynamicItems = []
+        self.dismissedTopics = []
         self.manualOverrides = [:]
         self.coverage = agenda.enumerated().map { AgendaItem(id: $0.offset, text: $0.element, covered: false, dynamic: false) }
         self.brief = TextPolisher.LiveBrief(tldr: [], actions: [])
@@ -158,27 +170,28 @@ final class LiveMeetingAssistant: ObservableObject {
         // dynamic topics discovered so far so the model keeps them stable and
         // only appends genuinely new ones — the list accumulates rather than
         // churning on each batch's "hot words".
-        let known = dynamicItems.map { $0.text }
-        let status = await polisher.agendaStatus(userAgenda: agenda, knownDynamic: known, transcript: transcript)
+        let status = await polisher.agendaStatus(userAgenda: agenda, knownDynamic: dynamicItems, transcript: transcript)
 
-        // Known dynamic topics persist; resolution is monotonic (once resolved,
-        // stays resolved), then any new topics are appended.
-        dynamicItems = dynamicItems.map { item in
-            (text: item.text, covered: item.covered || status.resolvedKnown.contains(item.text))
-        }
-        for t in status.newTopics where !dynamicItems.contains(where: { $0.text.lowercased() == t.text.lowercased() }) {
-            dynamicItems.append((text: t.text, covered: t.resolved))
+        // The model only SURFACES topics — it never decides they're "resolved".
+        // (On the same transcript that surfaced a topic it can't reliably tell
+        // "discussed" from "decided", so it would false-tick almost immediately.)
+        // New topics are appended once and stay put; nothing auto-resolves.
+        for t in status.newTopics
+        where !dynamicItems.contains(where: { $0.lowercased() == t.lowercased() })
+              && !dismissedTopics.contains(t.lowercased()) {
+            dynamicItems.append(t)
         }
 
-        // The user's own agenda items are completed BY HAND (tap), never
-        // auto-marked by the model — so they don't light up green on refresh.
+        // Both user agenda items and discovered topics complete BY HAND (tap) —
+        // no AI auto-marking, so nothing lights up green on refresh.
         let userItems = agenda.enumerated().map { i, text in
             AgendaItem(id: i, text: text, covered: manualOverrides[i] ?? false, dynamic: false)
         }
-        // Discovered topics carry the model's resolved state, still overridable by tap.
-        let dynEntries = dynamicItems.enumerated().map { i, d in
+        // Enumerate over the full list (ids stay stable) but skip dismissed ones.
+        let dynEntries = dynamicItems.enumerated().compactMap { i, text -> AgendaItem? in
+            guard !dismissedTopics.contains(text.lowercased()) else { return nil }
             let id = agenda.count + i
-            return AgendaItem(id: id, text: d.text, covered: manualOverrides[id] ?? d.covered, dynamic: true)
+            return AgendaItem(id: id, text: text, covered: manualOverrides[id] ?? false, dynamic: true)
         }
         coverage = userItems + dynEntries
     }
@@ -401,6 +414,15 @@ private struct LiveAssistantView: View {
                             .font(.system(size: 7))
                             .foregroundStyle(.tint)
                             .help("Surfaced from the discussion")
+                        Spacer(minLength: 2)
+                        // Dismiss a false/irrelevant discovered topic.
+                        Button { assistant.dismissTopic(item.id) } label: {
+                            Image(systemName: "xmark.circle")
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Dismiss — not relevant")
                     }
                 }
             }

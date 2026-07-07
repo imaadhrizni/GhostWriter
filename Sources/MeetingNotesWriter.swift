@@ -11,6 +11,30 @@ final class MeetingNotesWriter {
     /// The most recently finished session's file (survives endSession).
     private(set) var lastCompletedFilePath: URL?
 
+    // Rolling recent-transcript context used to self-prime the next segment's
+    // transcription (Whisper attends to prior text, so names/jargon stay
+    // consistent once they first appear). Best-effort and guarded, because
+    // mic and system-audio segment tasks append concurrently.
+    private let contextLock = NSLock()
+    private var recentSegments: [String] = []
+
+    /// The tail of the recent transcript, fed back as a transcription prompt
+    /// hint for the next segment. Empty until the first segment lands.
+    var promptContext: String {
+        contextLock.lock(); defer { contextLock.unlock() }
+        return recentSegments.joined(separator: " ")
+    }
+
+    private func rememberContext(_ text: String) {
+        contextLock.lock(); defer { contextLock.unlock() }
+        recentSegments.append(text)
+        // Keep only the last couple of segments — Whisper's prompt window is
+        // short and stale context adds no value.
+        if recentSegments.count > 2 {
+            recentSegments.removeFirst(recentSegments.count - 2)
+        }
+    }
+
     /// Read live from settings so a folder change applies to the next session.
     /// Includes the Year/Month subfolder when organization is enabled.
     private var notesDirectory: URL { AppSettings.shared.meetingDestinationFolder() }
@@ -175,6 +199,7 @@ final class MeetingNotesWriter {
     /// Call when meeting mode starts. Creates the notes file and writes the header.
     func beginSession() {
         nameOverrides.removeAll()
+        contextLock.lock(); recentSegments.removeAll(); contextLock.unlock()
         do {
             try FileManager.default.createDirectory(at: notesDirectory, withIntermediateDirectories: true)
 
@@ -290,6 +315,7 @@ final class MeetingNotesWriter {
         let speakerTag = isYou ? "**\(display)**" : "_\(display)_"
         let line = "**[\(timestamp)]** \(speakerTag): \(text)\n\n"
         append(line, to: fileURL)
+        rememberContext(text)
     }
 
     /// Appends an italic event marker (e.g. "Transcription paused") with a timestamp.

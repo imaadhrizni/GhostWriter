@@ -20,9 +20,12 @@ final class GroqService {
     // MARK: - Transcription
 
     /// Transcribe raw PCM audio data to text using Groq Whisper-v3.
-    /// - Parameter audioData: Raw 16kHz, 16-bit, mono PCM data
+    /// - Parameters:
+    ///   - audioData: Raw 16kHz, 16-bit, mono PCM data
+    ///   - context: Recent transcript text used to self-prime decoding, so
+    ///     names/jargon stay consistent once they first appear. Optional.
     /// - Returns: Transcribed text
-    func transcribe(audioData: Data) async throws -> String {
+    func transcribe(audioData: Data, context: String = "") async throws -> String {
         guard !apiKey.isEmpty else {
             throw GroqError.missingAPIKey
         }
@@ -43,11 +46,15 @@ final class GroqService {
         // Model parameter (user-configurable in Settings)
         body.appendMultipart(name: "model", value: AppSettings.shared.transcriptionModel, boundary: boundary)
 
-        // Custom vocabulary: Whisper biases toward terms seen in the prompt —
-        // names, acronyms, and jargon transcribe far more reliably.
-        let vocabularyPrompt = AppSettings.shared.vocabularyPrompt
-        if !vocabularyPrompt.isEmpty {
-            body.appendMultipart(name: "prompt", value: vocabularyPrompt, boundary: boundary)
+        // Prompt hint: Whisper biases decoding toward text it has already
+        // "seen". We combine the user's static glossary with rolling context —
+        // the recent transcript — so names, acronyms, and jargon transcribe
+        // consistently once they first appear. Self-priming needs no setup and
+        // is the same for every user, which matters for a distributed build.
+        let promptHint = Self.composePrompt(
+            vocabulary: AppSettings.shared.vocabularyPrompt, context: context)
+        if !promptHint.isEmpty {
+            body.appendMultipart(name: "prompt", value: promptHint, boundary: boundary)
         }
 
         // Language hint (optional — helps accuracy; user-configurable)
@@ -86,6 +93,23 @@ final class GroqService {
         // Parse response, then apply the user's find→replace rules
         let result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
         return AppSettings.shared.applyReplacements(to: result.text)
+    }
+
+    /// Combine the static glossary with rolling transcript context into a single
+    /// Whisper `prompt` hint. Whisper attends most to the END of the prompt, so
+    /// the recent transcript goes last (closest to the new audio) and the
+    /// glossary leads. Context is capped to its most recent slice to stay within
+    /// Whisper's short prompt window and to limit the chance of the model
+    /// echoing the primer back into the transcript.
+    static func composePrompt(vocabulary: String, context: String) -> String {
+        let vocab = vocabulary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ctx = String(context.trimmingCharacters(in: .whitespacesAndNewlines).suffix(500))
+        switch (vocab.isEmpty, ctx.isEmpty) {
+        case (true, true):   return ""
+        case (false, true):  return vocab
+        case (true, false):  return ctx
+        case (false, false): return vocab + "\n" + ctx
+        }
     }
 }
 

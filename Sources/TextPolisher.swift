@@ -92,7 +92,7 @@ final class TextPolisher {
         }
         if includeActionItems {
             sections.append("""
-            A section with the exact heading "## Action Items" containing a Markdown task list. Format each item as "- [ ] <action> — @<owner> (due: <date>)". Append "@<owner>" (one word, no spaces) only when the transcript makes the responsible person clear, and "(due: <date>)" only when a deadline is stated; otherwise leave that part off. Omit the whole section if there are no action items.
+            A section with the exact heading "## Action Items" containing a Markdown task list. Format each item as "- [ ] <action> — @<owner> (due: <date>)". Append "@<owner>" (one word, no spaces) only when the transcript makes the responsible person clear, and "(due: <date>)" only when a deadline is stated; otherwise leave that part off. If there are no action items, still include the heading with "_None_" as its body.
             """)
         }
 
@@ -104,9 +104,9 @@ final class TextPolisher {
                 \(sections.joined(separator: "\n"))
                 Rules:
                 - Do not invent content that is not in the transcript.
-                - Never output an empty section — omit a section entirely when there is nothing for it.
+                - Always include EVERY section heading listed above, in that order — even when a section is empty. When a section has nothing, write exactly "_None_" as its body. Ignore any "(omit if none)" note in a section's description; never drop a heading.
                 - Never repeat a heading.
-                - If the transcript has too little substantive discussion to summarize, output exactly NOT_ENOUGH_CONTENT and nothing else.
+                - If the ENTIRE meeting has too little substantive discussion to summarize at all, output exactly NOT_ENOUGH_CONTENT and nothing else.
                 """),
                 .init(role: "user", content: "Summarize this meeting transcript:\n\n\(clipped)")
             ],
@@ -267,6 +267,56 @@ final class TextPolisher {
         UsageStats.shared.recordChat(inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens)
     }
 
+    // MARK: - Live Brief
+
+    /// A compact, mid-meeting brief: a few TL;DR bullets and the open action
+    /// items so far. Kept short and cheap — called periodically while a meeting
+    /// runs. Best-effort: throws on failure so the caller can keep the last good
+    /// brief on screen.
+    struct LiveBrief {
+        let tldr: [String]
+        let actions: [String]
+        var isEmpty: Bool { tldr.isEmpty && actions.isEmpty }
+    }
+
+    func liveBrief(transcript: String, template: SummaryTemplate = .builtIn(.general)) async throws -> LiveBrief {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        // Recent context only — the running meeting, not the whole archive.
+        let clipped = String(transcript.suffix(9_000))
+        let body = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                You keep a live brief of an ongoing meeting. From the transcript so far,
+                respond with ONLY a JSON object, no prose:
+                "tldr": up to 4 very short bullet strings capturing what's been discussed/decided so far,
+                "actions": up to 5 short open action-item strings (append " — @name" when an owner is clear).
+                Be concise and factual — use only what's in the transcript. Empty arrays are fine early on.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.2,
+            max_tokens: 400
+        )
+        let content = try await send(body, timeout: 20)
+        return Self.parseLiveBrief(content)
+    }
+
+    static func parseLiveBrief(_ content: String) -> LiveBrief {
+        guard let start = content.firstIndex(of: "{"),
+              let end = content.lastIndex(of: "}"),
+              let data = String(content[start...end]).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return LiveBrief(tldr: [], actions: []) }
+        func list(_ key: String, _ cap: Int) -> [String] {
+            (obj[key] as? [Any] ?? []).compactMap { $0 as? String }
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+                .prefix(cap).map { $0 }
+        }
+        return LiveBrief(tldr: list("tldr", 4), actions: list("actions", 5))
+    }
+
     // MARK: - Follow-up & Tags
 
     /// Draft a follow-up message recapping a meeting, shaped by its template
@@ -297,30 +347,79 @@ final class TextPolisher {
         return try await send(body, timeout: 30)
     }
 
-    /// Extract a few short topic tags (lowercase, hyphenated) for front-matter.
-    /// Best-effort: returns [] on any failure.
-    func extractTags(transcript: String) async -> [String] {
-        guard !apiKey.isEmpty else { return [] }
+    /// Topic tags plus the named entities (people, customer, project) a meeting
+    /// is about — for structured front-matter and richer search.
+    struct MeetingMetadata {
+        var topics: [String] = []      // lowercase, hyphenated subject tags
+        var people: [String] = []      // participant/person names (proper-cased)
+        var customer: String? = nil    // customer / client / org name
+        var project: String? = nil     // project / product name
+
+        var isEmpty: Bool {
+            topics.isEmpty && people.isEmpty && customer == nil && project == nil
+        }
+    }
+
+    /// Extract topic tags and named entities in a single call. `includePeople`
+    /// is dropped when redaction is on, so participant names aren't harvested
+    /// into metadata the user asked to keep private. Best-effort: returns an
+    /// empty value on any failure.
+    func extractMetadata(transcript: String, includePeople: Bool) async -> MeetingMetadata {
+        guard !apiKey.isEmpty else { return MeetingMetadata() }
         let clipped = String(transcript.suffix(16_000))
+        let peopleLine = includePeople
+            ? #""people": array of participant/person names mentioned (proper case, e.g. ["Priya Fernando"]),"#
+            : #""people": [] (leave empty),"#
         let body = ChatRequest(
             model: model,
             messages: [
                 .init(role: "system", content: """
-                Extract 3-6 short topic tags describing this meeting's subjects.
-                Output ONLY a comma-separated list of lowercase, hyphenated tags
-                (e.g. budget-review, hiring, q3-roadmap). No other text.
+                Identify what this meeting is about. Respond with ONLY a JSON object, no prose, with keys:
+                "topics": 3-6 short lowercase hyphenated subject tags (e.g. ["budget-review","q3-roadmap"]),
+                \(peopleLine)
+                "customer": the customer/client/company name if this is about one, else null,
+                "project": the project or product name if one is central, else null.
+                Use null (not "") for unknown string fields. Do not invent names.
                 """),
                 .init(role: "user", content: clipped)
             ],
             temperature: 0,
-            max_tokens: 60
+            max_tokens: 200
         )
-        guard let content = try? await send(body, timeout: 15) else { return [] }
-        return content
-            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
-            .map { $0.trimmingCharacters(in: .whitespaces).lowercased()
-                     .replacingOccurrences(of: " ", with: "-") }
+        guard let content = try? await send(body, timeout: 15) else { return MeetingMetadata() }
+        return Self.parseMetadata(content, includePeople: includePeople)
+    }
+
+    /// Parse the model's JSON metadata leniently (tolerates code fences / stray text).
+    static func parseMetadata(_ content: String, includePeople: Bool) -> MeetingMetadata {
+        guard let start = content.firstIndex(of: "{"),
+              let end = content.lastIndex(of: "}"),
+              let data = String(content[start...end]).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return MeetingMetadata() }
+
+        func cleanTag(_ s: String) -> String {
+            s.trimmingCharacters(in: .whitespaces).lowercased()
+                .replacingOccurrences(of: " ", with: "-")
+        }
+        func str(_ key: String) -> String? {
+            guard let v = obj[key] as? String else { return nil }
+            let t = v.trimmingCharacters(in: .whitespaces)
+            return (t.isEmpty || t.lowercased() == "null") ? nil : t
+        }
+
+        var m = MeetingMetadata()
+        m.topics = (obj["topics"] as? [Any] ?? []).compactMap { $0 as? String }
+            .map(cleanTag)
             .filter { !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" } }
+        if includePeople {
+            m.people = (obj["people"] as? [Any] ?? []).compactMap { $0 as? String }
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        }
+        m.customer = str("customer")
+        m.project = str("project")
+        return m
     }
 
     /// Shared chat request: sends, records usage, returns the message content.

@@ -33,6 +33,7 @@ final class AppSettings: ObservableObject {
         static let overlayMode            = "meeting.overlayMode"
         static let summariesEnabled       = "meeting.summariesEnabled"
         static let actionItemsEnabled     = "meeting.actionItemsEnabled"
+        static let liveAssistantEnabled   = "meeting.liveAssistantEnabled"
         static let notifyOnMeetingEnd     = "meeting.notifyOnMeetingEnd"
         static let frontMatterEnabled     = "meeting.frontMatterEnabled"
         static let diarizationEnabled     = "meeting.diarizationEnabled"
@@ -87,7 +88,8 @@ final class AppSettings: ObservableObject {
                           silenceDebounce, maxSegmentSeconds, echoGateWindow,
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
                           notesFolderPath, overlayMode,
-                          summariesEnabled, actionItemsEnabled, notifyOnMeetingEnd, frontMatterEnabled,
+                          summariesEnabled, actionItemsEnabled, liveAssistantEnabled,
+                          notifyOnMeetingEnd, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, transcriptionLanguage,
                           vocabulary, replacements, appProfiles,
                           dictationHistoryOn, dictationHistoryLimit,
@@ -124,8 +126,9 @@ final class AppSettings: ObservableObject {
         static let overlayMode                     = MeetingOverlayMode.minimal
         static let summariesEnabled                = true
         static let actionItemsEnabled              = true
+        static let liveAssistantEnabled            = true
         static let notifyOnMeetingEnd              = true
-        static let frontMatterEnabled              = false
+        static let frontMatterEnabled              = true
         static let diarizationEnabled              = true
         static let offlineFallback                 = true
         static let transcriptionLanguage           = "en"
@@ -311,6 +314,13 @@ final class AppSettings: ObservableObject {
     var actionItemsEnabled: Bool {
         get { bool(Key.actionItemsEnabled, Default.actionItemsEnabled) }
         set { set(newValue, Key.actionItemsEnabled) }
+    }
+
+    /// Show a live rolling brief (TL;DR + open action items) during a meeting.
+    /// Off by default — it makes periodic LLM calls while the meeting runs.
+    var liveAssistantEnabled: Bool {
+        get { bool(Key.liveAssistantEnabled, Default.liveAssistantEnabled) }
+        set { set(newValue, Key.liveAssistantEnabled) }
     }
 
     /// Show a notification when meeting notes are saved.

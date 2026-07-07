@@ -304,6 +304,50 @@ final class MeetingNotesWriter {
         Log.meeting.info("🏷 Front-matter tags updated")
     }
 
+    /// Slug a display name into a hyphenated tag token ("Acme Corp" → "acme-corp").
+    private static func slug(_ s: String) -> String {
+        let lowered = s.lowercased().unicodeScalars.map {
+            CharacterSet.alphanumerics.contains($0) ? Character($0) : "-"
+        }
+        return String(lowered).split(separator: "-").joined(separator: "-")
+    }
+
+    /// Write structured entity fields (attendees / customer / project) into the
+    /// front-matter and mirror them into `tags:` so tag search and the Obsidian
+    /// graph pick them up. No-op without front-matter. Inserts each field once,
+    /// after the `tags:` line; existing fields are left untouched.
+    static func addMeetingMetadata(topics: [String], people: [String],
+                                   customer: String?, project: String?,
+                                   to fileURL: URL) {
+        // Mirror entities into tags alongside the topic tags.
+        var tagTokens = topics
+        tagTokens += people.map(slug)
+        if let c = customer { tagTokens.append(slug(c)) }
+        if let p = project { tagTokens.append(slug(p)) }
+        addFrontMatterTags(tagTokens.filter { !$0.isEmpty }, to: fileURL)
+
+        // Structured fields for Dataview / Notion-style filtering.
+        guard var content = try? String(contentsOf: fileURL, encoding: .utf8),
+              content.hasPrefix("---") else { return }
+        var lines = content.components(separatedBy: "\n")
+        guard let tagsIdx = lines.firstIndex(where: { $0.hasPrefix("tags:") }) else { return }
+
+        var inserts: [String] = []
+        func addField(_ key: String, _ value: String) {
+            guard !value.isEmpty, !lines.contains(where: { $0.hasPrefix("\(key):") }) else { return }
+            inserts.append("\(key): \(value)")
+        }
+        if !people.isEmpty { addField("attendees", "[\(people.joined(separator: ", "))]") }
+        if let c = customer { addField("customer", c) }
+        if let p = project { addField("project", p) }
+        guard !inserts.isEmpty else { return }
+
+        lines.insert(contentsOf: inserts, at: tagsIdx + 1)
+        content = lines.joined(separator: "\n")
+        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
+        Log.meeting.info("🏷 Front-matter entities added")
+    }
+
     /// Full text of a notes file (for summarization).
     func transcriptText(of fileURL: URL) -> String? {
         try? String(contentsOf: fileURL, encoding: .utf8)

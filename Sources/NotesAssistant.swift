@@ -127,6 +127,60 @@ enum NotesLibrary {
         return hits
     }
 
+    /// Whether on-device semantic search is available (an OS embedding model exists).
+    static var semanticAvailable: Bool { SemanticIndex.shared.isAvailable }
+
+    /// Meaning-based search: rank note chunks by semantic similarity to the
+    /// query, one hit per meeting (its best-matching chunk), newest-first among
+    /// ties. Returns [] if embeddings are unavailable (caller falls back to text).
+    static func semanticSearch(_ query: String, maxHits: Int = 40,
+                               maxFiles: Int = AppSettings.shared.searchDepth) async -> [SearchHit] {
+        let files = meetingFiles(limit: maxFiles)
+        let byURL = Dictionary(files.map { ($0.url, $0) }, uniquingKeysWith: { a, _ in a })
+        let results = await SemanticIndex.shared.query(query, files: files.map(\.url), topK: maxHits * 2)
+
+        var seen = Set<URL>()
+        var hits: [SearchHit] = []
+        for r in results where r.score > 0.15 {   // drop weak matches
+            guard let file = byURL[r.url], !seen.contains(r.url) else { continue }
+            seen.insert(r.url)
+            hits.append(SearchHit(file: file, line: r.text))
+            if hits.count >= maxHits { break }
+        }
+        return hits
+    }
+
+    /// Semantic retrieval for cross-meeting Ask: the top chunks by meaning,
+    /// grouped per meeting and labeled so the model can cite sources.
+    static func semanticExcerpts(for query: String,
+                                 maxFiles: Int = AppSettings.shared.searchDepth,
+                                 maxChars: Int = 20_000, topK: Int = 24) async -> ExcerptResult {
+        let files = meetingFiles(limit: maxFiles)
+        let byURL = Dictionary(files.map { ($0.url, $0) }, uniquingKeysWith: { a, _ in a })
+        let results = await SemanticIndex.shared.query(query, files: files.map(\.url), topK: topK)
+        guard !results.isEmpty else { return ExcerptResult(text: "", sources: []) }
+
+        // Group chunks by meeting, preserving descending relevance.
+        var order: [URL] = []
+        var byFile: [URL: [String]] = [:]
+        for r in results where r.score > 0.12 {
+            if byFile[r.url] == nil { order.append(r.url) }
+            byFile[r.url, default: []].append(r.text)
+        }
+
+        var out = ""
+        var sources: [MeetingFile] = []
+        for url in order {
+            guard let file = byURL[url] else { continue }
+            var block = "\n=== Meeting \(file.displayName) ===\n"
+            for chunk in byFile[url] ?? [] { block += chunk + "\n" }
+            if out.count + block.count > maxChars { break }
+            out += block
+            sources.append(file)
+        }
+        return ExcerptResult(text: out, sources: sources)
+    }
+
     /// Retrieval for cross-meeting Ask: lines matching any search term, with
     /// a little surrounding context, grouped per meeting and labeled so the
     /// model can cite which meeting an answer came from.
@@ -391,9 +445,15 @@ private struct BrowseTab: View {
 // MARK: - Search
 
 private struct SearchTab: View {
+    private enum Mode: String, CaseIterable, Identifiable {
+        case text = "Text", meaning = "Meaning"
+        var id: String { rawValue }
+    }
     @State private var query = ""
     @State private var hits: [NotesLibrary.SearchHit] = []
     @State private var searchTask: Task<Void, Never>?
+    @State private var mode: Mode = NotesLibrary.semanticAvailable ? .meaning : .text
+    @State private var searching = false
 
     /// Hits per meeting, in arrival (newest-first) order.
     private var groupedHits: [(file: NotesLibrary.MeetingFile, hits: [NotesLibrary.SearchHit])] {
@@ -412,12 +472,16 @@ private struct SearchTab: View {
     /// off the main thread so the field never stutters on a large archive.
     private func scheduleSearch(_ q: String) {
         searchTask?.cancel()
+        let useMeaning = mode == .meaning
         searchTask = Task {
-            try? await Task.sleep(for: .milliseconds(200))
+            try? await Task.sleep(for: .milliseconds(useMeaning ? 350 : 200))
             guard !Task.isCancelled else { return }
-            let results = await NotesLibrary.search(q)
+            await MainActor.run { searching = true }
+            let results = useMeaning
+                ? await NotesLibrary.semanticSearch(q)
+                : await NotesLibrary.search(q)
             guard !Task.isCancelled else { return }
-            await MainActor.run { hits = results }
+            await MainActor.run { hits = results; searching = false }
         }
     }
 
@@ -425,9 +489,19 @@ private struct SearchTab: View {
         VStack(spacing: 8) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                TextField("Search all meeting notes…", text: $query)
+                TextField(mode == .meaning ? "Search by meaning…" : "Search all meeting notes…", text: $query)
                     .textFieldStyle(.plain)
                     .onChange(of: query) { _, q in scheduleSearch(q) }
+                if searching { ProgressView().controlSize(.small) }
+                if NotesLibrary.semanticAvailable {
+                    Picker("", selection: $mode) {
+                        ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 150)
+                    .onChange(of: mode) { _, _ in scheduleSearch(query) }
+                }
             }
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
@@ -436,9 +510,13 @@ private struct SearchTab: View {
             if hits.isEmpty {
                 Spacer()
                 Text(query.trimmingCharacters(in: .whitespaces).count < 2
-                     ? "Type to search every meeting transcript."
-                     : "No matches.")
+                     ? (mode == .meaning
+                        ? "Search by meaning — ask in your own words (e.g. “pricing concerns”), not just exact keywords."
+                        : "Type to search every meeting transcript.")
+                     : (searching ? "Searching…" : "No matches."))
                     .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
                 Spacer()
             } else {
                 // Hits arrive newest-meeting-first — group consecutive hits
@@ -607,12 +685,19 @@ private struct AskTab: View {
                     result = try await polisher.answer(question: q, transcript: transcript)
                     usedSources = [meeting]
                 } else {
-                    // All meetings: expand the question into search terms,
-                    // retrieve matching excerpts, answer from those.
-                    let terms = await polisher.searchTerms(for: q)
-                    let retrieved = NotesLibrary.excerpts(matching: terms)
+                    // All meetings: retrieve the most relevant excerpts, answer
+                    // from those. Prefer on-device semantic retrieval; fall back
+                    // to keyword expansion when embeddings are unavailable or
+                    // find nothing.
+                    var retrieved = NotesLibrary.semanticAvailable
+                        ? await NotesLibrary.semanticExcerpts(for: q)
+                        : NotesLibrary.ExcerptResult(text: "", sources: [])
                     if retrieved.text.isEmpty {
-                        result = "No meeting content matched this question (searched terms: \(terms.joined(separator: ", "))). Try rewording, or pick a specific meeting."
+                        let terms = await polisher.searchTerms(for: q)
+                        retrieved = NotesLibrary.excerpts(matching: terms)
+                    }
+                    if retrieved.text.isEmpty {
+                        result = "No meeting content matched this question. Try rewording, or pick a specific meeting."
                     } else {
                         result = try await polisher.answerAcrossMeetings(question: q, excerpts: retrieved.text)
                         usedSources = retrieved.sources

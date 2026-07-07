@@ -120,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pauseLock.lock(); meetingTranscriptionPaused = value; pauseLock.unlock()
     }
     private var pauseMenuItem: NSMenuItem?
+    private var liveBriefMenuItem: NSMenuItem?
     private var statsMenuItem: NSMenuItem?
     private var errorMenuItem: NSMenuItem?
 
@@ -272,6 +273,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pauseItem.target = self
         menu.addItem(pauseItem)
         self.pauseMenuItem = pauseItem
+
+        let liveBriefItem = NSMenuItem(title: "Hide Live Brief", action: #selector(toggleLiveBrief), keyEquivalent: "")
+        liveBriefItem.image = NSImage(systemSymbolName: "sparkles.rectangle.stack", accessibilityDescription: nil)
+        liveBriefItem.target = self
+        menu.addItem(liveBriefItem)
+        self.liveBriefMenuItem = liveBriefItem
 
         // Quick note sits with the capture actions — all three are "record
         // something now" verbs sharing the same hotkey family.
@@ -595,7 +602,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// sections, and duplicated headings. Returns nil when nothing real remains.
     private static func sanitizedSummary(_ raw: String) -> String? {
         let trimmedRaw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedRaw.isEmpty, !trimmedRaw.contains("NOT_ENOUGH_CONTENT") else { return nil }
+        // Only bail when the model says the WHOLE meeting was too thin — a
+        // stray token inside one section must not discard the entire summary.
+        guard !trimmedRaw.isEmpty, trimmedRaw != "NOT_ENOUGH_CONTENT" else { return nil }
 
         // Split into (heading, body) sections
         var sections: [(heading: String?, body: [String])] = [(nil, [])]
@@ -609,23 +618,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         var seenHeadings = Set<String>()
         var output: [String] = []
-        var hasContent = false
+        var sawHeading = false
         for section in sections {
             let body = section.body.joined(separator: "\n")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let heading = section.heading {
+                // Keep every distinct heading — even with an empty body, so the
+                // structure (Summary / Decisions / Action Items …) is always
+                // visible. Blank sections render an explicit "_None_".
                 let key = heading.trimmingCharacters(in: CharacterSet(charactersIn: "# ")).lowercased()
-                guard !seenHeadings.contains(key), !body.isEmpty else { continue }
+                guard !seenHeadings.contains(key) else { continue }
                 seenHeadings.insert(key)
                 output.append(heading)
-                output.append(body)
-                hasContent = true
+                output.append(body.isEmpty ? "_None_" : body)
+                sawHeading = true
             } else if !body.isEmpty {
                 output.append(body)
-                hasContent = true
             }
         }
-        return hasContent ? output.joined(separator: "\n\n") : nil
+        return sawHeading ? output.joined(separator: "\n\n") : nil
     }
 
     /// The single transcription choke point for dictation, quick notes, and
@@ -683,10 +694,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.reportError("Meeting summary failed: \(error.localizedDescription)")
                 }
 
-                // Auto-tag topics into the front-matter (needs front-matter on).
+                // Auto-tag topics + entities into the front-matter (needs front-matter on).
+                // Person names are only harvested when redaction is off.
                 if self.settings.autoTagging, self.settings.frontMatterEnabled {
-                    let tags = await self.textPolisher.extractTags(transcript: transcript)
-                    MeetingNotesWriter.addFrontMatterTags(tags, to: fileURL)
+                    let meta = await self.textPolisher.extractMetadata(
+                        transcript: transcript, includePeople: !self.settings.redactionEnabled)
+                    if !meta.isEmpty {
+                        MeetingNotesWriter.addMeetingMetadata(
+                            topics: meta.topics, people: meta.people,
+                            customer: meta.customer, project: meta.project, to: fileURL)
+                    }
                 }
             }
 
@@ -712,6 +729,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// ⌃⌥P: pause/resume meeting transcription without ending the session.
+    /// Toggle the floating Live Brief panel without stopping the briefing.
+    @objc private func toggleLiveBrief() {
+        MainActor.assumeIsolated {
+            let assistant = LiveMeetingAssistant.shared
+            guard assistant.isActive else { return }
+            if assistant.visible { assistant.hide() } else { assistant.show() }
+        }
+    }
+
     @objc private func togglePauseTranscription() {
         guard appState.isMeetingMode else { return }
 
@@ -1072,6 +1098,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // directly — the capture callbacks haven't started yet)
         speakerProfiler.reset()
 
+        // Live in-meeting brief (opt-in; reads the growing notes file).
+        LiveMeetingAssistant.shared.start(
+            transcriptProvider: { [weak self] in
+                guard let url = self?.meetingNotes.currentFilePath else { return nil }
+                return self?.meetingNotes.transcriptText(of: url)
+            },
+            template: settings.selectedTemplate)
+
         // Menu-bar elapsed timer — doubles as a "still recording" indicator
         startMeetingTimer()
 
@@ -1158,6 +1192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.appState.isMeetingMode = false
             self.appState.meetingCaption = ""
             self.appState.isSpeakerActive = false
+            LiveMeetingAssistant.shared.stop()
             self.meetingModeMenuItem?.title = "Start Meeting"
             self.statusItem?.button?.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: "GhostWriter")
 
@@ -1520,6 +1555,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             statsMenuItem?.title = statsLine
             // Pause only makes sense mid-meeting — hide it otherwise.
             pauseMenuItem?.isHidden = !appState.isMeetingMode
+            // Live Brief show/hide — only while its panel is running.
+            let liveActive = LiveMeetingAssistant.shared.isActive
+            liveBriefMenuItem?.isHidden = !liveActive
+            liveBriefMenuItem?.title = LiveMeetingAssistant.shared.visible ? "Hide Live Brief" : "Show Live Brief"
             // Error banner — visible only when there's a recent failure.
             if let message = appState.lastError {
                 errorMenuItem?.isHidden = false

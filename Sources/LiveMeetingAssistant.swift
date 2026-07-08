@@ -79,9 +79,13 @@ final class LiveMeetingAssistant: ObservableObject {
     /// Begin briefing for a meeting. `transcriptProvider` returns the current
     /// notes text (nil if unavailable). No-op if the toggle is off, there's no
     /// API key, or Local-only mode is on.
-    func start(transcriptProvider: @escaping () -> String?, template: SummaryTemplate, agenda: [String] = []) {
+    /// `enabled` is the per-meeting choice (defaults to the global setting when
+    /// the caller doesn't specify one). localOnly / no-key still hard-block it —
+    /// the brief can't run without the cloud.
+    func start(transcriptProvider: @escaping () -> String?, template: SummaryTemplate,
+               agenda: [String] = [], enabled: Bool? = nil) {
         let settings = AppSettings.shared
-        guard settings.liveAssistantEnabled, !settings.localOnlyMode,
+        guard enabled ?? settings.liveAssistantEnabled, !settings.localOnlyMode,
               KeychainService.groqAPIKey() != nil else { return }
 
         self.transcriptProvider = transcriptProvider

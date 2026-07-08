@@ -99,6 +99,22 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 
 // MARK: - Settings Root (System Settings-style sidebar)
 
+/// A macOS switch toggle sized small. Scoping `.controlSize(.small)` inside the
+/// style keeps it to toggles only, so labels, popups, and fields stay regular.
+private struct SmallSwitchToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack {
+            configuration.label
+            Spacer()
+            Toggle("", isOn: configuration.$isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .scaleEffect(0.8, anchor: .trailing)
+        }
+    }
+}
+
 struct SettingsView: View {
     @State private var selection: SettingsSection = .general
 
@@ -150,6 +166,9 @@ struct SettingsView: View {
             .navigationTitle(selection.rawValue)
         }
         .frame(width: 660, height: 480)
+        // Use macOS switches for every Toggle in Settings (cascades to all panes),
+        // sized small so they sit proportionally next to labels and fields.
+        .toggleStyle(SmallSwitchToggleStyle())
     }
 }
 

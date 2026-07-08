@@ -1063,6 +1063,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// live coverage checklist and the end-of-meeting "did we cover it?" check.
     private var meetingAgenda: [String] = []
 
+    /// Whether to show the live brief for the current meeting. Set from the
+    /// start dialog's checkbox (defaults to the global setting); auto-started
+    /// meetings with no dialog fall back to `nil` → the global setting.
+    private var meetingLiveBrief: Bool?
+
     /// The single start-meeting dialog: template picker + confirm/decline.
     /// Both the manual (⌃⌥M / menu) and auto-detect paths run through here so
     /// they can't drift apart.
@@ -1090,6 +1095,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if alert.runModal() == .alertFirstButtonReturn {
             applyTemplateSelection(from: accessory.picker)
             meetingAgenda = Self.parseAgenda(accessory.agendaField.stringValue)
+            meetingLiveBrief = accessory.liveBrief.isEnabled ? (accessory.liveBrief.state == .on) : false
             var projectID = accessory.project.selectedItem?.representedObject as? String
             if projectID == Self.newProjectSentinel { projectID = promptNewProject() }
             let resolved = (projectID?.isEmpty ?? true) ? nil : projectID
@@ -1116,6 +1122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let project = NSPopUpButton(frame: .zero, pullsDown: false)
         let picker = NSPopUpButton(frame: .zero, pullsDown: false)
         let agendaField = NSTextField(frame: .zero)
+        let liveBrief = NSSwitch(frame: .zero)
     }
 
     /// Build the start-dialog accessory. An accessory view without explicit
@@ -1123,27 +1130,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// laid out with explicit frames.
     private static func makeStartAccessory(selectedID: String, lastProjectID: String) -> StartAccessory {
         let width: CGFloat = 300
-        let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: 165))
+        // Consistent vertical rhythm: a caption sits `capGap` above its control,
+        // and groups are separated by `groupGap`. Everything is laid out top-down
+        // with a cursor so the spacing stays even and easy to retune.
+        let capH: CGFloat = 15, popH: CGFloat = 26, fieldH: CGFloat = 44, rowH: CGFloat = 22
+        let capGap: CGFloat = 3, groupGap: CGFloat = 14
+        let height = capH + capGap + popH + groupGap
+                   + capH + capGap + popH + groupGap
+                   + capH + capGap + fieldH + groupGap
+                   + rowH
+        let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: height))
 
-        func label(_ text: String, y: CGFloat) -> NSTextField {
+        // Distance consumed from the top edge; `place` reserves the next element
+        // and returns its bottom-left-origin y.
+        var top: CGFloat = 0
+        func place(_ h: CGFloat) -> CGFloat {
+            let y = height - top - h
+            top += h
+            return y
+        }
+        func caption(_ text: String) {
             let field = NSTextField(labelWithString: text)
-            field.frame = NSRect(x: 0, y: y, width: width, height: 15)
+            field.frame = NSRect(x: 0, y: place(capH), width: width, height: capH)
             field.font = .boldSystemFont(ofSize: 11)
             field.textColor = .secondaryLabelColor
-            return field
+            container.addSubview(field)
+            top += capGap
         }
 
         // Project (top) — scopes the transcription glossary.
+        caption("Project")
         let project = container.project
-        project.frame = NSRect(x: 0, y: 124, width: width, height: 26)
+        project.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
         populateProjectPicker(project, lastProjectID: lastProjectID)
-        container.addSubview(label("Project", y: 150))
         container.addSubview(project)
+        top += groupGap
 
         // Meeting type (middle) — shapes the summary.
-        container.addSubview(label("Meeting type", y: 103))
+        caption("Meeting type")
         let picker = container.picker
-        picker.frame = NSRect(x: 0, y: 77, width: width, height: 26)
+        picker.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
         let templates = AppSettings.shared.allTemplates
         for template in templates {
             picker.addItem(withTitle: template.displayName)
@@ -1153,12 +1179,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             picker.selectItem(at: index)
         }
         container.addSubview(picker)
+        top += groupGap
 
-        // Agenda (bottom, optional) — drives the end-of-meeting coverage check.
-        // Gets a caption label to match Project / Meeting type above it.
-        container.addSubview(label("Agenda", y: 56))
+        // Agenda (optional) — drives the end-of-meeting coverage check.
+        caption("Agenda")
         let field = container.agendaField
-        field.frame = NSRect(x: 0, y: 6, width: width, height: 44)
+        field.frame = NSRect(x: 0, y: place(fieldH), width: width, height: fieldH)
         field.placeholderString = "Optional — separate items with commas"
         field.usesSingleLineMode = false
         field.cell?.wraps = true
@@ -1166,6 +1192,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         field.lineBreakMode = .byWordWrapping
         field.font = .systemFont(ofSize: 12)
         container.addSubview(field)
+        top += groupGap
+
+        // Live brief (bottom) — per-meeting choice, defaulting to the global
+        // setting, as a Settings-style row: label left, switch right. Hard-
+        // disabled when it couldn't run anyway (local-only / no key) so the
+        // dialog never offers something that silently does nothing.
+        let settings = AppSettings.shared
+        let canRun = !settings.localOnlyMode && KeychainService.groqAPIKey() != nil
+        let rowY = place(rowH)
+        let live = container.liveBrief
+        live.controlSize = .mini
+        live.sizeToFit()
+        live.frame = NSRect(x: width - live.frame.width,
+                            y: rowY + (rowH - live.frame.height) / 2,
+                            width: live.frame.width, height: live.frame.height)
+        live.state = (canRun && settings.liveAssistantEnabled) ? .on : .off
+        live.isEnabled = canRun
+
+        let liveLabel = NSTextField(labelWithString: "Show live brief")
+        liveLabel.frame = NSRect(x: 0, y: rowY + (rowH - 16) / 2,
+                                 width: width - live.frame.width - 8, height: 16)
+        liveLabel.font = .systemFont(ofSize: 12)
+        liveLabel.textColor = canRun ? .labelColor : .tertiaryLabelColor
+        let tip = canRun
+            ? "Floating in-meeting brief (TL;DR, actions, agenda coverage). Defaults to your global setting; applies to this meeting only."
+            : settings.localOnlyMode
+                ? "Unavailable in local-only mode — the live brief needs the cloud."
+                : "Add a Groq API key to use the live brief."
+        live.toolTip = tip
+        liveLabel.toolTip = tip
+        container.addSubview(liveLabel)
+        container.addSubview(live)
 
         return container
     }
@@ -1375,7 +1433,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return self?.meetingNotes.transcriptText(of: url)
             },
             template: settings.selectedTemplate,
-            agenda: meetingAgenda)
+            agenda: meetingAgenda,
+            enabled: meetingLiveBrief)
 
         // Menu-bar elapsed timer — doubles as a "still recording" indicator
         startMeetingTimer()

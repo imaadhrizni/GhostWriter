@@ -19,6 +19,7 @@ final class AppSettings: ObservableObject {
     private enum Key {
         static let transcriptionModel     = "api.transcriptionModel"
         static let polishingModel         = "api.polishingModel"
+        static let fastModel              = "api.fastModel"
         static let pttKeyCode             = "dictation.pttKeyCode"
         static let preferBuiltInMic       = "audio.preferBuiltInMic"
         static let meetingMicThreshold    = "meeting.micThresholdDBFS"
@@ -33,6 +34,7 @@ final class AppSettings: ObservableObject {
         static let overlayMode            = "meeting.overlayMode"
         static let summariesEnabled       = "meeting.summariesEnabled"
         static let actionItemsEnabled     = "meeting.actionItemsEnabled"
+        static let liveAssistantEnabled   = "meeting.liveAssistantEnabled"
         static let notifyOnMeetingEnd     = "meeting.notifyOnMeetingEnd"
         static let frontMatterEnabled     = "meeting.frontMatterEnabled"
         static let diarizationEnabled     = "meeting.diarizationEnabled"
@@ -57,6 +59,7 @@ final class AppSettings: ObservableObject {
         static let searchDepth            = "assistant.searchDepth"
         static let meetingTemplate        = "meeting.template"
         static let customTemplateSections = "meeting.customTemplateSections"
+        static let customTemplateFollowUp = "meeting.customTemplateFollowUp"
         static let userTemplates          = "meeting.userTemplates"
         static let dictationStyleOverrides = "dictation.styleOverrides"
         static let userDictationStyles     = "dictation.userStyles"
@@ -73,22 +76,27 @@ final class AppSettings: ObservableObject {
         static let uiDateFormat           = "ui.dateFormat"
         static let browserTabDetection    = "dictation.browserTabDetection"
         static let domainStyleRules       = "dictation.domainStyleRules"
+        static let saveDictations         = "dictation.saveToFiles"
+        static let dictationsFolderPath   = "dictation.folderPath"
+        static let dictationOrganization  = "dictation.organization"
         static let priceAudioPerHour      = "cost.audioPerHour"
         static let priceInputPerMTok      = "cost.inputPerMTok"
         static let priceOutputPerMTok     = "cost.outputPerMTok"
+        static let monthlyBudgetUSD       = "cost.monthlyBudgetUSD"
         // User content, deliberately NOT in `all` — a settings reset must not
         // wipe the user's projects or which meetings belong to them.
         static let projects               = "projects.list"
         static let projectAssignments     = "projects.assignments"
         static let lastProjectID          = "projects.lastSelected"
 
-        static let all = [transcriptionModel, polishingModel, pttKeyCode,
+        static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
                           preferBuiltInMic,
                           meetingMicThreshold, systemAudioThreshold,
                           silenceDebounce, maxSegmentSeconds, echoGateWindow,
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
                           notesFolderPath, overlayMode,
-                          summariesEnabled, actionItemsEnabled, notifyOnMeetingEnd, frontMatterEnabled,
+                          summariesEnabled, actionItemsEnabled, liveAssistantEnabled,
+                          notifyOnMeetingEnd, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, transcriptionLanguage,
                           vocabulary, replacements, appProfiles,
                           dictationHistoryOn, dictationHistoryLimit,
@@ -97,13 +105,15 @@ final class AppSettings: ObservableObject {
                           voiceCommandsEnabled, voiceCommandRules, streamingDictation,
                           streamChunkSeconds, maxSpeakers,
                           actionItemsLookback, searchDepth, meetingTemplate,
-                          customTemplateSections, userTemplates,
+                          customTemplateSections, customTemplateFollowUp, userTemplates,
                           dictationStyleOverrides, userDictationStyles, defaultDictationStyle,
                           quickNotesFolderPath, quickNoteNotify,
                           localOnlyMode, redactionEnabled, redactEmails, redactPhones, redactNumbers,
                           autoTagging, errorNotifications, uiDateFormat,
                           browserTabDetection, domainStyleRules,
-                          priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok]
+                          saveDictations, dictationsFolderPath, dictationOrganization,
+                          priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok,
+                          monthlyBudgetUSD]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -111,6 +121,7 @@ final class AppSettings: ObservableObject {
     enum Default {
         static let transcriptionModel              = "whisper-large-v3"
         static let polishingModel                  = "llama-3.3-70b-versatile"
+        static let fastModel                       = "llama-3.1-8b-instant"
         static let pttKeyCode: Int                 = 61     // Right Option
         static let preferBuiltInMic                = false  // use the system default input
         static let meetingMicThreshold: Float      = -40.0
@@ -124,8 +135,9 @@ final class AppSettings: ObservableObject {
         static let overlayMode                     = MeetingOverlayMode.minimal
         static let summariesEnabled                = true
         static let actionItemsEnabled              = true
+        static let liveAssistantEnabled            = true
         static let notifyOnMeetingEnd              = true
-        static let frontMatterEnabled              = false
+        static let frontMatterEnabled              = true
         static let diarizationEnabled              = true
         static let offlineFallback                 = true
         static let transcriptionLanguage           = "en"
@@ -135,6 +147,7 @@ final class AppSettings: ObservableObject {
         static let retryMaxAttempts                = 3
         static let retryIntervalSeconds: Double    = 20.0
         static let notesOrganization               = NotesOrganization.byDay
+        static let dictationOrganization           = NotesOrganization.byMonth
         static let meetingAutoDetect               = true
         static let voiceCommandsEnabled            = true
         static let voiceCommandRules = """
@@ -160,6 +173,7 @@ final class AppSettings: ObservableObject {
         static let errorNotifications              = true
         static let uiDateFormat                    = "dd MMM yyyy"
         static let browserTabDetection             = true
+        static let saveDictations                  = true
         static let domainStyleRules = """
         mail.google.com: email
         outlook.office.com: email
@@ -171,6 +185,7 @@ final class AppSettings: ObservableObject {
         static let priceAudioPerHour               = 0.111   // whisper-large-v3
         static let priceInputPerMTok               = 0.59    // llama-3.3-70b input
         static let priceOutputPerMTok              = 0.79    // llama-3.3-70b output
+        static let monthlyBudgetUSD                = 0.0     // 0 = no budget set
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -190,6 +205,13 @@ final class AppSettings: ObservableObject {
     var polishingModel: String {
         get { string(Key.polishingModel, Default.polishingModel) }
         set { set(newValue, Key.polishingModel) }
+    }
+
+    /// Cheap/fast model for lightweight, high-frequency tasks (live brief,
+    /// tagging, query expansion, agenda coverage) — keeps cost and latency down.
+    var fastModel: String {
+        get { string(Key.fastModel, Default.fastModel) }
+        set { set(newValue, Key.fastModel) }
     }
 
     // MARK: - Dictation
@@ -311,6 +333,13 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.actionItemsEnabled) }
     }
 
+    /// Show a live rolling brief (TL;DR + open action items) during a meeting.
+    /// Off by default — it makes periodic LLM calls while the meeting runs.
+    var liveAssistantEnabled: Bool {
+        get { bool(Key.liveAssistantEnabled, Default.liveAssistantEnabled) }
+        set { set(newValue, Key.liveAssistantEnabled) }
+    }
+
     /// Show a notification when meeting notes are saved.
     var notifyOnMeetingEnd: Bool {
         get { bool(Key.notifyOnMeetingEnd, Default.notifyOnMeetingEnd) }
@@ -333,18 +362,28 @@ final class AppSettings: ObservableObject {
         set { set(newValue.rawValue, Key.notesOrganization) }
     }
 
-    /// Folder a *new* meeting's notes file goes into, per the organization
-    /// setting (e.g. …/Notes/2026/2026-07/). Existing files are never moved.
-    func meetingDestinationFolder(for date: Date = Date()) -> URL {
-        // Folder names must be stable across user locales/calendars.
+    /// How dictation files are organized under the dictations folder
+    /// (independent of the meeting layout).
+    var dictationOrganization: NotesOrganization {
+        get {
+            guard let raw = defaults.string(forKey: Key.dictationOrganization),
+                  let mode = NotesOrganization(rawValue: raw) else { return Default.dictationOrganization }
+            return mode
+        }
+        set { set(newValue.rawValue, Key.dictationOrganization) }
+    }
+
+    /// Apply the folder-organization setting to any base folder for a given
+    /// date (e.g. base/2026/2026-07/03/). Folder names are POSIX-stable across
+    /// user locales/calendars. Existing files are never moved.
+    func organizedFolder(base: URL, using organization: NotesOrganization, for date: Date = Date()) -> URL {
         func stamp(_ format: String) -> String {
             let f = DateFormatter()
             f.locale = Locale(identifier: "en_US_POSIX")
             f.dateFormat = format
             return f.string(from: date)
         }
-        let base = notesFolder
-        switch notesOrganization {
+        switch organization {
         case .flat:
             return base
         case .byYear:
@@ -357,6 +396,18 @@ final class AppSettings: ObservableObject {
                        .appendingPathComponent(stamp("yyyy-MM"), isDirectory: true)
                        .appendingPathComponent(stamp("dd"), isDirectory: true)
         }
+    }
+
+    /// Folder a *new* meeting's notes file goes into, per the meeting
+    /// organization setting (e.g. …/Notes/2026/2026-07/).
+    func meetingDestinationFolder(for date: Date = Date()) -> URL {
+        organizedFolder(base: notesFolder, using: notesOrganization, for: date)
+    }
+
+    /// Folder a *new* dictation file goes into, per the dictation organization
+    /// setting (independent of meetings), under the dictations folder.
+    func dictationDestinationFolder(for date: Date = Date()) -> URL {
+        organizedFolder(base: dictationsFolder, using: dictationOrganization, for: date)
     }
 
     /// Experimental: label distinct remote speakers (Them / Them 2) by
@@ -426,6 +477,25 @@ final class AppSettings: ObservableObject {
             return notesFolder.appendingPathComponent("Quick Notes", isDirectory: true)
         }
         set { set(newValue.path, Key.quickNotesFolderPath) }
+    }
+
+    /// Archive each dictation to its own Markdown file (on by default; browse
+    /// them from the menu → Dictations…).
+    var saveDictations: Bool {
+        get { bool(Key.saveDictations, Default.saveDictations) }
+        set { set(newValue, Key.saveDictations) }
+    }
+
+    /// Where dictation archive files live. Defaults to "Dictations" beside the
+    /// meeting notes; kept separate so meeting history/search stay meetings-only.
+    var dictationsFolder: URL {
+        get {
+            if let path = defaults.string(forKey: Key.dictationsFolderPath), !path.isEmpty {
+                return URL(fileURLWithPath: path, isDirectory: true)
+            }
+            return notesFolder.appendingPathComponent("Dictations", isDirectory: true)
+        }
+        set { set(newValue.path, Key.dictationsFolderPath) }
     }
 
     /// Show a notification (with the saved path, click to open) after a quick note.
@@ -503,6 +573,40 @@ final class AppSettings: ObservableObject {
         templateOverrides = dict
     }
 
+    /// Per-built-in-template follow-up guidance overrides, keyed by rawValue.
+    /// Absent → the template uses its built-in follow-up guidance.
+    private var templateFollowUpOverrides: [String: String] {
+        get {
+            guard let data = defaults.data(forKey: Key.customTemplateFollowUp),
+                  let dict = try? JSONDecoder().decode([String: String].self, from: data)
+            else { return [:] }
+            return dict
+        }
+        set {
+            let data = try? JSONEncoder().encode(newValue)
+            set(data as Any, Key.customTemplateFollowUp)
+        }
+    }
+
+    /// The user's custom follow-up guidance for a built-in template, or nil if
+    /// none saved (meaning: use the built-in default).
+    func customTemplateFollowUp(for template: MeetingTemplate) -> String? {
+        templateFollowUpOverrides[template.rawValue]
+    }
+
+    /// Save custom follow-up guidance for a built-in template. Passing text
+    /// equal to the default (or empty) clears the override.
+    func setCustomTemplateFollowUp(_ text: String, for template: MeetingTemplate) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var dict = templateFollowUpOverrides
+        if trimmed.isEmpty || trimmed == template.followUpGuidance {
+            dict[template.rawValue] = nil
+        } else {
+            dict[template.rawValue] = text
+        }
+        templateFollowUpOverrides = dict
+    }
+
     // MARK: User templates
 
     /// The user's own templates, persisted as JSON in creation order.
@@ -533,7 +637,7 @@ final class AppSettings: ObservableObject {
     }
 
     /// Update a user template's name and/or sections.
-    func updateUserTemplate(id: String, name: String? = nil, sections: String? = nil) {
+    func updateUserTemplate(id: String, name: String? = nil, sections: String? = nil, followUp: String? = nil) {
         var list = userTemplates
         guard let i = list.firstIndex(where: { $0.id == id }) else { return }
         if let name = name {
@@ -541,6 +645,7 @@ final class AppSettings: ObservableObject {
             list[i].name = trimmed.isEmpty ? "Untitled" : trimmed
         }
         if let sections = sections { list[i].sections = sections }
+        if let followUp = followUp { list[i].followUp = followUp }
         userTemplates = list
     }
 
@@ -752,6 +857,13 @@ final class AppSettings: ObservableObject {
     var priceOutputPerMTok: Double {
         get { double(Key.priceOutputPerMTok, Default.priceOutputPerMTok) }
         set { set(newValue, Key.priceOutputPerMTok) }
+    }
+
+    /// Soft monthly spend cap in USD. 0 = no budget. When this month's estimated
+    /// Groq spend crosses it, GhostWriter warns (banner + one notification).
+    var monthlyBudgetUSD: Double {
+        get { double(Key.monthlyBudgetUSD, Default.monthlyBudgetUSD) }
+        set { set(newValue, Key.monthlyBudgetUSD) }
     }
 
     // MARK: - Transcription Quality
@@ -1185,6 +1297,9 @@ struct UserTemplate: Codable, Identifiable, Hashable {
     var id: String        // "user:UUID"
     var name: String
     var sections: String
+    /// Optional custom follow-up guidance; empty → a generic default is used.
+    /// Defaulted so JSON saved before this field existed still decodes.
+    var followUp: String = ""
 }
 
 /// A resolved template — built-in or user-defined — that the pickers, the
@@ -1229,12 +1344,27 @@ enum SummaryTemplate: Identifiable, Hashable {
         }
     }
 
-    /// How a follow-up for this meeting type should be shaped.
+    /// Generic follow-up guidance for a user template with no custom text.
+    static func genericFollowUp(name: String) -> String {
+        "Write a concise follow-up appropriate to a \(name) meeting, building on the notes: key outcomes and clear next steps with owners."
+    }
+
+    /// How a follow-up for this meeting type should be shaped — the resolved
+    /// guidance fed to the drafter (custom override, then built-in/generic default).
     var followUpGuidance: String {
         switch self {
-        case .builtIn(let t): return t.followUpGuidance
+        case .builtIn(let t): return AppSettings.shared.customTemplateFollowUp(for: t) ?? t.followUpGuidance
         case .user(let t):
-            return "Write a concise follow-up appropriate to a \(t.name) meeting, building on the notes: key outcomes and clear next steps with owners."
+            return t.followUp.isEmpty ? Self.genericFollowUp(name: t.name) : t.followUp
+        }
+    }
+
+    /// The editable follow-up text shown in the editor — a built-in's override
+    /// or default, or the user template's own (possibly the generic default).
+    var followUpText: String {
+        switch self {
+        case .builtIn(let t): return AppSettings.shared.customTemplateFollowUp(for: t) ?? t.followUpGuidance
+        case .user(let t):    return t.followUp.isEmpty ? Self.genericFollowUp(name: t.name) : t.followUp
         }
     }
 }

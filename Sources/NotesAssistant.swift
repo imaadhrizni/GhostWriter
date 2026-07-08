@@ -41,12 +41,12 @@ final class NotesAssistantWindowController: NSWindowController {
 
 /// Holds the selected tab so the menu can open the window to a specific one.
 final class NotesAssistantModel: ObservableObject {
-    @Published var mode: AssistantMode = .search
+    @Published var mode: AssistantMode = .browse
 }
 
 // MARK: - Notes folder helpers
 
-private enum NotesLibrary {
+enum NotesLibrary {
 
     struct MeetingFile: Identifiable, Hashable {
         let url: URL
@@ -87,6 +87,16 @@ private enum NotesLibrary {
             .map(MeetingFile.init)
     }
 
+    /// The "M:SS" from a meeting note's `*Meeting duration: …*` footer, or "" if
+    /// the meeting didn't finish normally (no footer written).
+    static func meetingDuration(_ url: URL) -> String {
+        guard let content = try? String(contentsOf: url, encoding: .utf8),
+              let r = content.range(of: "Meeting duration: ") else { return "" }
+        let rest = content[r.upperBound...]
+        let end = rest.firstIndex(where: { $0 == "*" || $0 == "\n" }) ?? rest.endIndex
+        return String(rest[..<end]).trimmingCharacters(in: .whitespaces)
+    }
+
     struct SearchHit: Identifiable {
         let id = UUID()
         let file: MeetingFile
@@ -115,6 +125,60 @@ private enum NotesLibrary {
             }
         }
         return hits
+    }
+
+    /// Whether on-device semantic search is available (an OS embedding model exists).
+    static var semanticAvailable: Bool { SemanticIndex.shared.isAvailable }
+
+    /// Meaning-based search: rank note chunks by semantic similarity to the
+    /// query, one hit per meeting (its best-matching chunk), newest-first among
+    /// ties. Returns [] if embeddings are unavailable (caller falls back to text).
+    static func semanticSearch(_ query: String, maxHits: Int = 40,
+                               maxFiles: Int = AppSettings.shared.searchDepth) async -> [SearchHit] {
+        let files = meetingFiles(limit: maxFiles)
+        let byURL = Dictionary(files.map { ($0.url, $0) }, uniquingKeysWith: { a, _ in a })
+        let results = await SemanticIndex.shared.query(query, files: files.map(\.url), topK: maxHits * 2)
+
+        var seen = Set<URL>()
+        var hits: [SearchHit] = []
+        for r in results where r.score > 0.15 {   // drop weak matches
+            guard let file = byURL[r.url], !seen.contains(r.url) else { continue }
+            seen.insert(r.url)
+            hits.append(SearchHit(file: file, line: r.text))
+            if hits.count >= maxHits { break }
+        }
+        return hits
+    }
+
+    /// Semantic retrieval for cross-meeting Ask: the top chunks by meaning,
+    /// grouped per meeting and labeled so the model can cite sources.
+    static func semanticExcerpts(for query: String,
+                                 maxFiles: Int = AppSettings.shared.searchDepth,
+                                 maxChars: Int = 20_000, topK: Int = 24) async -> ExcerptResult {
+        let files = meetingFiles(limit: maxFiles)
+        let byURL = Dictionary(files.map { ($0.url, $0) }, uniquingKeysWith: { a, _ in a })
+        let results = await SemanticIndex.shared.query(query, files: files.map(\.url), topK: topK)
+        guard !results.isEmpty else { return ExcerptResult(text: "", sources: []) }
+
+        // Group chunks by meeting, preserving descending relevance.
+        var order: [URL] = []
+        var byFile: [URL: [String]] = [:]
+        for r in results where r.score > 0.12 {
+            if byFile[r.url] == nil { order.append(r.url) }
+            byFile[r.url, default: []].append(r.text)
+        }
+
+        var out = ""
+        var sources: [MeetingFile] = []
+        for url in order {
+            guard let file = byURL[url] else { continue }
+            var block = "\n=== Meeting \(file.displayName) ===\n"
+            for chunk in byFile[url] ?? [] { block += chunk + "\n" }
+            if out.count + block.count > maxChars { break }
+            out += block
+            sources.append(file)
+        }
+        return ExcerptResult(text: out, sources: sources)
     }
 
     /// Retrieval for cross-meeting Ask: lines matching any search term, with
@@ -167,10 +231,52 @@ private enum NotesLibrary {
     struct ActionItem: Identifiable {
         let id = UUID()
         let file: MeetingFile
+        /// Full item text (everything after the checkbox), preserved verbatim so
+        /// toggling can rewrite the line without losing the owner/due annotations.
         let text: String
         let done: Bool
         /// The exact line in the file — used to toggle done state in place.
         let rawLine: String
+
+        /// Assignee, from a "@owner" token when the summary identified one.
+        var owner: String? {
+            guard let m = ActionItem.ownerRegex.firstMatch(
+                in: text, range: NSRange(text.startIndex..., in: text)),
+                let r = Range(m.range(at: 1), in: text) else { return nil }
+            return String(text[r])
+        }
+
+        /// Due date, from a "(due: …)" annotation when the summary stated one.
+        var due: String? {
+            guard let m = ActionItem.dueRegex.firstMatch(
+                in: text, range: NSRange(text.startIndex..., in: text)),
+                let r = Range(m.range(at: 1), in: text) else { return nil }
+            return String(text[r]).trimmingCharacters(in: .whitespaces)
+        }
+
+        /// The action alone, with the "@owner" / "(due: …)" chips and any
+        /// trailing "—" separator removed — for a clean row and Reminders title.
+        var displayText: String {
+            var s = text
+            s = ActionItem.dueRegex.stringByReplacingMatches(
+                in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "")
+            s = ActionItem.ownerRegex.stringByReplacingMatches(
+                in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "")
+            s = s.trimmingCharacters(in: .whitespaces)
+            while s.hasSuffix("—") || s.hasSuffix("-") || s.hasSuffix(",") {
+                s = String(s.dropLast()).trimmingCharacters(in: .whitespaces)
+            }
+            return s.isEmpty ? text : s
+        }
+
+        // Owner is only recognized in the trailing "— @owner" position the
+        // summary emits, so an @mention or email inside the action text isn't
+        // mistaken for the assignee.
+        private static let ownerRegex =
+            try! NSRegularExpression(pattern: "[—–-]\\s*@([\\w][\\w.'-]*)")
+        private static let dueRegex =
+            try! NSRegularExpression(pattern: "\\(due:\\s*([^)]*)\\)",
+                                     options: [.caseInsensitive])
     }
 
     /// Flip an item's checkbox in its notes file. Line-based: finds the
@@ -274,7 +380,12 @@ struct NotesAssistantView: View {
 // MARK: - Browse (all notes)
 
 private struct BrowseTab: View {
-    @State private var groups: [(day: String, meetings: [NotesLibrary.MeetingFile])] = []
+    private struct Row: Identifiable, Hashable {
+        let file: NotesLibrary.MeetingFile
+        let duration: String
+        var id: URL { file.url }
+    }
+    @State private var groups: [(day: String, rows: [Row])] = []
 
     var body: some View {
         Group {
@@ -289,17 +400,25 @@ private struct BrowseTab: View {
                 List {
                     ForEach(groups, id: \.day) { group in
                         Section(header: Text(DateDisplay.day(group.day))) {
-                            ForEach(group.meetings) { meeting in
+                            HStack {
+                                Text("Meeting").frame(maxWidth: .infinity, alignment: .leading)
+                                Text("Duration").frame(width: 70, alignment: .trailing)
+                                Spacer().frame(width: 22)
+                            }
+                            .font(.caption2.bold()).foregroundColor(.secondary)
+                            ForEach(group.rows) { row in
                                 Button {
-                                    NotesViewerWindowController.present(fileURL: meeting.url)
+                                    NotesViewerWindowController.present(fileURL: row.file.url)
                                 } label: {
                                     HStack {
-                                        Image(systemName: "doc.text")
-                                            .foregroundColor(.secondary)
-                                        Text(meeting.time)
+                                        Image(systemName: "doc.text").foregroundColor(.secondary)
+                                        Text(row.file.time)
                                         Spacer()
+                                        Text(row.duration)
+                                            .frame(width: 70, alignment: .trailing)
+                                            .monospacedDigit().foregroundColor(.secondary)
                                         Image(systemName: "arrow.up.forward.square")
-                                            .foregroundColor(.secondary)
+                                            .foregroundColor(.secondary).frame(width: 22)
                                     }
                                     .contentShape(Rectangle())
                                 }
@@ -310,16 +429,31 @@ private struct BrowseTab: View {
                 }
             }
         }
-        .onAppear { groups = NotesLibrary.meetingsByDay(limit: 500) }
+        // Reading each note's duration footer is I/O — do it off the main thread.
+        .task {
+            groups = await Task.detached(priority: .userInitiated) {
+                NotesLibrary.meetingsByDay(limit: 500).map { group in
+                    (group.day, group.meetings.map {
+                        Row(file: $0, duration: NotesLibrary.meetingDuration($0.url))
+                    })
+                }
+            }.value
+        }
     }
 }
 
 // MARK: - Search
 
 private struct SearchTab: View {
+    private enum Mode: String, CaseIterable, Identifiable {
+        case text = "Text", meaning = "Meaning"
+        var id: String { rawValue }
+    }
     @State private var query = ""
     @State private var hits: [NotesLibrary.SearchHit] = []
     @State private var searchTask: Task<Void, Never>?
+    @State private var mode: Mode = NotesLibrary.semanticAvailable ? .meaning : .text
+    @State private var searching = false
 
     /// Hits per meeting, in arrival (newest-first) order.
     private var groupedHits: [(file: NotesLibrary.MeetingFile, hits: [NotesLibrary.SearchHit])] {
@@ -338,12 +472,16 @@ private struct SearchTab: View {
     /// off the main thread so the field never stutters on a large archive.
     private func scheduleSearch(_ q: String) {
         searchTask?.cancel()
+        let useMeaning = mode == .meaning
         searchTask = Task {
-            try? await Task.sleep(for: .milliseconds(200))
+            try? await Task.sleep(for: .milliseconds(useMeaning ? 350 : 200))
             guard !Task.isCancelled else { return }
-            let results = await NotesLibrary.search(q)
+            await MainActor.run { searching = true }
+            let results = useMeaning
+                ? await NotesLibrary.semanticSearch(q)
+                : await NotesLibrary.search(q)
             guard !Task.isCancelled else { return }
-            await MainActor.run { hits = results }
+            await MainActor.run { hits = results; searching = false }
         }
     }
 
@@ -351,9 +489,19 @@ private struct SearchTab: View {
         VStack(spacing: 8) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                TextField("Search all meeting notes…", text: $query)
+                TextField(mode == .meaning ? "Search by meaning…" : "Search all meeting notes…", text: $query)
                     .textFieldStyle(.plain)
                     .onChange(of: query) { _, q in scheduleSearch(q) }
+                if searching { ProgressView().controlSize(.small) }
+                if NotesLibrary.semanticAvailable {
+                    Picker("", selection: $mode) {
+                        ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 150)
+                    .onChange(of: mode) { _, _ in scheduleSearch(query) }
+                }
             }
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
@@ -362,9 +510,13 @@ private struct SearchTab: View {
             if hits.isEmpty {
                 Spacer()
                 Text(query.trimmingCharacters(in: .whitespaces).count < 2
-                     ? "Type to search every meeting transcript."
-                     : "No matches.")
+                     ? (mode == .meaning
+                        ? "Search by meaning — ask in your own words (e.g. “pricing concerns”), not just exact keywords."
+                        : "Type to search every meeting transcript.")
+                     : (searching ? "Searching…" : "No matches."))
                     .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
                 Spacer()
             } else {
                 // Hits arrive newest-meeting-first — group consecutive hits
@@ -533,12 +685,19 @@ private struct AskTab: View {
                     result = try await polisher.answer(question: q, transcript: transcript)
                     usedSources = [meeting]
                 } else {
-                    // All meetings: expand the question into search terms,
-                    // retrieve matching excerpts, answer from those.
-                    let terms = await polisher.searchTerms(for: q)
-                    let retrieved = NotesLibrary.excerpts(matching: terms)
+                    // All meetings: retrieve the most relevant excerpts, answer
+                    // from those. Prefer on-device semantic retrieval; fall back
+                    // to keyword expansion when embeddings are unavailable or
+                    // find nothing.
+                    var retrieved = NotesLibrary.semanticAvailable
+                        ? await NotesLibrary.semanticExcerpts(for: q)
+                        : NotesLibrary.ExcerptResult(text: "", sources: [])
                     if retrieved.text.isEmpty {
-                        result = "No meeting content matched this question (searched terms: \(terms.joined(separator: ", "))). Try rewording, or pick a specific meeting."
+                        let terms = await polisher.searchTerms(for: q)
+                        retrieved = NotesLibrary.excerpts(matching: terms)
+                    }
+                    if retrieved.text.isEmpty {
+                        result = "No meeting content matched this question. Try rewording, or pick a specific meeting."
                     } else {
                         result = try await polisher.answerAcrossMeetings(question: q, excerpts: retrieved.text)
                         usedSources = retrieved.sources
@@ -559,6 +718,13 @@ private struct AskTab: View {
 
 private struct ActionItemsTab: View {
     @State private var groups: [NotesLibrary.MeetingActionItems] = []
+    @State private var exporting = false
+    @State private var exportStatus = ""
+
+    /// Every open (unchecked) item across the shown meetings.
+    private var openItems: [NotesLibrary.ActionItem] {
+        groups.flatMap { $0.items }.filter { !$0.done }
+    }
 
     var body: some View {
         Group {
@@ -573,25 +739,59 @@ private struct ActionItemsTab: View {
                     Spacer()
                 }
             } else {
-                List {
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Text("\(openItems.count) open").font(.caption).foregroundColor(.secondary)
+                        Spacer()
+                        if !exportStatus.isEmpty {
+                            Text(exportStatus).font(.caption).foregroundColor(.secondary)
+                        }
+                        Button {
+                            export(openItems)
+                        } label: { Label("Add All to Reminders", systemImage: "checklist") }
+                            .disabled(exporting || openItems.isEmpty)
+                            .help("Add every open action item to Apple Reminders")
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    Divider()
+                    List {
                     ForEach(groups) { group in
                         Section {
                             ForEach(group.items) { item in
-                                Button {
-                                    toggle(item)
-                                } label: {
-                                    HStack(alignment: .top, spacing: 8) {
-                                        Image(systemName: item.done ? "checkmark.circle.fill" : "circle")
-                                            .foregroundColor(item.done ? .secondary : .accentColor)
-                                        Text(item.text)
-                                            .strikethrough(item.done)
-                                            .foregroundColor(item.done ? .secondary : .primary)
+                                HStack(alignment: .top, spacing: 8) {
+                                    Button {
+                                        toggle(item)
+                                    } label: {
+                                        HStack(alignment: .top, spacing: 8) {
+                                            Image(systemName: item.done ? "checkmark.circle.fill" : "circle")
+                                                .foregroundColor(item.done ? .secondary : .accentColor)
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(item.displayText)
+                                                    .strikethrough(item.done)
+                                                    .foregroundColor(item.done ? .secondary : .primary)
+                                                if item.owner != nil || item.due != nil {
+                                                    HStack(spacing: 6) {
+                                                        if let owner = item.owner { chip("person", owner) }
+                                                        if let due = item.due { chip("calendar", due) }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
                                     }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
+                                    .buttonStyle(.plain)
+                                    .help(item.done ? "Click to mark as open" : "Click to mark as done")
+
+                                    Button {
+                                        export([item])
+                                    } label: {
+                                        Image(systemName: "plus.circle")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .disabled(exporting)
+                                    .help("Add this item to Reminders")
                                 }
-                                .buttonStyle(.plain)
-                                .help(item.done ? "Click to mark as open" : "Click to mark as done")
                             }
                         } header: {
                             Button {
@@ -609,16 +809,46 @@ private struct ActionItemsTab: View {
                             .help("Open this meeting's notes file")
                         }
                     }
+                    }
+                    .listStyle(.inset)
                 }
-                .listStyle(.inset)
             }
         }
         .onAppear { groups = NotesLibrary.actionItemsByMeeting() }
+    }
+
+    /// A small owner/due pill.
+    private func chip(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: icon)
+            Text(text)
+        }
+        .font(.caption2)
+        .foregroundColor(.secondary)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Capsule().fill(Color.secondary.opacity(0.12)))
     }
 
     /// Flip the checkbox in the file, then reload so the UI matches the file.
     private func toggle(_ item: NotesLibrary.ActionItem) {
         NotesLibrary.toggleDone(item)
         groups = NotesLibrary.actionItemsByMeeting()
+    }
+
+    /// Push the given items into Apple Reminders (requests access on first use).
+    /// Used for both a single row and every open item.
+    private func export(_ items: [NotesLibrary.ActionItem]) {
+        guard !items.isEmpty else { return }
+        exporting = true
+        exportStatus = "Exporting…"
+        Task { @MainActor in
+            defer { exporting = false }
+            do {
+                let count = try await RemindersExporter.export(items)
+                exportStatus = count == 1 ? "Added 1 to Reminders" : "Added \(count) to Reminders"
+            } catch {
+                exportStatus = error.localizedDescription
+            }
+        }
     }
 }

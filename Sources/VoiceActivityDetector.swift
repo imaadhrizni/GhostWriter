@@ -3,30 +3,10 @@ import Accelerate
 
 // MARK: - Voice Activity Detector
 
-/// Simple local noise-gate VAD to prevent sending dead air to Groq.
-/// Uses RMS energy threshold — no network calls, no ML models, pure math.
-///
-/// Algorithm:
-/// 1. Calculate RMS of each audio buffer frame
-/// 2. Convert to dBFS: 20 * log10(rms)
-/// 3. If above threshold → voice active
-/// 4. If below threshold for > debounce duration → voice inactive
+/// Stateless local noise-gate helper — pure RMS/dBFS math, no network calls
+/// or ML models. Callers compare the returned dBFS against their own threshold
+/// and apply their own debounce (see the meeting audio callbacks).
 final class VoiceActivityDetector {
-
-    // MARK: - Configuration
-
-    /// Threshold in dBFS. Typical quiet room is ~-50 dBFS, speech is ~-20 dBFS.
-    var thresholdDBFS: Float = -40.0
-
-    /// How long silence must persist before we consider voice inactive (seconds).
-    var silenceDebounce: TimeInterval = 0.3
-
-    // MARK: - State
-
-    private var lastVoiceTime: Date?
-    private var _isActive = false
-
-    var isActive: Bool { _isActive }
 
     // MARK: - RMS Calculation
 
@@ -61,34 +41,5 @@ final class VoiceActivityDetector {
     func rmsToDBFS(_ rms: Float) -> Float {
         guard rms > 0 else { return -Float.infinity }
         return 20.0 * log10f(rms)
-    }
-
-    /// Check if the current audio buffer contains voice activity.
-    /// Handles debounce logic internally.
-    func isVoiceActive(rms: Float) -> Bool {
-        let dbfs = rmsToDBFS(rms)
-
-        if dbfs >= thresholdDBFS {
-            // Voice detected
-            lastVoiceTime = Date()
-            _isActive = true
-            return true
-        } else {
-            // Below threshold — check debounce
-            if let lastVoice = lastVoiceTime,
-               Date().timeIntervalSince(lastVoice) < silenceDebounce {
-                // Still within debounce window — keep active
-                return true
-            }
-
-            _isActive = false
-            return false
-        }
-    }
-
-    /// Reset the VAD state.
-    func reset() {
-        lastVoiceTime = nil
-        _isActive = false
     }
 }

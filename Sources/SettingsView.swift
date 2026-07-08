@@ -1,5 +1,4 @@
 import SwiftUI
-import AVFoundation
 import ServiceManagement
 
 // MARK: - Window Controller
@@ -37,6 +36,7 @@ final class SettingsWindowController: NSWindowController {
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general     = "General"
     case dictation   = "Dictation"
+    case styles      = "Writing Styles"
     case quickNotes  = "Quick Notes"
     case meeting     = "Recording"
     case notes       = "Notes & Summaries"
@@ -54,7 +54,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     /// System Settings clusters its domains.
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
         (nil,                  [.general]),
-        ("Capture",            [.dictation, .quickNotes]),
+        ("Capture",            [.dictation, .styles, .quickNotes]),
         ("Meetings",           [.meeting, .notes, .projects]),
         ("Privacy & Security", [.privacy, .permissions]),
         ("App",                [.shortcuts, .stats, .diagnostics, .about]),
@@ -64,6 +64,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general:     return "gearshape.fill"
         case .dictation:   return "mic.fill"
+        case .styles:      return "textformat"
         case .quickNotes:  return "square.and.pencil"
         case .meeting:     return "person.2.wave.2.fill"
         case .notes:       return "doc.text.fill"
@@ -81,6 +82,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general:     return .gray
         case .dictation:   return .blue
+        case .styles:      return .cyan
         case .quickNotes:  return .yellow
         case .meeting:     return .purple
         case .notes:       return .indigo
@@ -129,6 +131,7 @@ struct SettingsView: View {
                     switch selection {
                     case .general:     GeneralPane()
                     case .dictation:   DictationPane()
+                    case .styles:      WritingStylesPane()
                     case .quickNotes:  QuickNotesPane()
                     case .meeting:     MeetingPane()
                     case .notes:       MeetingNotesPane()
@@ -208,12 +211,39 @@ private struct GeneralPane: View {
 
                 Divider()
 
+                HStack {
+                    Text("Language")
+                    Spacer()
+                    TextField("en", text: $settings.transcriptionLanguage)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                        .multilineTextAlignment(.trailing)
+                    DefaultResetButton(isDefault: settings.transcriptionLanguage == AppSettings.Default.transcriptionLanguage) {
+                        settings.transcriptionLanguage = AppSettings.Default.transcriptionLanguage
+                    }
+                }
+                Text("ISO 639-1 code hint for Whisper (en, de, ta, si, …) — applies to both dictation and meetings. Leave as en unless you speak another language.")
+                    .font(.caption).foregroundColor(.secondary)
+
+                Divider()
+
                 ModelField(
                     title: "Polishing model",
                     presets: Self.polishingModels,
                     defaultValue: AppSettings.Default.polishingModel,
                     value: $settings.polishingModel
                 )
+
+                Divider()
+
+                ModelField(
+                    title: "Lightweight-tasks model",
+                    presets: Self.polishingModels,
+                    defaultValue: AppSettings.Default.fastModel,
+                    value: $settings.fastModel
+                )
+                Text("A cheaper, faster model for high-frequency background work — the live brief, agenda coverage, auto-tagging, and search-term expansion. Summaries, follow-ups, and Ask use the polishing model above.")
+                    .font(.caption).foregroundColor(.secondary)
 
                 Divider()
 
@@ -352,14 +382,47 @@ private struct DictationPane: View {
                     .foregroundColor(.secondary)
             }
 
-            SettingsGroup("History") {
+            SettingsGroup("Streaming") {
+                Toggle("Streaming dictation", isOn: $settings.streamingDictation)
+                Text("Long dictations are transcribed in chunks while you're still speaking, so the text appears almost instantly on release.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.streamingDictation {
+                    DurationSlider(
+                        title: "Chunk length",
+                        value: $settings.streamChunkSeconds, range: 5...20, step: 1, unit: "s",
+                        defaultValue: AppSettings.Default.streamChunkSeconds
+                    )
+                }
+                Text("Transcription language lives in General → Groq API, since it applies to meetings too.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Accuracy") {
+                Text("Custom vocabulary").font(.caption.bold())
+                TextEditor(text: $settings.vocabulary)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(height: 54)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                Text("Names, acronyms, jargon — comma or newline separated. Whisper biases toward these terms (e.g. WSO2, Sivanoly, Choreo).")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Text("Replacements").font(.caption.bold())
+                TextEditor(text: $settings.replacements)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(height: 54)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                Text("Applied after transcription, one rule per line: wrong => right (e.g. west of two => WSO2).")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Recall") {
                 Toggle("Keep recent dictations", isOn: $settings.dictationHistoryEnabled)
                     .onChange(of: settings.dictationHistoryEnabled) { _, enabled in
                         if !enabled {
                             NotificationCenter.default.post(name: .dictationHistoryDisabled, object: nil)
                         }
                     }
-                Text("Enables ⌃⌥V to re-type your most recent dictation. Kept in memory only — cleared when disabled or when the app quits. (For an app/style/duration log, see Usage & Cost → Dictation Log.)")
+                Text("Enables ⌃⌥V to re-type your most recent dictation. Kept in memory only — cleared when disabled or when the app quits. (For a browsable app/style/duration history, enable “Save each dictation to a file” below and open Dictations… from the menu bar.)")
                     .font(.caption).foregroundColor(.secondary)
                 if settings.dictationHistoryEnabled {
                     HStack {
@@ -377,18 +440,50 @@ private struct DictationPane: View {
                 }
             }
 
-            SettingsGroup("Transcription Quality") {
-                Toggle("Streaming dictation", isOn: $settings.streamingDictation)
-                Text("Long dictations are transcribed in chunks while you're still speaking, so the text appears almost instantly on release.")
+            SettingsGroup("Archive") {
+                Toggle("Save each dictation to a file", isOn: $settings.saveDictations)
+                Text("Writes one Markdown file per dictation with metadata front-matter (app, browser host, writing style, duration, word count) plus the polished text. Browse them from the menu bar → Dictations…. Redaction, if enabled, applies before saving. Kept separate from meetings and the Notes Assistant.")
                     .font(.caption).foregroundColor(.secondary)
-                if settings.streamingDictation {
-                    DurationSlider(
-                        title: "Chunk length",
-                        value: $settings.streamChunkSeconds, range: 5...20, step: 1, unit: "s",
-                        defaultValue: AppSettings.Default.streamChunkSeconds
-                    )
+                if settings.saveDictations {
+                    HStack {
+                        Text("Save to")
+                        Spacer()
+                        Text(settings.dictationsFolder.path.abbreviatingHome())
+                            .font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
+                        Button("Change…") {
+                            if let url = chooseFolder(startingAt: settings.dictationsFolder) {
+                                settings.dictationsFolder = url
+                            }
+                        }
+                    }
+                    Divider()
+                    HStack {
+                        Text("Organize files")
+                        Spacer()
+                        Picker("", selection: $settings.dictationOrganization) {
+                            ForEach(NotesOrganization.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 220)
+                    }
+                    Text("Dated subfolders for dictation files, independent of the meeting layout. Existing files stay put; the Dictations browser finds them in any layout.")
+                        .font(.caption).foregroundColor(.secondary)
                 }
-                Divider()
+            }
+        }
+    }
+}
+
+// MARK: - Writing Styles (dictation output shaping)
+
+private struct WritingStylesPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Voice Commands") {
                 HStack {
                     Toggle("Voice commands", isOn: $settings.voiceCommandsEnabled)
                     Spacer()
@@ -406,41 +501,6 @@ private struct DictationPane: View {
                         .frame(height: 90)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
                 }
-                Divider()
-
-                HStack {
-                    Text("Language")
-                    Spacer()
-                    TextField("en", text: $settings.transcriptionLanguage)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
-                    DefaultResetButton(isDefault: settings.transcriptionLanguage == AppSettings.Default.transcriptionLanguage) {
-                        settings.transcriptionLanguage = AppSettings.Default.transcriptionLanguage
-                    }
-                }
-                Text("ISO 639-1 code hint for Whisper (en, de, ta, si, …). Leave as en unless you dictate in another language.")
-                    .font(.caption).foregroundColor(.secondary)
-
-                Divider()
-
-                Text("Custom vocabulary").font(.caption.bold())
-                TextEditor(text: $settings.vocabulary)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
-                Text("Names, acronyms, jargon — comma or newline separated. Whisper biases toward these terms (e.g. WSO2, Sivanoly, Choreo).")
-                    .font(.caption).foregroundColor(.secondary)
-
-                Divider()
-
-                Text("Replacements").font(.caption.bold())
-                TextEditor(text: $settings.replacements)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
-                Text("Applied after transcription, one rule per line: wrong => right (e.g. west of two => WSO2).")
-                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Writing Styles") {
@@ -477,7 +537,6 @@ private struct DictationPane: View {
             }
         }
     }
-
 }
 
 /// Manages dictation writing styles: pick one to edit, set the global default
@@ -765,6 +824,45 @@ private struct MeetingPane: View {
                     .foregroundColor(.secondary)
             }
 
+            SettingsGroup("Speakers") {
+                HStack {
+                    Text("Your label")
+                    Spacer()
+                    TextField("", text: $settings.speakerLabelYou)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 160)
+                        .multilineTextAlignment(.trailing)
+                }
+                HStack {
+                    Text("Others' label")
+                    Spacer()
+                    TextField("", text: $settings.speakerLabelThem)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 160)
+                        .multilineTextAlignment(.trailing)
+                }
+                Text("How you and the other participants are named in the transcript.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Label distinct speakers (experimental)", isOn: $settings.diarizationEnabled)
+                Text("Fingerprints each voice (pitch and timbre) and clusters segments, labeling remote voices Them / Them 2 / Them 3. On-device and lightweight — similar-sounding voices may still merge. Use the Notes menu ▸ Rename Speakers… to give them real names per meeting.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.diarizationEnabled {
+                    HStack {
+                        Text("Max distinct speakers")
+                        Spacer()
+                        Picker("", selection: $settings.maxSpeakers) {
+                            ForEach([2, 3, 4, 5, 6], id: \.self) { Text("\($0)").tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 80)
+                        DefaultResetButton(isDefault: settings.maxSpeakers == AppSettings.Default.maxSpeakers) {
+                            settings.maxSpeakers = AppSettings.Default.maxSpeakers
+                        }
+                    }
+                }
+            }
+
             // Expert knobs, collapsed by default so the pane isn't intimidating.
             DisclosureGroup(isExpanded: $showAdvanced) {
                 VStack(alignment: .leading, spacing: 16) {
@@ -865,43 +963,6 @@ private struct MeetingNotesPane: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
-            SettingsGroup("Speakers") {
-                HStack {
-                    Text("Your label")
-                    Spacer()
-                    TextField("", text: $settings.speakerLabelYou)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 160)
-                        .multilineTextAlignment(.trailing)
-                }
-                HStack {
-                    Text("Others' label")
-                    Spacer()
-                    TextField("", text: $settings.speakerLabelThem)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 160)
-                        .multilineTextAlignment(.trailing)
-                }
-                Divider()
-                Toggle("Label distinct speakers (experimental)", isOn: $settings.diarizationEnabled)
-                Text("Fingerprints each voice (pitch and timbre) and clusters segments, labeling remote voices Them / Them 2 / Them 3. On-device and lightweight — similar-sounding voices may still merge. Use Meeting Notes ▸ Rename Speakers… to give them real names per meeting.")
-                    .font(.caption).foregroundColor(.secondary)
-                if settings.diarizationEnabled {
-                    HStack {
-                        Text("Max distinct speakers")
-                        Spacer()
-                        Picker("", selection: $settings.maxSpeakers) {
-                            ForEach([2, 3, 4, 5, 6], id: \.self) { Text("\($0)").tag($0) }
-                        }
-                        .labelsHidden()
-                        .frame(width: 80)
-                        DefaultResetButton(isDefault: settings.maxSpeakers == AppSettings.Default.maxSpeakers) {
-                            settings.maxSpeakers = AppSettings.Default.maxSpeakers
-                        }
-                    }
-                }
-            }
-
             SettingsGroup("Intelligence") {
                 TemplateManager()
                 Divider()
@@ -913,8 +974,12 @@ private struct MeetingNotesPane: View {
                 Text("Adds an Action Items checklist (with owners when identifiable). Also feeds the Notes Assistant's Action Items tab.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
-                Toggle("Auto-tag topics into front-matter", isOn: $settings.autoTagging)
-                Text("After summarizing, extract 3–6 topic tags and merge them into the note's YAML front-matter (great for Obsidian/Notion graphs). Requires front-matter enabled and network access.")
+                Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
+                Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Auto-tag topics & entities into front-matter", isOn: $settings.autoTagging)
+                Text("After summarizing, extract topic tags plus the people, customer, and project a meeting is about — mirrored into tags and written as structured attendees/customer/project fields (great for Obsidian/Notion graphs and Dataview). Names are skipped when redaction is on. Requires front-matter enabled and network access.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Notify when notes are saved", isOn: $settings.notifyOnMeetingEnd)
@@ -1005,6 +1070,7 @@ private struct TemplateManager: View {
             }
 
             TemplateSectionsEditor(template: selected)
+            TemplateFollowUpEditor(template: selected)
         }
         .alert("Delete “\(selected.displayName)”?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) { settings.deleteUserTemplate(id: selected.id) }
@@ -1084,6 +1150,54 @@ private struct TemplateSectionsEditor: View {
         switch template {
         case .builtIn(let t): settings.setCustomTemplateSections(newValue, for: t)
         case .user(let t):    settings.updateUserTemplate(id: t.id, sections: newValue)
+        }
+    }
+}
+
+/// Editor for the follow-up drafting guidance of the selected template — how
+/// the "Draft Follow-up" action shapes its recipient, tone, and content.
+/// Built-in overrides can be reset to defaults; user templates just save theirs.
+private struct TemplateFollowUpEditor: View {
+    let template: SummaryTemplate
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var text: String = ""
+
+    /// Built-in with no saved override → already at default.
+    private var isBuiltInDefault: Bool {
+        if case .builtIn(let t) = template {
+            return settings.customTemplateFollowUp(for: t) == nil
+        }
+        return true
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Follow-up guidance — how the “Draft Follow-up” action shapes the message (recipient, tone, what to include).")
+                    .font(.caption).foregroundColor(.secondary)
+                Spacer()
+                if case .builtIn(let t) = template {
+                    DefaultResetButton(isDefault: isBuiltInDefault) {
+                        settings.setCustomTemplateFollowUp("", for: t)
+                        text = t.followUpGuidance
+                    }
+                }
+            }
+            TextEditor(text: $text)
+                .font(.system(.caption, design: .monospaced))
+                .frame(height: 70)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                .onChange(of: text) { _, newValue in save(newValue) }
+        }
+        .onAppear { text = template.followUpText }
+        // Switching the picker re-points this editor at another template.
+        .onChange(of: template.id) { _, _ in text = template.followUpText }
+    }
+
+    private func save(_ newValue: String) {
+        switch template {
+        case .builtIn(let t): settings.setCustomTemplateFollowUp(newValue, for: t)
+        case .user(let t):    settings.updateUserTemplate(id: t.id, followUp: newValue)
         }
     }
 }
@@ -1307,7 +1421,8 @@ private struct StatsPane: View {
             }
 
             SettingsGroup("Estimated Cost") {
-                StatRow(label: "Estimated Groq spend", value: UsageStats.currency(stats.estimatedCostUSD))
+                StatRow(label: "This month", value: UsageStats.currency(stats.costThisMonthUSD))
+                StatRow(label: "Estimated Groq spend (all time)", value: UsageStats.currency(stats.estimatedCostUSD))
                 StatRow(label: "Audio transcribed", value: UsageStats.hoursMinutes(stats.audioSecondsTranscribed))
                 StatRow(label: "LLM tokens (in / out)", value: "\(stats.inputTokens) / \(stats.outputTokens)")
                 Text("A rough estimate from local counters — actual billing on the Groq console is authoritative. Prices drift, so they're editable:")
@@ -1317,7 +1432,27 @@ private struct StatsPane: View {
                 PriceField(label: "Output $/M tokens", value: $settings.priceOutputPerMTok, defaultValue: AppSettings.Default.priceOutputPerMTok)
             }
 
-            DictationLogGroup()
+            SettingsGroup("Monthly Budget") {
+                PriceField(label: "Budget ($/month, 0 = off)", value: $settings.monthlyBudgetUSD, defaultValue: AppSettings.Default.monthlyBudgetUSD)
+                if let fraction = stats.budgetFraction {
+                    ProgressView(value: min(fraction, 1.0)) {
+                        HStack {
+                            Text("\(UsageStats.currency(stats.costThisMonthUSD)) of \(UsageStats.currency(settings.monthlyBudgetUSD))")
+                            Spacer()
+                            Text("\(Int(fraction * 100))%")
+                                .foregroundColor(stats.isOverBudget ? .red : .secondary)
+                        }
+                        .font(.caption)
+                    }
+                    .tint(stats.isOverBudget ? .red : .accentColor)
+                    if stats.isOverBudget {
+                        Label("Over budget this month — spend continues; this is a warning only.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundColor(.orange)
+                    }
+                }
+                Text("A soft cap: when this month's estimate crosses the budget, GhostWriter shows a warning (and notifies once). It never blocks transcription. Resets on the 1st.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
 
             SettingsGroup("Maintenance") {
                 HStack {
@@ -1346,58 +1481,6 @@ private struct StatRow: View {
             Text(value)
                 .monospacedDigit()
                 .foregroundColor(.secondary)
-        }
-    }
-}
-
-/// Recent dictations — app/host, style, and duration — with a clear button.
-private struct DictationLogGroup: View {
-    @ObservedObject private var log = DictationLog.shared
-
-    private static let timeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .short
-        f.timeStyle = .short
-        return f
-    }()
-
-    var body: some View {
-        SettingsGroup("Dictation Log") {
-            if log.entries.isEmpty {
-                Text("No dictations recorded yet. Each dictation logs the app, the writing style used, and its duration.")
-                    .font(.caption).foregroundColor(.secondary)
-            } else {
-                HStack {
-                    Text("App").frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Style").frame(width: 110, alignment: .leading)
-                    Text("Time").frame(width: 52, alignment: .trailing)
-                }
-                .font(.caption2.bold()).foregroundColor(.secondary)
-                Divider()
-                ForEach(log.entries.prefix(25)) { entry in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(entry.app).lineLimit(1)
-                            Text(Self.timeFormatter.string(from: entry.date))
-                                .font(.caption2).foregroundColor(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        Text(entry.style).frame(width: 110, alignment: .leading)
-                            .foregroundColor(.secondary).lineLimit(1)
-                        Text(UsageStats.hoursMinutes(entry.seconds))
-                            .frame(width: 52, alignment: .trailing)
-                            .monospacedDigit().foregroundColor(.secondary)
-                    }
-                    .font(.caption)
-                    Divider()
-                }
-                HStack {
-                    Text(log.entries.count > 25 ? "Showing 25 of \(log.entries.count) (up to 100 kept)." : "\(log.entries.count) recorded (up to 100 kept).")
-                        .font(.caption2).foregroundColor(.secondary)
-                    Spacer()
-                    Button("Clear", role: .destructive) { log.clear() }
-                }
-            }
         }
     }
 }
@@ -1508,6 +1591,7 @@ private struct PermissionsPane: View {
     @State private var hasA11y = false
     @State private var hasSysAudio: Bool? = nil
     @State private var hasAutomation: Bool? = nil
+    @State private var hasReminders: Bool? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1542,6 +1626,15 @@ private struct PermissionsPane: View {
                     detail: "Optional — reads the active browser tab's address for per-site styling (Settings → Dictation → Browser Tab Styles). Prompted on first use; status shown for your default browser.",
                     optional: true
                 ) { permissionGuard.openAutomationSettings() }
+
+                Divider()
+
+                PermissionRow(
+                    name: "Reminders",
+                    granted: hasReminders,
+                    detail: "Optional — lets you export meeting action items to the Reminders app (Notes Assistant → Action Items). Prompted on first export.",
+                    optional: true
+                ) { permissionGuard.openRemindersSettings() }
             }
 
             SettingsGroup("Maintenance") {
@@ -1569,6 +1662,7 @@ private struct PermissionsPane: View {
         hasA11y = permissionGuard.hasAccessibilityPermission
         hasSysAudio = permissionGuard.hasSystemAudioPermission
         hasAutomation = permissionGuard.automationStatusForDefaultBrowser()
+        hasReminders = permissionGuard.remindersStatus()
     }
 }
 

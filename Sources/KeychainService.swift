@@ -73,15 +73,4 @@ enum KeychainService {
         ]
         return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
     }
-
-    /// Delete the stored key from Keychain.
-    @discardableResult
-    static func deleteGroqAPIKey() -> Bool {
-        let query: [CFString: Any] = [
-            kSecClass:       kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account
-        ]
-        return SecItemDelete(query as CFDictionary) == errSecSuccess
-    }
 }

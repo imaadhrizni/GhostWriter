@@ -3,6 +3,7 @@ import Testing
 
 /// Unit tests for the self-priming transcription context — the pure logic that
 /// decides what prompt hint Whisper (and the on-device fallback) receive.
+/// Fixtures use neutral placeholder names (Acme, Globex, Initech…), not real data.
 @Suite struct PromptContextTests {
 
     // MARK: composePrompt (Whisper prompt hint)
@@ -13,22 +14,22 @@ import Testing
     }
 
     @Test func vocabularyOnly() {
-        #expect(GroqService.composePrompt(vocabulary: "Glossary: WSO2, Fiorano", context: "")
-                == "Glossary: WSO2, Fiorano")
+        #expect(GroqService.composePrompt(vocabulary: "Glossary: Acme, Globex", context: "")
+                == "Glossary: Acme, Globex")
     }
 
     @Test func contextOnly() {
-        #expect(GroqService.composePrompt(vocabulary: "", context: "We compared WSO2 and Fiorano.")
-                == "We compared WSO2 and Fiorano.")
+        #expect(GroqService.composePrompt(vocabulary: "", context: "We compared Acme and Globex.")
+                == "We compared Acme and Globex.")
     }
 
     /// Whisper attends most to the END of the prompt, so recent transcript must
     /// come last (closest to the new audio) and the glossary must lead.
     @Test func contextComesLastGlossaryLeads() {
-        let p = GroqService.composePrompt(vocabulary: "Glossary: WSO2",
-                                          context: "Comparing WSO2 and Fiorano.")
-        #expect(p.hasPrefix("Glossary: WSO2"))
-        #expect(p.hasSuffix("Comparing WSO2 and Fiorano."))
+        let p = GroqService.composePrompt(vocabulary: "Glossary: Acme",
+                                          context: "Comparing Acme and Globex.")
+        #expect(p.hasPrefix("Glossary: Acme"))
+        #expect(p.hasSuffix("Comparing Acme and Globex."))
     }
 
     /// Only the most recent slice of context is kept — Whisper's prompt window
@@ -44,44 +45,44 @@ import Testing
 
     @Test func contextualStringsCollectsGlossaryAndProperNouns() {
         let hints = OfflineTranscriber.contextualStrings(
-            vocabulary: "WSO2, API Gateway",
-            context: "we should compare Fiorano and the gateway")
-        #expect(hints.contains("WSO2"))
+            vocabulary: "Acme, API Gateway",
+            context: "we should compare Globex and the gateway")
+        #expect(hints.contains("Acme"))
         #expect(hints.contains("API Gateway"))
-        #expect(hints.contains("Fiorano"))                                   // capitalized → proper-noun candidate
+        #expect(hints.contains("Globex"))                                   // capitalized → proper-noun candidate
         #expect(!hints.contains(where: { $0.lowercased() == "gateway" }))    // lowercase → skipped
     }
 
     @Test func contextualStringsDeduplicatesCaseInsensitively() {
-        let hints = OfflineTranscriber.contextualStrings(vocabulary: "WSO2, wso2",
-                                                         context: "WSO2 again")
-        #expect(hints.filter { $0.lowercased() == "wso2" }.count == 1)
+        let hints = OfflineTranscriber.contextualStrings(vocabulary: "Acme, acme",
+                                                         context: "Acme again")
+        #expect(hints.filter { $0.lowercased() == "acme" }.count == 1)
     }
 
     @Test func contextualStringsIncludesExtraHarvestedTerms() {
         let hints = OfflineTranscriber.contextualStrings(
-            vocabulary: "", context: "", extraTerms: ["Zain Iraq", "TIBCO"])
-        #expect(hints.contains("Zain Iraq"))
-        #expect(hints.contains("TIBCO"))
+            vocabulary: "", context: "", extraTerms: ["Initech Corp", "ZENDA"])
+        #expect(hints.contains("Initech Corp"))
+        #expect(hints.contains("ZENDA"))
     }
 
     // MARK: MeetingVocabulary.extractTerms (auto-harvested glossary)
 
     @Test func extractPicksUpAcronymsAndProducts() {
         let notes = """
-        We are migrating the ESB to WSO2. The RFP mentions WSO2 again.
-        TIBCO is the incumbent. WSO2 wins on API management.
+        We are migrating the ESB to ACME2. The RFP mentions ACME2 again.
+        ZENDA is the incumbent. ACME2 wins on API management.
         """
         let terms = MeetingVocabulary.extractTerms(from: notes)
-        #expect(terms.contains("WSO2"))
+        #expect(terms.contains("ACME2"))
         #expect(terms.contains("ESB"))
-        #expect(terms.contains("TIBCO"))
+        #expect(terms.contains("ZENDA"))
     }
 
     @Test func extractRanksFrequentTermsFirst() {
-        let notes = "WSO2 WSO2 WSO2 handles the ESB migration once."
+        let notes = "ACME2 ACME2 ACME2 handles the ESB migration once."
         let terms = MeetingVocabulary.extractTerms(from: notes)
-        #expect(terms.first == "WSO2")   // most-mentioned leads
+        #expect(terms.first == "ACME2")   // most-mentioned leads
     }
 
     @Test func extractFiltersCommonAcronymNoise() {
@@ -97,41 +98,42 @@ import Testing
 }
 
 /// Project scoping/inheritance — the pure operations over a project list.
+/// Uses neutral placeholder buckets (Acme, Initech, MBA), not real data.
 @Suite struct ProjectsTests {
 
     private var sample: [Project] {
         [
-            Project(id: "wso2", name: "WSO2", parentID: nil, terms: ["WSO2", "ESB"]),
-            Project(id: "zain", name: "Zain Iraq", parentID: "wso2", terms: ["Zain Iraq", "Muazzam"]),
+            Project(id: "acme", name: "Acme", parentID: nil, terms: ["Acme", "ESB"]),
+            Project(id: "initech", name: "Initech", parentID: "acme", terms: ["Initech", "Dana"]),
             Project(id: "mba", name: "MBA", parentID: nil, terms: ["Porter", "NPV"])
         ]
     }
 
     @Test func topLevelExcludesChildren() {
         let tops = Projects.topLevel(in: sample).map(\.id)
-        #expect(tops == ["wso2", "mba"])
+        #expect(tops == ["acme", "mba"])
     }
 
     @Test func childrenOfParent() {
-        #expect(Projects.children(of: "wso2", in: sample).map(\.id) == ["zain"])
+        #expect(Projects.children(of: "acme", in: sample).map(\.id) == ["initech"])
         #expect(Projects.children(of: "mba", in: sample).isEmpty)
     }
 
     @Test func lineageOfChildIncludesParent() {
-        #expect(Projects.lineage(of: "zain", in: sample) == ["zain", "wso2"])
-        #expect(Projects.lineage(of: "wso2", in: sample) == ["wso2"])
+        #expect(Projects.lineage(of: "initech", in: sample) == ["initech", "acme"])
+        #expect(Projects.lineage(of: "acme", in: sample) == ["acme"])
     }
 
     @Test func displayPathShowsParent() {
-        #expect(Projects.displayPath(of: "zain", in: sample) == "WSO2 › Zain Iraq")
-        #expect(Projects.displayPath(of: "wso2", in: sample) == "WSO2")
+        #expect(Projects.displayPath(of: "initech", in: sample) == "Acme › Initech")
+        #expect(Projects.displayPath(of: "acme", in: sample) == "Acme")
     }
 
     /// A child inherits the parent's terms (its own first), and sibling terms
     /// never leak — the whole point of scoping.
     @Test func manualTermsInheritParentNotSiblings() {
-        let terms = Projects.manualTerms(forID: "zain", in: sample)
-        #expect(terms == ["Zain Iraq", "Muazzam", "WSO2", "ESB"])
+        let terms = Projects.manualTerms(forID: "initech", in: sample)
+        #expect(terms == ["Initech", "Dana", "Acme", "ESB"])
         #expect(!terms.contains("Porter"))    // MBA is a different bucket
     }
 

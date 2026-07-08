@@ -120,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pauseLock.lock(); meetingTranscriptionPaused = value; pauseLock.unlock()
     }
     private var pauseMenuItem: NSMenuItem?
+    private var liveBriefMenuItem: NSMenuItem?
     private var statsMenuItem: NSMenuItem?
     private var errorMenuItem: NSMenuItem?
 
@@ -129,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installEditMenu()
         setupStatusItem()
         setupOverlayPanel()
         setupHotkeyCallbacks()
@@ -186,6 +188,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         notesAssistantWindowController?.showAllNotes()
     }
 
+    private var dictationsWindowController: DictationsWindowController?
+
+    /// Open the searchable Dictations browser.
+    @objc private func showDictations() {
+        if dictationsWindowController == nil {
+            dictationsWindowController = DictationsWindowController()
+        }
+        dictationsWindowController?.showAndActivate()
+    }
+
     @objc private func showSettingsWindow() {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController()
@@ -214,6 +226,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - Setup
+
+    /// Install a minimal main menu with a standard Edit menu. As an accessory
+    /// app (LSUIElement) GhostWriter has no menu bar of its own, so without this
+    /// the ⌘X/⌘C/⌘V/⌘A/⌘Z key equivalents have no menu items to dispatch to the
+    /// focused text field — copy/paste appears "broken" in every text field
+    /// (API key, agenda, Ask, settings, the notes editor). The menu bar stays
+    /// hidden; only the shortcuts get wired into the responder chain.
+    private func installEditMenu() {
+        let mainMenu = NSMenu()
+
+        // App menu — the first submenu is conventionally the app menu.
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Quit GhostWriter",
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+
+        // Edit menu — nil targets so each item routes to the first responder
+        // (the focused field editor), which implements these selectors.
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+
+        NSApp.mainMenu = mainMenu
+    }
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -263,6 +309,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(pauseItem)
         self.pauseMenuItem = pauseItem
 
+        let liveBriefItem = NSMenuItem(title: "Hide Live Brief", action: #selector(toggleLiveBrief), keyEquivalent: "")
+        liveBriefItem.image = NSImage(systemSymbolName: "sparkles.rectangle.stack", accessibilityDescription: nil)
+        liveBriefItem.target = self
+        menu.addItem(liveBriefItem)
+        self.liveBriefMenuItem = liveBriefItem
+
         // Quick note sits with the capture actions — all three are "record
         // something now" verbs sharing the same hotkey family.
         let quickNoteItem = NSMenuItem(title: "Quick Note", action: #selector(toggleQuickNote), keyEquivalent: "j")
@@ -289,12 +341,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         assistantItem.target = self
         menu.addItem(assistantItem)
 
-        let dictationHistoryItem = NSMenuItem(title: "Recent Dictations", action: nil, keyEquivalent: "")
-        dictationHistoryItem.image = NSImage(systemSymbolName: "text.quote", accessibilityDescription: nil)
-        let dictationHistoryMenu = NSMenu(title: "Recent Dictations")
-        dictationHistoryMenu.delegate = self
-        dictationHistoryItem.submenu = dictationHistoryMenu
-        menu.addItem(dictationHistoryItem)
+        let dictationsItem = NSMenuItem(title: "Dictations…", action: #selector(showDictations), keyEquivalent: "")
+        dictationsItem.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)
+        dictationsItem.target = self
+        menu.addItem(dictationsItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -321,7 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func resetPermissions() {
         let alert = NSAlert()
         alert.messageText = "Reset all permissions?"
-        alert.informativeText = "This revokes GhostWriter's Microphone, Accessibility, and System Audio Recording permissions, then relaunches the app so macOS can prompt you again."
+        alert.informativeText = "This revokes GhostWriter's Microphone, Accessibility, System Audio Recording, and browser Automation permissions, then relaunches the app so macOS can prompt you again."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Reset & Relaunch")
         alert.addButton(withTitle: "Cancel")
@@ -587,7 +637,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// sections, and duplicated headings. Returns nil when nothing real remains.
     private static func sanitizedSummary(_ raw: String) -> String? {
         let trimmedRaw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedRaw.isEmpty, !trimmedRaw.contains("NOT_ENOUGH_CONTENT") else { return nil }
+        // Only bail when the model says the WHOLE meeting was too thin — a
+        // stray token inside one section must not discard the entire summary.
+        guard !trimmedRaw.isEmpty, trimmedRaw != "NOT_ENOUGH_CONTENT" else { return nil }
 
         // Split into (heading, body) sections
         var sections: [(heading: String?, body: [String])] = [(nil, [])]
@@ -601,23 +653,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         var seenHeadings = Set<String>()
         var output: [String] = []
-        var hasContent = false
+        var sawHeading = false
         for section in sections {
             let body = section.body.joined(separator: "\n")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let heading = section.heading {
+                // Keep every distinct heading — even with an empty body, so the
+                // structure (Summary / Decisions / Action Items …) is always
+                // visible. Blank sections render an explicit "_None_".
                 let key = heading.trimmingCharacters(in: CharacterSet(charactersIn: "# ")).lowercased()
-                guard !seenHeadings.contains(key), !body.isEmpty else { continue }
+                guard !seenHeadings.contains(key) else { continue }
                 seenHeadings.insert(key)
                 output.append(heading)
-                output.append(body)
-                hasContent = true
+                output.append(body.isEmpty ? "_None_" : body)
+                sawHeading = true
             } else if !body.isEmpty {
                 output.append(body)
-                hasContent = true
             }
         }
-        return hasContent ? output.joined(separator: "\n\n") : nil
+        return sawHeading ? output.joined(separator: "\n\n") : nil
     }
 
     /// The single transcription choke point for dictation, quick notes, and
@@ -643,7 +697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// After a meeting ends: append the AI summary (if enabled), then notify (if enabled).
-    private func finalizeMeetingNotes(startedAt start: Date) {
+    private func finalizeMeetingNotes(startedAt start: Date, agenda: [String] = []) {
         guard let fileURL = meetingNotes.lastCompletedFilePath else { return }
 
         let elapsed = Int(Date().timeIntervalSince(start))
@@ -655,37 +709,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let wantsSummary = self.settings.summariesEnabled
             let wantsActions = self.settings.actionItemsEnabled
             // Local-only mode never contacts the network — no LLM summary/tags.
+            // Each cloud feature below is independently toggleable; the shared
+            // gate is only "cloud allowed + enough real speech to work with".
             if !self.settings.localOnlyMode,
-               wantsSummary || wantsActions,
                let transcript = self.meetingNotes.transcriptText(of: fileURL),
                Self.dialogueLength(of: transcript) > 200 {  // measure actual speech, not header/markers
-                do {
-                    let raw = try await self.textPolisher.summarize(
-                        transcript: transcript,
-                        template: self.settings.selectedTemplate,
-                        includeSummary: wantsSummary,
-                        includeActionItems: wantsActions)
-                    if let summary = Self.sanitizedSummary(raw) {
-                        self.meetingNotes.appendSummary(summary, to: fileURL)
-                    } else {
-                        Log.meeting.info("⏭ Summary skipped — not enough content")
+                if wantsSummary || wantsActions {
+                    do {
+                        let raw = try await self.textPolisher.summarize(
+                            transcript: transcript,
+                            template: self.settings.selectedTemplate,
+                            includeSummary: wantsSummary,
+                            includeActionItems: wantsActions)
+                        if let summary = Self.sanitizedSummary(raw) {
+                            self.meetingNotes.appendSummary(summary, to: fileURL)
+                        } else {
+                            Log.meeting.info("⏭ Summary skipped — not enough content")
+                        }
+                    } catch {
+                        Log.meeting.error("❌ Summary failed: \(error.localizedDescription)")
+                        self.reportError("Meeting summary failed: \(error.localizedDescription)")
                     }
-                } catch {
-                    Log.meeting.error("❌ Summary failed: \(error.localizedDescription)")
-                    self.reportError("Meeting summary failed: \(error.localizedDescription)")
                 }
 
-                // Auto-tag topics into the front-matter (needs front-matter on).
+                // Agenda section: planned items (covered?) + topics the meeting
+                // itself raised (dynamic). Independent of the summary toggle —
+                // writes whenever there's an agenda or discovered topics. Fast
+                // model — this is a notes footer, not a blocking decision.
+                // Prefer the live panel's accumulated agenda (the full 6–8 the
+                // user watched build up) over a fresh one-shot, which would only
+                // rediscover a couple of topics.
+                let liveAgenda = await LiveMeetingAssistant.shared.coverageSnapshot
+                if !liveAgenda.isEmpty {
+                    self.meetingNotes.appendAgenda(liveAgenda, to: fileURL)
+                } else {
+                    let status = await self.textPolisher.agendaStatus(
+                        userAgenda: agenda, transcript: transcript, preferFast: true)
+                    let userEntries = zip(agenda, status.userCovered).map { (text: $0.0, covered: $0.1, dynamic: false) }
+                    // Discovered topics are surfaced, never auto-completed.
+                    let dynEntries = status.newTopics.map { (text: $0, covered: false, dynamic: true) }
+                    self.meetingNotes.appendAgenda(userEntries + dynEntries, to: fileURL)
+                }
+
+                // Auto-tag topics + entities into the front-matter (needs front-matter on).
+                // Person names are only harvested when redaction is off.
                 if self.settings.autoTagging, self.settings.frontMatterEnabled {
-                    let tags = await self.textPolisher.extractTags(transcript: transcript)
-                    MeetingNotesWriter.addFrontMatterTags(tags, to: fileURL)
+                    let meta = await self.textPolisher.extractMetadata(
+                        transcript: transcript, includePeople: !self.settings.redactionEnabled)
+                    if !meta.isEmpty {
+                        MeetingNotesWriter.addMeetingMetadata(
+                            topics: meta.topics, people: meta.people,
+                            customer: meta.customer, project: meta.project, to: fileURL)
+                    }
                 }
             }
 
             if self.settings.notifyOnMeetingEnd {
                 NotificationManager.shared.notifyMeetingSaved(duration: duration, fileURL: fileURL)
             }
+            self.warnIfOverBudget()
         }
+    }
+
+    /// Fire a single monthly notification the first time the estimated spend
+    /// crosses the configured budget. Cheap to call after any billable work.
+    private func warnIfOverBudget() {
+        let stats = UsageStats.shared
+        guard stats.shouldWarnBudgetOnce() else { return }
+        NotificationManager.shared.notifyBudgetExceeded(
+            spent: UsageStats.currency(stats.costThisMonthUSD),
+            budget: UsageStats.currency(settings.monthlyBudgetUSD))
     }
 
     // MARK: - Notes & Pause Hotkeys
@@ -704,6 +797,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// ⌃⌥P: pause/resume meeting transcription without ending the session.
+    /// Toggle the floating Live Brief panel without stopping the briefing.
+    @objc private func toggleLiveBrief() {
+        MainActor.assumeIsolated {
+            let assistant = LiveMeetingAssistant.shared
+            guard assistant.isActive else { return }
+            if assistant.visible { assistant.hide() } else { assistant.show() }
+        }
+    }
+
     @objc private func togglePauseTranscription() {
         guard appState.isMeetingMode else { return }
 
@@ -861,13 +963,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
 
-                let activeApp = appDetector.currentApp()
+                var activeApp = appDetector.currentApp()
+                // For browsers, read the active tab host (if enabled) so domain
+                // rules and the log can distinguish sites like Gmail.
+                if activeApp.category == .browser, settings.browserTabDetection {
+                    let bundleID = activeApp.bundleID
+                    let host = await MainActor.run { BrowserURL.host(forBundleID: bundleID) }
+                    activeApp = AppContext(appName: activeApp.appName, bundleID: bundleID,
+                                           category: .browser, host: host)
+                }
+                let style = settings.resolvedDictationStyle(for: activeApp)
                 let polishedText = try await textPolisher.polish(rawText: rawText, appContext: activeApp)
                 textInjector.inject(text: polishedText)
 
+                let words = polishedText.split(whereSeparator: \.isWhitespace).count
+
+                // Optional archive: one Markdown file per dictation, with metadata.
+                if settings.saveDictations {
+                    MeetingNotesWriter.saveDictation(
+                        text: polishedText, app: activeApp.appName, host: activeApp.host,
+                        style: style.displayName, seconds: Int(dictationDuration.rounded()), words: words)
+                }
+
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    let words = polishedText.split(whereSeparator: \.isWhitespace).count
                     UsageStats.shared.recordDictation(words: words, seconds: dictationDuration)
 
                     guard self.settings.dictationHistoryEnabled else { return }
@@ -918,6 +1037,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// stops a second dialog from stacking and double-starting the meeting.
     private var meetingStartPromptActive = false
 
+    /// Agenda items entered at meeting start (may be empty) — drives the
+    /// live coverage checklist and the end-of-meeting "did we cover it?" check.
+    private var meetingAgenda: [String] = []
+
     /// The single start-meeting dialog: template picker + confirm/decline.
     /// Both the manual (⌃⌥M / menu) and auto-detect paths run through here so
     /// they can't drift apart.
@@ -934,13 +1057,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: declineTitle)
         alert.alertStyle = .informational
 
-        // Template picker inline — what kind of meeting shapes the summary.
-        let picker = Self.makeTemplatePicker(selectedID: settings.selectedTemplateID)
-        alert.accessoryView = picker
+        // Template picker + optional agenda inline — the template shapes the
+        // summary; the agenda drives the end-of-meeting coverage check.
+        let accessory = Self.makeStartAccessory(selectedID: settings.selectedTemplateID)
+        alert.accessoryView = accessory
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
-            applyTemplateSelection(from: picker)
+            applyTemplateSelection(from: accessory.picker)
+            meetingAgenda = Self.parseAgenda(accessory.agendaField.stringValue)
             // Hold the prompt flag through the async start so a queued ⌃⌥M
             // can't open a spurious second dialog before isMeetingMode flips.
             Task { @MainActor in
@@ -953,10 +1078,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// A framed popup of meeting templates (an accessory view without an
-    /// explicit frame renders but doesn't receive clicks in NSAlert).
-    private static func makeTemplatePicker(selectedID: String) -> NSPopUpButton {
-        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 26), pullsDown: false)
+    /// Accessory view for the start dialog: a template popup plus an optional
+    /// agenda field. Exposes both subviews so the caller can read them back.
+    private final class StartAccessory: NSView {
+        let picker = NSPopUpButton(frame: .zero, pullsDown: false)
+        let agendaField = NSTextField(frame: .zero)
+    }
+
+    /// Build the start-dialog accessory (template picker + agenda field). An
+    /// accessory view without an explicit frame renders but doesn't receive
+    /// clicks in NSAlert, so everything is laid out with explicit frames.
+    private static func makeStartAccessory(selectedID: String) -> StartAccessory {
+        let width: CGFloat = 260
+        let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: 78))
+
+        let picker = container.picker
+        picker.frame = NSRect(x: 0, y: 52, width: width, height: 26)
         let templates = AppSettings.shared.allTemplates
         for template in templates {
             picker.addItem(withTitle: template.displayName)
@@ -965,7 +1102,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let index = templates.firstIndex(where: { $0.id == selectedID }) {
             picker.selectItem(at: index)
         }
-        return picker
+        container.addSubview(picker)
+
+        let field = container.agendaField
+        field.frame = NSRect(x: 0, y: 0, width: width, height: 44)
+        field.placeholderString = "Agenda (optional) — separate items with commas"
+        field.usesSingleLineMode = false
+        field.cell?.wraps = true
+        field.cell?.isScrollable = false
+        field.lineBreakMode = .byWordWrapping
+        field.font = .systemFont(ofSize: 12)
+        container.addSubview(field)
+
+        return container
+    }
+
+    /// Split a comma / newline / semicolon-separated agenda string into items.
+    private static func parseAgenda(_ raw: String) -> [String] {
+        raw.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     private func applyTemplateSelection(from picker: NSPopUpButton) {
@@ -987,7 +1143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
-            stopMeetingMode()
+            Task { @MainActor in await confirmEndAndStopMeeting() }
         }
     }
 
@@ -995,11 +1151,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleMeetingMode() {
         if appState.isMeetingMode {
-            stopMeetingMode()
+            Task { @MainActor in await confirmEndAndStopMeeting() }
         } else {
             promptTemplateAndStartMeeting()
         }
     }
+
+    /// "Ask before it ends": when the user deliberately ends a meeting, warn
+    /// about anything still open — the user's uncovered agenda items AND any
+    /// dynamically-discovered topics raised but left unresolved — and offer to
+    /// keep recording. Stops straight away if there's nothing outstanding.
+    @MainActor
+    private func confirmEndAndStopMeeting() async {
+        guard !endCoverageChecking else { return }
+
+        let assistant = LiveMeetingAssistant.shared
+        var uncovered: [String]
+        if assistant.isActive {
+            // Reuse the live panel's accumulated coverage (user ticks + the
+            // discovered topics and their resolved state) — no extra model call.
+            uncovered = assistant.coverageSnapshot.filter { !$0.covered }
+                .map { $0.dynamic ? "\($0.text) (raised, unresolved)" : $0.text }
+            Log.meeting.info("🔎 End-coverage (live): flagged=\(uncovered.count)")
+        } else {
+            // No live panel — do a one-shot read, if there's a cloud path and content.
+            let settings = AppSettings.shared
+            let transcript = meetingNotes.currentFilePath.flatMap { meetingNotes.transcriptText(of: $0) } ?? ""
+            let spoken = Self.dialogueLength(of: transcript)
+            guard !settings.localOnlyMode, KeychainService.groqAPIKey() != nil, spoken > 200 else {
+                Log.meeting.info("⏭ End-coverage skipped (local=\(settings.localOnlyMode), spoken=\(spoken))")
+                stopMeetingMode(); return
+            }
+            endCoverageChecking = true
+            meetingModeMenuItem?.title = "Checking coverage…"
+            let status = await textPolisher.agendaStatus(
+                userAgenda: meetingAgenda,
+                transcript: transcript.trimmingCharacters(in: .whitespacesAndNewlines),
+                preferFast: false)
+            endCoverageChecking = false
+            meetingModeMenuItem?.title = appState.isMeetingMode ? "End Meeting" : "Start Meeting"
+            let userUncovered = zip(meetingAgenda, status.userCovered).filter { !$0.1 }.map { $0.0 }
+            let openTopics = status.newTopics.map { "\($0) (raised, unresolved)" }
+            uncovered = userUncovered + openTopics
+            Log.meeting.info("🔎 End-coverage (model): flagged=\(uncovered.count)")
+        }
+
+        // The meeting may have been stopped another way while we were checking.
+        guard appState.isMeetingMode else { return }
+        guard !uncovered.isEmpty else { stopMeetingMode(); return }
+
+        let alert = NSAlert()
+        alert.messageText = "Before you end this meeting"
+        alert.informativeText = "These points still look open:\n\n" + uncovered.map { "•  \($0)" }.joined(separator: "\n")
+        alert.addButton(withTitle: "Keep Recording")
+        alert.addButton(withTitle: "End Anyway")
+        alert.alertStyle = .informational
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() != .alertFirstButtonReturn {
+            stopMeetingMode()   // "End Anyway"
+        }
+    }
+
+    private var endCoverageChecking = false
 
     /// Manual start (menu or ⌃⌥M): confirm the meeting template first so the
     /// summary matches the kind of meeting.
@@ -1047,6 +1260,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // directly — the capture callbacks haven't started yet)
         speakerProfiler.reset()
 
+        // Live in-meeting brief (opt-in; reads the growing notes file).
+        LiveMeetingAssistant.shared.start(
+            transcriptProvider: { [weak self] in
+                guard let url = self?.meetingNotes.currentFilePath else { return nil }
+                return self?.meetingNotes.transcriptText(of: url)
+            },
+            template: settings.selectedTemplate,
+            agenda: meetingAgenda)
+
         // Menu-bar elapsed timer — doubles as a "still recording" indicator
         startMeetingTimer()
 
@@ -1089,6 +1311,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingTimer?.invalidate()
         meetingTimer = nil
         statusItem?.button?.title = ""
+        // Hand the agenda to the finalizer (for the notes' Agenda section)
+        // before clearing it for the next meeting.
+        let agendaForNotes = meetingAgenda
+        meetingAgenda = []
 
         micCapture.stop()
         systemAudioCapture.stop()
@@ -1124,7 +1350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 await self.waitForPendingTranscriptions(timeout: 20)
                 await self.finalRetryPass()
                 self.meetingNotes.endSession(startedAt: start)
-                self.finalizeMeetingNotes(startedAt: start)
+                self.finalizeMeetingNotes(startedAt: start, agenda: agendaForNotes)
             }
         }
 
@@ -1133,6 +1359,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.appState.isMeetingMode = false
             self.appState.meetingCaption = ""
             self.appState.isSpeakerActive = false
+            LiveMeetingAssistant.shared.stop()
             self.meetingModeMenuItem?.title = "Start Meeting"
             self.statusItem?.button?.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: "GhostWriter")
 
@@ -1150,8 +1377,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setupMeetingAudioCallback() {
         let vad = VoiceActivityDetector()
-        vad.silenceDebounce = 0.1  // We handle our own longer debounce below
-
         systemAudioCapture.onAudioBuffer = { [weak self] buffer in
             guard let self, !self.isTranscriptionPaused else { return }
             let rms = vad.calculateRMS(from: buffer)
@@ -1481,15 +1706,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
-    // MARK: - History Menus
+    // MARK: - Menus
 
-    private static let historyDateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d, HH:mm"
-        return f
-    }()
-
-    /// Rebuilds the Meeting History / Recent Dictations submenus on open.
+    /// Rebuilds the Notes submenu (and refreshes the Main menu) on open.
     func menuNeedsUpdate(_ menu: NSMenu) {
         switch menu.title {
         case "Main":
@@ -1499,10 +1718,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Surface the running cost estimate when there's been any spend.
             if !settings.localOnlyMode, stats.estimatedCostUSD >= 0.01 {
                 statsLine += " · ~\(UsageStats.currency(stats.estimatedCostUSD))"
+                // Flag when this month's spend has crossed the soft budget.
+                if stats.isOverBudget {
+                    statsLine += " ⚠️ over budget"
+                }
             }
             statsMenuItem?.title = statsLine
             // Pause only makes sense mid-meeting — hide it otherwise.
             pauseMenuItem?.isHidden = !appState.isMeetingMode
+            // Live Brief show/hide — only while its panel is running.
+            let liveActive = LiveMeetingAssistant.shared.isActive
+            liveBriefMenuItem?.isHidden = !liveActive
+            liveBriefMenuItem?.title = LiveMeetingAssistant.shared.visible ? "Hide Live Brief" : "Show Live Brief"
             // Error banner — visible only when there's a recent failure.
             if let message = appState.lastError {
                 errorMenuItem?.isHidden = false
@@ -1574,36 +1801,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             folderItem.target = self
             menu.addItem(folderItem)
 
-        case "Recent Dictations":
-            menu.removeAllItems()
-            if !settings.dictationHistoryEnabled {
-                let disabled = NSMenuItem(title: "History disabled — enable in Settings → Dictation", action: nil, keyEquivalent: "")
-                disabled.isEnabled = false
-                menu.addItem(disabled)
-                return
-            }
-            if dictationHistory.isEmpty {
-                let empty = NSMenuItem(title: "No dictations yet", action: nil, keyEquivalent: "")
-                empty.isEnabled = false
-                menu.addItem(empty)
-            }
-            for entry in dictationHistory {
-                let preview = entry.text.count > 48 ? String(entry.text.prefix(48)) + "…" : entry.text
-                let duration = String(format: "%.0fs", entry.duration.rounded())
-                let item = NSMenuItem(title: "\(Self.historyDateFormatter.string(from: entry.date)) · \(duration)  \(preview)",
-                                      action: #selector(copyDictation(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = entry.text
-                item.toolTip = "\(entry.text)\n\nClick to copy. ⌃⌥V re-types the most recent one."
-                menu.addItem(item)
-            }
-            if !dictationHistory.isEmpty {
-                menu.addItem(NSMenuItem.separator())
-                let clearItem = NSMenuItem(title: "Clear History", action: #selector(clearDictationHistory), keyEquivalent: "")
-                clearItem.target = self
-                menu.addItem(clearItem)
-            }
-
         default:
             break
         }
@@ -1663,11 +1860,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(folder)
     }
 
-    @objc private func copyDictation(_ sender: NSMenuItem) {
-        guard let text = sender.representedObject as? String else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
 
     /// Surface a non-fatal error: remember it for the menu and post a
     /// notification. Safe to call from any thread.

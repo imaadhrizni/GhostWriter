@@ -22,8 +22,6 @@ final class SpeakerProfiler {
     private struct Profile {
         var pitch: Float        // running average, Hz
         var zcr: Float          // running average, crossings per sample (0…1)
-        var dbfs: Float         // running average loudness
-        var segments: Int       // how many segments matched this profile
     }
 
     private var profiles: [Profile] = []
@@ -60,8 +58,7 @@ final class SpeakerProfiler {
             return labelForIndex(bestIndex)
         }
 
-        profiles.append(Profile(pitch: features.pitch, zcr: features.zcr,
-                                dbfs: features.dbfs, segments: 1))
+        profiles.append(Profile(pitch: features.pitch, zcr: features.zcr))
         return labelForIndex(profiles.count - 1)
     }
 
@@ -71,7 +68,7 @@ final class SpeakerProfiler {
 
     // MARK: - Clustering
 
-    private func distance(from f: (pitch: Float, zcr: Float, dbfs: Float), to p: Profile) -> Float {
+    private func distance(from f: (pitch: Float, zcr: Float), to p: Profile) -> Float {
         // Pitch difference in semitones — perceptually meaningful and
         // speaker-characteristic. 12 * log2(f1/f2).
         let semitones = abs(12 * log2f(f.pitch / p.pitch))
@@ -81,21 +78,19 @@ final class SpeakerProfiler {
         return semitones / 2.5 + zcrDiff * 0.35
     }
 
-    private func update(profileAt i: Int, with f: (pitch: Float, zcr: Float, dbfs: Float)) {
+    private func update(profileAt i: Int, with f: (pitch: Float, zcr: Float)) {
         // Exponential moving average so a speaker's profile tracks slow drift
         // without being yanked around by one odd segment.
         let alpha: Float = 0.3
         profiles[i].pitch = profiles[i].pitch * (1 - alpha) + f.pitch * alpha
         profiles[i].zcr   = profiles[i].zcr   * (1 - alpha) + f.zcr   * alpha
-        profiles[i].dbfs  = profiles[i].dbfs  * (1 - alpha) + f.dbfs  * alpha
-        profiles[i].segments += 1
     }
 
     // MARK: - Feature extraction
 
-    /// Median pitch + ZCR + loudness across the voiced frames of the segment.
+    /// Median pitch + ZCR across the voiced frames of the segment.
     /// Returns nil when the segment has no reliably pitched frames.
-    private func extractFeatures(from audio: Data) -> (pitch: Float, zcr: Float, dbfs: Float)? {
+    private func extractFeatures(from audio: Data) -> (pitch: Float, zcr: Float)? {
         let samples: [Float] = audio.withUnsafeBytes { raw in
             let int16 = raw.bindMemory(to: Int16.self)
             return int16.map { Float($0) / 32768.0 }
@@ -107,18 +102,14 @@ final class SpeakerProfiler {
 
         var pitches: [Float] = []
         var zcrs: [Float] = []
-        var rmsTotal: Float = 0
-        var frames = 0
 
         var start = 0
         while start + frameSize <= samples.count {
             let frame = Array(samples[start ..< start + frameSize])
             start += hop
-            frames += 1
 
             var rms: Float = 0
             vDSP_rmsqv(frame, 1, &rms, vDSP_Length(frameSize))
-            rmsTotal += rms
 
             // Skip quiet frames — pitch from silence is noise.
             guard rms > 0.01 else { continue }
@@ -134,9 +125,7 @@ final class SpeakerProfiler {
 
         let medianPitch = pitches.sorted()[pitches.count / 2]
         let meanZCR = zcrs.reduce(0, +) / Float(zcrs.count)
-        let meanRMS = frames > 0 ? rmsTotal / Float(frames) : 0
-        let dbfs = 20 * log10f(max(meanRMS, 1e-9))
-        return (medianPitch, meanZCR, dbfs)
+        return (medianPitch, meanZCR)
     }
 
     /// Fundamental frequency of one frame via time-domain autocorrelation,

@@ -112,6 +112,54 @@ final class MeetingNotesWriter {
         return fileURL
     }
 
+    // MARK: - Dictation Archive
+
+    /// Archive one dictation to its own Markdown file with metadata
+    /// front-matter, in the dedicated dictations folder. Returns the URL, or
+    /// nil on failure. The text is already polished and (if enabled) redacted.
+    @discardableResult
+    static func saveDictation(text: String, app: String, host: String?, style: String,
+                              seconds: Int, words: Int) -> URL? {
+        let now = Date()
+        let folder = AppSettings.shared.dictationDestinationFolder(for: now)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            Log.dictation.error("❌ Could not create dictations folder: \(error.localizedDescription)")
+            return nil
+        }
+
+        let stamp = fileNameFormatter.string(from: now)
+        let fileURL = folder.appendingPathComponent("Dictation_\(stamp).md")
+
+        // Quote free-text values — an app/host/style could contain a colon or
+        // quote that would otherwise produce malformed YAML.
+        func yaml(_ s: String) -> String {
+            "\"\(s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
+        }
+        var lines = ["---",
+                     "title: Dictation \(stamp)",
+                     "date: \(ISO8601DateFormatter().string(from: now))",
+                     "app: \(yaml(app))"]
+        if let host, !host.isEmpty { lines.append("host: \(yaml(host))") }
+        lines.append("style: \(yaml(style))")
+        lines.append("duration: \(seconds)s")
+        lines.append("words: \(words)")
+        lines.append("tags: [dictation, ghostwriter]")
+        lines.append("---")
+        lines.append("")
+        let content = lines.joined(separator: "\n") + "\n" + text + "\n"
+
+        do {
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            Log.dictation.error("❌ Could not write dictation file: \(error.localizedDescription)")
+            return nil
+        }
+        Log.dictation.info("📝 Dictation archived")
+        return fileURL
+    }
+
     /// Where today's quick notes live (whether or not the file exists yet).
     static func todaysQuickNotesURL() -> URL {
         AppSettings.shared.quickNotesFolder
@@ -231,6 +279,20 @@ final class MeetingNotesWriter {
         Log.meeting.info("📝 Summary appended")
     }
 
+    /// Append an Agenda section as a Markdown checklist. `entries` are
+    /// (text, covered, dynamic) — dynamic items are the topics the meeting
+    /// itself raised, marked so they read apart from the planned agenda.
+    func appendAgenda(_ entries: [(text: String, covered: Bool, dynamic: Bool)], to fileURL: URL) {
+        guard !entries.isEmpty else { return }
+        let lines = entries.map { e -> String in
+            let box = e.covered ? "- [x]" : "- [ ]"
+            let tag = e.dynamic ? " _(raised in meeting)_" : ""
+            return "\(box) \(e.text)\(tag)"
+        }
+        append("\n# Agenda\n\n\(lines.joined(separator: "\n"))\n", to: fileURL)
+        Log.meeting.info("🗒 Agenda appended")
+    }
+
     /// Merge topic tags into the YAML front-matter `tags: [...]` line. No-op if
     /// the file has no front-matter (tags require it) or no new tags.
     static func addFrontMatterTags(_ tags: [String], to fileURL: URL) {
@@ -254,6 +316,50 @@ final class MeetingNotesWriter {
         content = lines.joined(separator: "\n")
         try? content.write(to: fileURL, atomically: true, encoding: .utf8)
         Log.meeting.info("🏷 Front-matter tags updated")
+    }
+
+    /// Slug a display name into a hyphenated tag token ("Acme Corp" → "acme-corp").
+    private static func slug(_ s: String) -> String {
+        let lowered = s.lowercased().unicodeScalars.map {
+            CharacterSet.alphanumerics.contains($0) ? Character($0) : "-"
+        }
+        return String(lowered).split(separator: "-").joined(separator: "-")
+    }
+
+    /// Write structured entity fields (attendees / customer / project) into the
+    /// front-matter and mirror them into `tags:` so tag search and the Obsidian
+    /// graph pick them up. No-op without front-matter. Inserts each field once,
+    /// after the `tags:` line; existing fields are left untouched.
+    static func addMeetingMetadata(topics: [String], people: [String],
+                                   customer: String?, project: String?,
+                                   to fileURL: URL) {
+        // Mirror entities into tags alongside the topic tags.
+        var tagTokens = topics
+        tagTokens += people.map(slug)
+        if let c = customer { tagTokens.append(slug(c)) }
+        if let p = project { tagTokens.append(slug(p)) }
+        addFrontMatterTags(tagTokens.filter { !$0.isEmpty }, to: fileURL)
+
+        // Structured fields for Dataview / Notion-style filtering.
+        guard var content = try? String(contentsOf: fileURL, encoding: .utf8),
+              content.hasPrefix("---") else { return }
+        var lines = content.components(separatedBy: "\n")
+        guard let tagsIdx = lines.firstIndex(where: { $0.hasPrefix("tags:") }) else { return }
+
+        var inserts: [String] = []
+        func addField(_ key: String, _ value: String) {
+            guard !value.isEmpty, !lines.contains(where: { $0.hasPrefix("\(key):") }) else { return }
+            inserts.append("\(key): \(value)")
+        }
+        if !people.isEmpty { addField("attendees", "[\(people.joined(separator: ", "))]") }
+        if let c = customer { addField("customer", c) }
+        if let p = project { addField("project", p) }
+        guard !inserts.isEmpty else { return }
+
+        lines.insert(contentsOf: inserts, at: tagsIdx + 1)
+        content = lines.joined(separator: "\n")
+        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
+        Log.meeting.info("🏷 Front-matter entities added")
     }
 
     /// Full text of a notes file (for summarization).

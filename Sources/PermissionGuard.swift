@@ -1,5 +1,7 @@
 import AVFoundation
 import AppKit
+import CoreServices
+import EventKit
 
 // MARK: - Permission Guard
 
@@ -130,6 +132,53 @@ final class PermissionGuard {
         }
     }
 
+    func openAutomationSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// Automation (Apple Events) status for the user's default browser, without
+    /// prompting. Automation grants are per-target, so we report against the
+    /// default browser as the representative case:
+    ///   true  = granted, false = explicitly denied,
+    ///   nil   = undetermined, browser not running, or unknown.
+    func automationStatusForDefaultBrowser() -> Bool? {
+        guard let browserID = defaultBrowserBundleID() else { return nil }
+        let target = NSAppleEventDescriptor(bundleIdentifier: browserID)
+        guard let desc = target.aeDesc else { return nil }
+        // askUserIfNeeded: false → never prompts, just reports current status.
+        let status = AEDeterminePermissionToAutomateTarget(desc, typeWildCard, typeWildCard, false)
+        switch status {
+        case noErr:            return true    // authorized
+        case OSStatus(-1743):  return false   // errAEEventNotPermitted (denied)
+        default:               return nil     // -1744 undetermined / -600 not running
+        }
+    }
+
+    /// Reminders access for action-item export, without prompting:
+    ///   true = granted, false = explicitly denied/restricted, nil = not yet asked.
+    func remindersStatus() -> Bool? {
+        let status = EKEventStore.authorizationStatus(for: .reminder)
+        switch status {
+        case .notDetermined:        return nil
+        case .denied, .restricted:  return false
+        default:                    return true   // .authorized / .fullAccess / .writeOnly
+        }
+    }
+
+    func openRemindersSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func defaultBrowserBundleID() -> String? {
+        guard let url = URL(string: "https://example.com"),
+              let appURL = NSWorkspace.shared.urlForApplication(toOpen: url) else { return nil }
+        return Bundle(url: appURL)?.bundleIdentifier
+    }
+
     // MARK: - Reset
 
     /// Revokes all of GhostWriter's TCC permissions via `tccutil`, so macOS will
@@ -138,9 +187,11 @@ final class PermissionGuard {
     @discardableResult
     func resetAllPermissions() -> Bool {
         let bundleID = Bundle.main.bundleIdentifier ?? "com.ghostwriter.dictation"
-        // Microphone + Accessibility, plus the CoreAudio system-audio services
-        // (AudioCapture is the process-tap service; ScreenCapture covers older paths).
-        let services = ["Microphone", "Accessibility", "AudioCapture", "ScreenCapture"]
+        // Microphone + Accessibility, the CoreAudio system-audio services
+        // (AudioCapture is the process-tap service; ScreenCapture covers older
+        // paths), AppleEvents (browser-tab Automation grants), and Reminders
+        // (action-item export).
+        let services = ["Microphone", "Accessibility", "AudioCapture", "ScreenCapture", "AppleEvents", "Reminders"]
 
         var allOK = true
         for service in services {

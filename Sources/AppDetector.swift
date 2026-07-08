@@ -126,6 +126,8 @@ struct AppContext {
     let appName: String
     let bundleID: String
     let category: AppCategory
+    /// Active browser tab host (e.g. "mail.google.com"), when known.
+    var host: String? = nil
 }
 
 // MARK: - App Category

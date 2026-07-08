@@ -79,10 +79,30 @@ final class TextPolisher {
 
     /// Summarize a meeting transcript. Sections come from the meeting
     /// template; Action Items is appended when enabled.
+    /// A soft prompt directive naming the project's known terms so downstream
+    /// summaries/answers keep their spelling consistent (and can fix an obvious
+    /// mistranscription of one) without inventing terms that were never said.
+    /// Empty when there are no terms — the prompt is then unchanged.
+    static func glossaryDirective(_ terms: [String]) -> String {
+        let cleaned = terms
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else { return "" }
+        let list = cleaned.prefix(40).joined(separator: ", ")
+        return """
+
+
+        Known names/terms for this project — use these exact spellings and fix \
+        obvious mistranscriptions of them, but never introduce a term that was \
+        not actually said: \(list)
+        """
+    }
+
     func summarize(transcript: String,
                    template: SummaryTemplate = .builtIn(.general),
                    includeSummary: Bool = true,
-                   includeActionItems: Bool = true) async throws -> String {
+                   includeActionItems: Bool = true,
+                   glossary: [String] = []) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         guard includeSummary || includeActionItems else { throw GroqError.invalidResponse }
 
@@ -110,7 +130,7 @@ final class TextPolisher {
                 - Always include EVERY section heading listed above, in that order — even when a section is empty. When a section has nothing, write exactly "_None_" as its body. Ignore any "(omit if none)" note in a section's description; never drop a heading.
                 - Never repeat a heading.
                 - If the ENTIRE meeting has too little substantive discussion to summarize at all, output exactly NOT_ENOUGH_CONTENT and nothing else.
-                """),
+                """ + Self.glossaryDirective(glossary)),
                 .init(role: "user", content: "Summarize this meeting transcript:\n\n\(clipped)")
             ],
             temperature: 0.2,
@@ -139,7 +159,7 @@ final class TextPolisher {
     // MARK: - Meeting Q&A
 
     /// Answer a question about a meeting transcript.
-    func answer(question: String, transcript: String) async throws -> String {
+    func answer(question: String, transcript: String, glossary: [String] = []) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
 
         let clipped = String(transcript.suffix(24_000))
@@ -150,7 +170,7 @@ final class TextPolisher {
                 You answer questions about a meeting using ONLY the transcript provided.
                 Be concise. Quote the relevant transcript line (with its timestamp) when helpful.
                 If the transcript does not contain the answer, say so plainly — never guess.
-                """),
+                """ + Self.glossaryDirective(glossary)),
                 .init(role: "user", content: "Transcript:\n\n\(clipped)\n\nQuestion: \(question)")
             ],
             temperature: 0.2,
@@ -282,7 +302,7 @@ final class TextPolisher {
         var isEmpty: Bool { tldr.isEmpty && actions.isEmpty }
     }
 
-    func liveBrief(transcript: String, template: SummaryTemplate = .builtIn(.general)) async throws -> LiveBrief {
+    func liveBrief(transcript: String, template: SummaryTemplate = .builtIn(.general), glossary: [String] = []) async throws -> LiveBrief {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         // Recent context only — the running meeting, not the whole archive.
         let clipped = String(transcript.suffix(9_000))
@@ -295,7 +315,7 @@ final class TextPolisher {
                 "tldr": up to 4 very short bullet strings capturing what's been discussed/decided so far,
                 "actions": up to 5 short open action-item strings (append " — @name" when an owner is clear).
                 Be concise and factual — use only what's in the transcript. Empty arrays are fine early on.
-                """),
+                """ + Self.glossaryDirective(glossary)),
                 .init(role: "user", content: clipped)
             ],
             temperature: 0.2,
@@ -340,7 +360,8 @@ final class TextPolisher {
     /// keywords. The caller keeps `knownDynamic` stable across calls and merges the
     /// result, so the list accumulates instead of churning. Best-effort: empty on failure.
     func agendaStatus(userAgenda: [String], knownDynamic: [String] = [],
-                      transcript: String, preferFast: Bool = true) async -> AgendaStatus {
+                      transcript: String, preferFast: Bool = true,
+                      glossary: [String] = []) async -> AgendaStatus {
         let items = userAgenda.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         guard !apiKey.isEmpty else { return AgendaStatus(userCovered: Array(repeating: false, count: items.count)) }
 
@@ -369,7 +390,7 @@ final class TextPolisher {
                 Rules: Do NOT output keywords or single words. Do NOT restate or rephrase known topics as
                 new ones. Prefer returning an empty "new_topics" over adding something marginal. Only use
                 what's in the transcript.
-                """),
+                """ + Self.glossaryDirective(glossary)),
                 .init(role: "user", content: "AGENDA:\n\(numberedAgenda)\n\nKNOWN TOPICS:\n\(knownList)\n\nTRANSCRIPT:\n\(clipped)")
             ],
             temperature: 0,

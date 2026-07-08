@@ -720,7 +720,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             transcript: transcript,
                             template: self.settings.selectedTemplate,
                             includeSummary: wantsSummary,
-                            includeActionItems: wantsActions)
+                            includeActionItems: wantsActions,
+                            glossary: self.meetingNotes.seedGlossary)
                         if let summary = Self.sanitizedSummary(raw) {
                             self.meetingNotes.appendSummary(summary, to: fileURL)
                         } else {
@@ -1353,7 +1354,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return self?.meetingNotes.transcriptText(of: url)
             },
             template: settings.selectedTemplate,
-            agenda: meetingAgenda)
+            agenda: meetingAgenda,
+            glossary: meetingNotes.seedGlossary)
 
         // Menu-bar elapsed timer — doubles as a "still recording" indicator
         startMeetingTimer()

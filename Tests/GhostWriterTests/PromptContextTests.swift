@@ -95,6 +95,26 @@ import Testing
     @Test func extractHandlesEmptyText() {
         #expect(MeetingVocabulary.extractTerms(from: "").isEmpty)
     }
+
+    // MARK: TextPolisher.glossaryDirective (shared with downstream summaries)
+
+    @Test func glossaryDirectiveEmptyWhenNoTerms() {
+        #expect(TextPolisher.glossaryDirective([]) == "")
+        #expect(TextPolisher.glossaryDirective(["", "   "]) == "")
+    }
+
+    @Test func glossaryDirectiveListsTermsAndGuardsAgainstInvention() {
+        let d = TextPolisher.glossaryDirective(["Acme", "Globex"])
+        #expect(d.contains("Acme, Globex"))
+        #expect(d.lowercased().contains("never introduce a term that was"))
+    }
+
+    @Test func glossaryDirectiveCapsAtForty() {
+        let many = (1...60).map { "Term\($0)" }
+        let d = TextPolisher.glossaryDirective(many)
+        #expect(d.contains("Term40"))
+        #expect(!d.contains("Term41"))
+    }
 }
 
 /// Project scoping/inheritance — the pure operations over a project list.

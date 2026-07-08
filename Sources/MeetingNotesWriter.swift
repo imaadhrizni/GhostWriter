@@ -10,6 +10,48 @@ final class MeetingNotesWriter {
     private(set) var currentFilePath: URL?
     /// The most recently finished session's file (survives endSession).
     private(set) var lastCompletedFilePath: URL?
+    /// The project bucket this session belongs to, if any (scopes the glossary).
+    private(set) var currentProjectID: String?
+
+    // Rolling recent-transcript context used to self-prime the next segment's
+    // transcription (Whisper attends to prior text, so names/jargon stay
+    // consistent once they first appear). Best-effort and guarded, because
+    // mic and system-audio segment tasks append concurrently.
+    private let contextLock = NSLock()
+    private var recentSegments: [String] = []
+
+    /// The tail of the recent transcript, fed back as a transcription prompt
+    /// hint for the next segment. Empty until the first segment lands.
+    var promptContext: String {
+        contextLock.lock(); defer { contextLock.unlock() }
+        return recentSegments.joined(separator: " ")
+    }
+
+    private func rememberContext(_ text: String) {
+        contextLock.lock(); defer { contextLock.unlock() }
+        recentSegments.append(text)
+        // Keep only the last couple of segments — Whisper's prompt window is
+        // short and stale context adds no value.
+        if recentSegments.count > 2 {
+            recentSegments.removeFirst(recentSegments.count - 2)
+        }
+    }
+
+    // Per-meeting glossary auto-harvested at session start (people, orgs,
+    // products, acronyms) so first-occurrence names transcribe correctly.
+    // Populated off the main thread; empty until harvesting finishes, so early
+    // segments simply run without it — best-effort, like `promptContext`.
+    private let seedLock = NSLock()
+    private var _seedGlossary: [String] = []
+
+    var seedGlossary: [String] {
+        seedLock.lock(); defer { seedLock.unlock() }
+        return _seedGlossary
+    }
+
+    private func setSeedGlossary(_ terms: [String]) {
+        seedLock.lock(); _seedGlossary = terms; seedLock.unlock()
+    }
 
     /// Read live from settings so a folder change applies to the next session.
     /// Includes the Year/Month subfolder when organization is enabled.
@@ -221,8 +263,20 @@ final class MeetingNotesWriter {
     // MARK: - Session Lifecycle
 
     /// Call when meeting mode starts. Creates the notes file and writes the header.
-    func beginSession() {
+    func beginSession(projectID: String? = nil) {
+        currentProjectID = projectID
         nameOverrides.removeAll()
+        contextLock.lock(); recentSegments.removeAll(); contextLock.unlock()
+        setSeedGlossary([])
+        // Harvest a glossary scoped to this meeting's project off the main
+        // thread — file I/O plus on-device NER shouldn't delay the start.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let terms = MeetingVocabulary.seed(forProjectID: projectID)
+            self?.setSeedGlossary(terms)
+            if !terms.isEmpty {
+                Log.meeting.info("📚 Seeded meeting glossary with \(terms.count) term(s)")
+            }
+        }
         do {
             try FileManager.default.createDirectory(at: notesDirectory, withIntermediateDirectories: true)
 
@@ -252,6 +306,7 @@ final class MeetingNotesWriter {
             try header.write(to: fileURL, atomically: true, encoding: .utf8)
 
             currentFilePath = fileURL
+            AppSettings.shared.assignNote(fileURL.lastPathComponent, toProjectID: projectID)
             Self.invalidateFileCache()
             Log.meeting.info("📝 Meeting notes → \(fileURL.path)")
         } catch {
@@ -396,6 +451,7 @@ final class MeetingNotesWriter {
         let speakerTag = isYou ? "**\(display)**" : "_\(display)_"
         let line = "**[\(timestamp)]** \(speakerTag): \(text)\n\n"
         append(line, to: fileURL)
+        rememberContext(text)
     }
 
     /// Appends an italic event marker (e.g. "Transcription paused") with a timestamp.

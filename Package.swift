@@ -10,6 +10,11 @@ let package = Package(
         .executableTarget(
             name: "GhostWriter",
             path: "Sources"
+        ),
+        .testTarget(
+            name: "GhostWriterTests",
+            dependencies: ["GhostWriter"],
+            path: "Tests/GhostWriterTests"
         )
     ]
 )

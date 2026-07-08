@@ -40,6 +40,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case quickNotes  = "Quick Notes"
     case meeting     = "Recording"
     case notes       = "Notes & Summaries"
+    case projects    = "Projects"
     case privacy     = "Privacy"
     case permissions = "Permissions"
     case shortcuts   = "Shortcuts"
@@ -54,7 +55,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
         (nil,                  [.general]),
         ("Capture",            [.dictation, .styles, .quickNotes]),
-        ("Meetings",           [.meeting, .notes]),
+        ("Meetings",           [.meeting, .notes, .projects]),
         ("Privacy & Security", [.privacy, .permissions]),
         ("App",                [.shortcuts, .stats, .diagnostics, .about]),
     ]
@@ -67,6 +68,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return "square.and.pencil"
         case .meeting:     return "person.2.wave.2.fill"
         case .notes:       return "doc.text.fill"
+        case .projects:    return "folder.fill"
         case .privacy:     return "hand.raised.fill"
         case .permissions: return "lock.shield.fill"
         case .shortcuts:   return "command"
@@ -84,6 +86,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return .yellow
         case .meeting:     return .purple
         case .notes:       return .indigo
+        case .projects:    return .brown
         case .privacy:     return .pink
         case .permissions: return .green
         case .shortcuts:   return .orange
@@ -132,6 +135,7 @@ struct SettingsView: View {
                     case .quickNotes:  QuickNotesPane()
                     case .meeting:     MeetingPane()
                     case .notes:       MeetingNotesPane()
+                    case .projects:    ProjectsPane()
                     case .privacy:     PrivacyPane()
                     case .permissions: PermissionsPane()
                     case .shortcuts:   ShortcutsPane()
@@ -1199,6 +1203,203 @@ private struct TemplateFollowUpEditor: View {
 }
 
 // MARK: - Stats
+
+// MARK: - Projects
+
+/// Flattened (id, label) rows for a project picker: each top-level project
+/// followed by its indented children.
+private func orderedProjectRows(_ settings: AppSettings) -> [(id: String, label: String)] {
+    var rows: [(id: String, label: String)] = []
+    for top in settings.topLevelProjects {
+        rows.append((top.id, top.name))
+        for child in settings.childProjects(of: top.id) {
+            rows.append((child.id, "    " + child.name))
+        }
+    }
+    return rows
+}
+
+private struct ProjectsPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var selectedID: String = ""
+    @State private var confirmingDelete = false
+
+    private var selected: Project? { settings.project(withID: selectedID) }
+    private var canAddSub: Bool { selected?.parentID == nil && selected != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Projects") {
+                Text("Buckets keep contexts apart (WSO2, MBA…). A meeting's transcription glossary is built only from its project's — and its parent's — past notes, so unrelated projects never contaminate it. Nest customers or courses one level under a top-level project.")
+                    .font(.caption).foregroundColor(.secondary)
+
+                HStack {
+                    Text("Project")
+                    Picker("", selection: $selectedID) {
+                        Text("—").tag("")
+                        ForEach(orderedProjectRows(settings), id: \.id) { row in
+                            Text(row.label).tag(row.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 220)
+
+                    Spacer()
+
+                    Button { selectedID = settings.addProject(name: "New Project") } label: {
+                        Image(systemName: "plus")
+                    }
+                    .help("New top-level project")
+
+                    Button {
+                        guard let sel = selected, sel.parentID == nil else { return }
+                        selectedID = settings.addProject(name: "New Sub-project", parentID: sel.id)
+                    } label: {
+                        Image(systemName: "plus.rectangle.on.folder")
+                    }
+                    .help("Add a sub-project under the selected top-level project")
+                    .disabled(!canAddSub)
+
+                    Button(role: .destructive) { confirmingDelete = true } label: {
+                        Image(systemName: "trash")
+                    }
+                    .help("Delete the selected project")
+                    .disabled(selected == nil)
+                }
+
+                if let sel = selected {
+                    Divider()
+                    ProjectNameField(id: sel.id, name: sel.name)
+                    if let parentName = settings.project(withID: sel.parentID)?.name {
+                        Label("Sub-project of \(parentName) — inherits its terms.",
+                              systemImage: "arrow.turn.down.right")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    ProjectTermsEditor(id: sel.id)
+                } else {
+                    Text("Select or create a project to edit its seed terms.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+
+            SettingsGroup("Assign past meetings") {
+                Text("Assign existing meetings to a project so their notes feed that project's glossary. New meetings are assigned when you start them.")
+                    .font(.caption).foregroundColor(.secondary)
+                AssignMeetingsList()
+            }
+        }
+        .onAppear { if selected == nil { selectedID = settings.projects.first?.id ?? "" } }
+        .alert("Delete “\(selected?.name ?? "")”?", isPresented: $confirmingDelete) {
+            Button("Delete", role: .destructive) {
+                if let id = selected?.id {
+                    settings.deleteProject(id: id)
+                    selectedID = settings.projects.first?.id ?? ""
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The project and any sub-projects are removed, and their meetings become Unfiled. Notes files are not deleted.")
+        }
+    }
+}
+
+/// Rename field for the selected project, committing on change.
+private struct ProjectNameField: View {
+    let id: String
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var name: String
+
+    init(id: String, name: String) {
+        self.id = id
+        _name = State(initialValue: name)
+    }
+
+    var body: some View {
+        HStack {
+            Text("Name")
+            TextField("Project name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: name) { _, newValue in settings.renameProject(id: id, to: newValue) }
+        }
+        .onChange(of: id) { _, _ in name = settings.project(withID: id)?.name ?? "" }
+    }
+}
+
+/// Editor for a project's manual seed terms (comma/newline separated).
+private struct ProjectTermsEditor: View {
+    let id: String
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var text: String = ""
+
+    private var currentTerms: String {
+        (settings.project(withID: id)?.terms ?? []).joined(separator: ", ")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Seed terms — names, products, acronyms for this project (comma or line separated). These prime transcription immediately, even on the project's very first call. More are learned automatically from its notes over time.")
+                .font(.caption).foregroundColor(.secondary)
+            TextEditor(text: $text)
+                .font(.system(.caption, design: .monospaced))
+                .frame(height: 80)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                .onChange(of: text) { _, newValue in save(newValue) }
+        }
+        .onAppear { text = currentTerms }
+        .onChange(of: id) { _, _ in text = currentTerms }
+    }
+
+    private func save(_ newValue: String) {
+        let terms = newValue
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        settings.setProjectTerms(terms, forID: id)
+    }
+}
+
+/// Recent meetings, each with an inline project assignment.
+private struct AssignMeetingsList: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var files: [URL] = []
+
+    var body: some View {
+        Group {
+            if files.isEmpty {
+                Text("No meetings yet.").font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach(Array(files.prefix(20)), id: \.self) { file in
+                    HStack {
+                        Text(displayName(of: file)).lineLimit(1)
+                        Spacer()
+                        Picker("", selection: assignment(for: file)) {
+                            Text("Unfiled").tag("")
+                            ForEach(orderedProjectRows(settings), id: \.id) { row in
+                                Text(row.label).tag(row.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 200)
+                    }
+                }
+            }
+        }
+        .onAppear { files = MeetingNotesWriter.allMeetingFiles(under: settings.notesFolder) }
+    }
+
+    private func assignment(for file: URL) -> Binding<String> {
+        Binding(
+            get: { settings.projectID(forNote: file.lastPathComponent) ?? "" },
+            set: { settings.assignNote(file.lastPathComponent, toProjectID: $0.isEmpty ? nil : $0) }
+        )
+    }
+
+    private func displayName(of file: URL) -> String {
+        file.deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: "Meeting_", with: "")
+            .replacingOccurrences(of: "_", with: " ")
+    }
+}
 
 private struct StatsPane: View {
     @ObservedObject private var stats = UsageStats.shared

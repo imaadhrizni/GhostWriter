@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Projects
 //
 // User-defined buckets that isolate one context from another (WSO2, MBA, …),
-// each with an optional one level of sub-buckets (WSO2 › Zain Iraq). A meeting
+// each with an optional one level of sub-buckets (e.g. Acme › West Region). A meeting
 // is assigned to a bucket at start; its transcription glossary is scoped to
 // that bucket (plus its parent) so terms from unrelated projects never bleed
 // in. Cross-contamination — priming a Customer-B call with Customer-A's names —
@@ -44,7 +44,7 @@ enum Projects {
         return [id]
     }
 
-    /// "WSO2 › Zain Iraq" for a child, "WSO2" for a top-level project.
+    /// "Acme › West Region" for a child, "Acme" for a top-level project.
     static func displayPath(of id: String, in all: [Project]) -> String {
         guard let proj = project(id, in: all) else { return "" }
         if let parent = project(proj.parentID, in: all) {

@@ -22,8 +22,10 @@ final class OfflineTranscriber {
 
     /// Transcribe 16kHz/16-bit/mono PCM data on-device, honoring the
     /// configured transcription language (falling back to en-US when the
-    /// language has no on-device recognizer).
-    func transcribe(audioData: Data) async throws -> String {
+    /// language has no on-device recognizer). `context` (recent transcript)
+    /// and `glossaryTerms` (auto-harvested names) bias recognition toward
+    /// names/jargon, mirroring the Whisper prompt on the online path.
+    func transcribe(audioData: Data, context: String = "", glossaryTerms: [String] = []) async throws -> String {
         let language = AppSettings.shared.transcriptionLanguage
             .trimmingCharacters(in: .whitespaces)
         let preferred = SFSpeechRecognizer(locale: Locale(identifier: language))
@@ -45,6 +47,11 @@ final class OfflineTranscriber {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true
         request.shouldReportPartialResults = false
+        // Bias toward the user's glossary, harvested names, and recent proper
+        // nouns, mirroring the Whisper prompt hint used on the online path.
+        let hints = Self.contextualStrings(
+            vocabulary: AppSettings.shared.vocabulary, context: context, extraTerms: glossaryTerms)
+        if !hints.isEmpty { request.contextualStrings = hints }
         request.append(buffer)
         request.endAudio()
 
@@ -69,6 +76,29 @@ final class OfflineTranscriber {
     }
 
     // MARK: - Helpers
+
+    /// Words to bias on-device recognition toward: the user's glossary terms
+    /// plus capitalized (likely proper-noun) tokens from the recent transcript.
+    /// Deduplicated and capped — `contextualStrings` is meant for a modest list.
+    static func contextualStrings(vocabulary: String, context: String, extraTerms: [String] = []) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        func add(_ raw: String) {
+            let term = raw.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+            guard term.count >= 2, seen.insert(term.lowercased()).inserted else { return }
+            out.append(term)
+        }
+        vocabulary
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .forEach { add($0) }
+        extraTerms.forEach { add($0) }
+        // Capitalized words from the recent transcript tail — likely names/jargon.
+        context.suffix(500)
+            .split(whereSeparator: { $0 == " " || $0.isNewline })
+            .filter { $0.first?.isUppercase == true }
+            .forEach { add(String($0)) }
+        return Array(out.prefix(100))
+    }
 
     private static func requestAuthorization() async -> Bool {
         switch SFSpeechRecognizer.authorizationStatus() {

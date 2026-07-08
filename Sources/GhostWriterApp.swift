@@ -678,19 +678,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// meetings. Local-only mode goes straight to on-device recognition; other-
     /// wise Groq first, falling back on-device when the network is down. The
     /// result is passed through optional redaction before anyone sees it.
-    private func transcribeWithFallback(_ audioData: Data) async throws -> String {
+    private func transcribeWithFallback(_ audioData: Data, context: String = "", glossaryTerms: [String] = []) async throws -> String {
         let text: String
         if settings.localOnlyMode {
-            text = try await offlineTranscriber.transcribe(audioData: audioData)
+            text = try await offlineTranscriber.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
         } else {
             do {
-                text = try await groqService.transcribe(audioData: audioData)
+                text = try await groqService.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
             } catch {
                 // Fall back on ANY Groq failure — network down, 5xx, rate
                 // limit, bad response — not just connectivity errors.
                 guard settings.offlineFallback else { throw error }
                 Log.api.warning("⚠️ Groq transcription failed (\(error.localizedDescription)) — falling back to on-device recognition")
-                text = try await offlineTranscriber.transcribe(audioData: audioData)
+                text = try await offlineTranscriber.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
             }
         }
         return Redactor.redact(text)
@@ -950,7 +950,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 }
                 if !capturedAudio.isEmpty {
-                    let tail = try await transcribeWithFallback(capturedAudio)
+                    // Prime the final tail with the chunks already transcribed
+                    // in this same dictation, so terms stay consistent.
+                    let tail = try await transcribeWithFallback(capturedAudio, context: parts.joined(separator: " "))
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !tail.isEmpty { parts.append(tail) }
                 }
@@ -1057,19 +1059,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: declineTitle)
         alert.alertStyle = .informational
 
-        // Template picker + optional agenda inline — the template shapes the
-        // summary; the agenda drives the end-of-meeting coverage check.
-        let accessory = Self.makeStartAccessory(selectedID: settings.selectedTemplateID)
+        // Inline pickers: the project (scopes the glossary so unrelated
+        // projects can't contaminate it), the template (shapes the summary),
+        // and an optional agenda (drives the end-of-meeting coverage check).
+        let accessory = Self.makeStartAccessory(selectedID: settings.selectedTemplateID,
+                                                lastProjectID: settings.lastProjectID)
         alert.accessoryView = accessory
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
             applyTemplateSelection(from: accessory.picker)
             meetingAgenda = Self.parseAgenda(accessory.agendaField.stringValue)
+            var projectID = accessory.project.selectedItem?.representedObject as? String
+            if projectID == Self.newProjectSentinel { projectID = promptNewProject() }
+            let resolved = (projectID?.isEmpty ?? true) ? nil : projectID
+            settings.lastProjectID = resolved ?? ""
             // Hold the prompt flag through the async start so a queued ⌃⌥M
             // can't open a spurious second dialog before isMeetingMode flips.
             Task { @MainActor in
-                await startMeetingMode()
+                await startMeetingMode(projectID: resolved)
                 meetingStartPromptActive = false
             }
         } else {
@@ -1078,20 +1086,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Accessory view for the start dialog: a template popup plus an optional
-    /// agenda field. Exposes both subviews so the caller can read them back.
+    /// Sentinel `representedObject` for the "New Project…" item in the picker.
+    private static let newProjectSentinel = "__new_project__"
+
+    /// Accessory view for the start dialog: a project popup (scopes the
+    /// glossary), a template popup (shapes the summary), and an optional agenda
+    /// field (drives the end-of-meeting coverage check). Exposes all three.
     private final class StartAccessory: NSView {
+        let project = NSPopUpButton(frame: .zero, pullsDown: false)
         let picker = NSPopUpButton(frame: .zero, pullsDown: false)
         let agendaField = NSTextField(frame: .zero)
     }
 
-    /// Build the start-dialog accessory (template picker + agenda field). An
-    /// accessory view without an explicit frame renders but doesn't receive
-    /// clicks in NSAlert, so everything is laid out with explicit frames.
-    private static func makeStartAccessory(selectedID: String) -> StartAccessory {
-        let width: CGFloat = 260
-        let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: 78))
+    /// Build the start-dialog accessory. An accessory view without explicit
+    /// frames renders but doesn't receive clicks in NSAlert, so everything is
+    /// laid out with explicit frames.
+    private static func makeStartAccessory(selectedID: String, lastProjectID: String) -> StartAccessory {
+        let width: CGFloat = 300
+        let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: 140))
 
+        func label(_ text: String, y: CGFloat) -> NSTextField {
+            let field = NSTextField(labelWithString: text)
+            field.frame = NSRect(x: 0, y: y, width: width, height: 15)
+            field.font = .boldSystemFont(ofSize: 11)
+            field.textColor = .secondaryLabelColor
+            return field
+        }
+
+        // Project (top) — scopes the transcription glossary.
+        let project = container.project
+        project.frame = NSRect(x: 0, y: 99, width: width, height: 26)
+        populateProjectPicker(project, lastProjectID: lastProjectID)
+        container.addSubview(label("Project", y: 125))
+        container.addSubview(project)
+
+        // Meeting type (middle) — shapes the summary.
+        container.addSubview(label("Meeting type", y: 78))
         let picker = container.picker
         picker.frame = NSRect(x: 0, y: 52, width: width, height: 26)
         let templates = AppSettings.shared.allTemplates
@@ -1104,6 +1134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         container.addSubview(picker)
 
+        // Agenda (bottom, optional) — drives the end-of-meeting coverage check.
         let field = container.agendaField
         field.frame = NSRect(x: 0, y: 0, width: width, height: 44)
         field.placeholderString = "Agenda (optional) — separate items with commas"
@@ -1115,6 +1146,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         container.addSubview(field)
 
         return container
+    }
+
+    /// Fill a popup with "Unfiled", top-level projects (children indented), and
+    /// "➕ New Project…". Type-to-jump gives quick search.
+    private static func populateProjectPicker(_ picker: NSPopUpButton, lastProjectID: String) {
+        let settings = AppSettings.shared
+        picker.addItem(withTitle: "Unfiled — no glossary")
+        picker.lastItem?.representedObject = ""
+        for top in settings.topLevelProjects {
+            picker.addItem(withTitle: top.name)
+            picker.lastItem?.representedObject = top.id
+            for child in settings.childProjects(of: top.id) {
+                picker.addItem(withTitle: "    " + child.name)
+                picker.lastItem?.representedObject = child.id
+            }
+        }
+        picker.menu?.addItem(.separator())
+        picker.addItem(withTitle: "➕ New Project…")
+        picker.lastItem?.representedObject = newProjectSentinel
+        if let item = picker.itemArray.first(where: { ($0.representedObject as? String) == lastProjectID }) {
+            picker.select(item)
+        }
+    }
+
+    /// Prompt for a new project's name and optional parent, create it, and
+    /// return its id (nil if cancelled or left blank).
+    private func promptNewProject() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "New Project"
+        alert.informativeText = "Name this bucket (e.g. WSO2, MBA). Optionally nest it under a top-level project."
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+
+        let width: CGFloat = 260
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 56))
+        let nameField = NSTextField(frame: NSRect(x: 0, y: 30, width: width, height: 24))
+        nameField.placeholderString = "Project name"
+        let parentPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: width, height: 26), pullsDown: false)
+        parentPicker.addItem(withTitle: "Top-level project")
+        parentPicker.lastItem?.representedObject = ""
+        for top in settings.topLevelProjects {
+            parentPicker.addItem(withTitle: "Under: \(top.name)")
+            parentPicker.lastItem?.representedObject = top.id
+        }
+        container.addSubview(nameField)
+        container.addSubview(parentPicker)
+        alert.accessoryView = container
+        alert.window.initialFirstResponder = nameField
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let parentID = parentPicker.selectedItem?.representedObject as? String
+        let id = settings.addProject(name: name, parentID: (parentID?.isEmpty ?? true) ? nil : parentID)
+        return id.isEmpty ? nil : id
     }
 
     /// Split a comma / newline / semicolon-separated agenda string into items.
@@ -1225,7 +1311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @MainActor
-    private func startMeetingMode() async {
+    private func startMeetingMode(projectID: String? = nil) async {
         // Re-entrancy guard: two confirm dialogs (or a dialog + hotkey) must
         // never double-start the capture chain and leak timers.
         guard !appState.isMeetingMode else { return }
@@ -1254,7 +1340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingModeMenuItem?.title = "End Meeting"
         meetingStartTime = Date()
         meetingDetector.suppressed = true
-        meetingNotes.beginSession()
+        meetingNotes.beginSession(projectID: projectID)
 
         // Reset the speaker profiles for the new session (safe to touch
         // directly — the capture callbacks haven't started yet)
@@ -1451,7 +1537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             defer { self.endPendingTranscription() }
             do {
-                let text = try await transcribeWithFallback(captured)
+                let text = try await transcribeWithFallback(captured, context: self.meetingNotes.promptContext, glossaryTerms: self.meetingNotes.seedGlossary)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty,
                       !self.whisperHallucinations.contains(trimmed.lowercased()) else { return }
@@ -1534,7 +1620,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             for var segment in pending {
                 do {
-                    let text = try await self.transcribeWithFallback(segment.audio)
+                    let text = try await self.transcribeWithFallback(segment.audio, context: self.meetingNotes.promptContext, glossaryTerms: self.meetingNotes.seedGlossary)
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty, !self.whisperHallucinations.contains(trimmed.lowercased()) {
                         self.meetingNotes.append(segment: trimmed, speaker: segment.speaker, at: segment.capturedAt)
@@ -1583,7 +1669,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         for segment in pending {
             do {
-                let text = try await transcribeWithFallback(segment.audio)
+                let text = try await transcribeWithFallback(segment.audio, context: meetingNotes.promptContext, glossaryTerms: meetingNotes.seedGlossary)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty, !whisperHallucinations.contains(trimmed.lowercased()) {
                     meetingNotes.append(segment: trimmed, speaker: segment.speaker, at: segment.capturedAt)
@@ -1634,7 +1720,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             defer { self.endPendingTranscription() }
             do {
-                let text = try await transcribeWithFallback(capturedAudio)
+                let text = try await transcribeWithFallback(capturedAudio, context: self.meetingNotes.promptContext, glossaryTerms: self.meetingNotes.seedGlossary)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
 

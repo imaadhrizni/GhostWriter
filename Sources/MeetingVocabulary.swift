@@ -62,7 +62,7 @@ enum MeetingVocabulary {
         }
 
         // 1) Named entities: people, organizations, places. `.joinNames` keeps
-        //    multi-word names ("Zain Iraq") as a single token.
+        //    multi-word names ("Acme Corp") as a single token.
         let tagger = NLTagger(tagSchemes: [.nameType])
         tagger.string = text
         let options: NLTagger.Options = [.omitPunctuation, .omitWhitespace, .joinNames]
@@ -74,7 +74,7 @@ enum MeetingVocabulary {
         }
 
         // 2) Acronyms / product tokens NER misses: 2–6 chars with an interior
-        //    uppercase or a digit (WSO2, ESB, RFP, TIBCO) — not plain
+        //    uppercase or a digit (e.g. product names, ESB, RFP) — not plain
         //    Capitalized words (those are handled by NER or are common nouns).
         for token in text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
             let t = String(token)

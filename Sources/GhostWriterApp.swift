@@ -256,6 +256,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        // Find — drives the built-in NSTextView find bar in the notes viewer
+        // (⌘F opens it, ⌘G / ⇧⌘G step matches). Items dispatch to the first
+        // responder via performTextFinderAction: with the standard action tags.
+        editMenu.addItem(.separator())
+        let findSubmenu = NSMenu(title: "Find")
+        let findItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
+        findItem.submenu = findSubmenu
+        func addFind(_ title: String, _ key: String, _ mods: NSEvent.ModifierFlags,
+                     _ action: NSTextFinder.Action) {
+            let item = NSMenuItem(title: title, action: #selector(NSTextView.performTextFinderAction(_:)), keyEquivalent: key)
+            item.keyEquivalentModifierMask = mods
+            item.tag = action.rawValue
+            findSubmenu.addItem(item)
+        }
+        addFind("Find…", "f", .command, .showFindInterface)
+        addFind("Find Next", "g", .command, .nextMatch)
+        addFind("Find Previous", "g", [.command, .shift], .previousMatch)
+        addFind("Use Selection for Find", "e", .command, .setSearchString)
+        editMenu.addItem(findItem)
         editItem.submenu = editMenu
 
         NSApp.mainMenu = mainMenu

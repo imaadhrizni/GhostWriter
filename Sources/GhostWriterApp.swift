@@ -1123,7 +1123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// laid out with explicit frames.
     private static func makeStartAccessory(selectedID: String, lastProjectID: String) -> StartAccessory {
         let width: CGFloat = 300
-        let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: 140))
+        let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: 165))
 
         func label(_ text: String, y: CGFloat) -> NSTextField {
             let field = NSTextField(labelWithString: text)
@@ -1135,15 +1135,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Project (top) — scopes the transcription glossary.
         let project = container.project
-        project.frame = NSRect(x: 0, y: 99, width: width, height: 26)
+        project.frame = NSRect(x: 0, y: 124, width: width, height: 26)
         populateProjectPicker(project, lastProjectID: lastProjectID)
-        container.addSubview(label("Project", y: 125))
+        container.addSubview(label("Project", y: 150))
         container.addSubview(project)
 
         // Meeting type (middle) — shapes the summary.
-        container.addSubview(label("Meeting type", y: 78))
+        container.addSubview(label("Meeting type", y: 103))
         let picker = container.picker
-        picker.frame = NSRect(x: 0, y: 52, width: width, height: 26)
+        picker.frame = NSRect(x: 0, y: 77, width: width, height: 26)
         let templates = AppSettings.shared.allTemplates
         for template in templates {
             picker.addItem(withTitle: template.displayName)
@@ -1155,9 +1155,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         container.addSubview(picker)
 
         // Agenda (bottom, optional) — drives the end-of-meeting coverage check.
+        // Gets a caption label to match Project / Meeting type above it.
+        container.addSubview(label("Agenda", y: 56))
         let field = container.agendaField
-        field.frame = NSRect(x: 0, y: 0, width: width, height: 44)
-        field.placeholderString = "Agenda (optional) — separate items with commas"
+        field.frame = NSRect(x: 0, y: 6, width: width, height: 44)
+        field.placeholderString = "Optional — separate items with commas"
         field.usesSingleLineMode = false
         field.cell?.wraps = true
         field.cell?.isScrollable = false

@@ -17,6 +17,9 @@ final class TextPolisher {
     private let baseURL = "https://api.groq.com/openai/v1"
     private let session = URLSession.shared
     private var model: String { AppSettings.shared.polishingModel }  // user-configurable in Settings
+    /// Cheap/fast model for lightweight, high-frequency work (live brief,
+    /// tagging, query expansion, agenda coverage) — keeps latency and cost low.
+    private var fastModel: String { AppSettings.shared.fastModel }
 
     // MARK: - Polishing
 
@@ -91,7 +94,9 @@ final class TextPolisher {
             sections.append(contentsOf: template.summarySections)
         }
         if includeActionItems {
-            sections.append("A section with the exact heading \"## Action Items\" containing a Markdown task list (\"- [ ] item\") with owners when identifiable (omit the section if none).")
+            sections.append("""
+            A section with the exact heading "## Action Items" containing a Markdown task list. Format each item as "- [ ] <action> — @<owner> (due: <date>)". Append "@<owner>" (one word, no spaces) only when the transcript makes the responsible person clear, and "(due: <date>)" only when a deadline is stated; otherwise leave that part off. If there are no action items, still include the heading with "_None_" as its body.
+            """)
         }
 
         let requestBody = ChatRequest(
@@ -102,9 +107,9 @@ final class TextPolisher {
                 \(sections.joined(separator: "\n"))
                 Rules:
                 - Do not invent content that is not in the transcript.
-                - Never output an empty section — omit a section entirely when there is nothing for it.
+                - Always include EVERY section heading listed above, in that order — even when a section is empty. When a section has nothing, write exactly "_None_" as its body. Ignore any "(omit if none)" note in a section's description; never drop a heading.
                 - Never repeat a heading.
-                - If the transcript has too little substantive discussion to summarize, output exactly NOT_ENOUGH_CONTENT and nothing else.
+                - If the ENTIRE meeting has too little substantive discussion to summarize at all, output exactly NOT_ENOUGH_CONTENT and nothing else.
                 """),
                 .init(role: "user", content: "Summarize this meeting transcript:\n\n\(clipped)")
             ],
@@ -184,7 +189,7 @@ final class TextPolisher {
         guard !apiKey.isEmpty else { return fallback }
 
         let requestBody = ChatRequest(
-            model: model,
+            model: fastModel,
             messages: [
                 .init(role: "system", content: """
                 Extract search keywords from the user's question for finding relevant lines in meeting transcripts.
@@ -265,6 +270,132 @@ final class TextPolisher {
         UsageStats.shared.recordChat(inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens)
     }
 
+    // MARK: - Live Brief
+
+    /// A compact, mid-meeting brief: a few TL;DR bullets and the open action
+    /// items so far. Kept short and cheap — called periodically while a meeting
+    /// runs. Best-effort: throws on failure so the caller can keep the last good
+    /// brief on screen.
+    struct LiveBrief {
+        let tldr: [String]
+        let actions: [String]
+        var isEmpty: Bool { tldr.isEmpty && actions.isEmpty }
+    }
+
+    func liveBrief(transcript: String, template: SummaryTemplate = .builtIn(.general)) async throws -> LiveBrief {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        // Recent context only — the running meeting, not the whole archive.
+        let clipped = String(transcript.suffix(9_000))
+        let body = ChatRequest(
+            model: fastModel,
+            messages: [
+                .init(role: "system", content: """
+                You keep a live brief of an ongoing meeting. From the transcript so far,
+                respond with ONLY a JSON object, no prose:
+                "tldr": up to 4 very short bullet strings capturing what's been discussed/decided so far,
+                "actions": up to 5 short open action-item strings (append " — @name" when an owner is clear).
+                Be concise and factual — use only what's in the transcript. Empty arrays are fine early on.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.2,
+            max_tokens: 400
+        )
+        let content = try await send(body, timeout: 20)
+        return Self.parseLiveBrief(content)
+    }
+
+    static func parseLiveBrief(_ content: String) -> LiveBrief {
+        guard let start = content.firstIndex(of: "{"),
+              let end = content.lastIndex(of: "}"),
+              let data = String(content[start...end]).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return LiveBrief(tldr: [], actions: []) }
+        func list(_ key: String, _ cap: Int) -> [String] {
+            (obj[key] as? [Any] ?? []).compactMap { $0 as? String }
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+                .prefix(cap).map { $0 }
+        }
+        return LiveBrief(tldr: list("tldr", 4), actions: list("actions", 5))
+    }
+
+    // MARK: - Agenda status ("ask before it ends" + dynamic agenda)
+
+    /// One update of agenda status, designed to be applied on top of prior
+    /// state so the dynamic agenda is stable across ticks (see the caller).
+    /// The model only *surfaces* topics — it never decides they're resolved
+    /// (completion is always the user's to mark), so there's no resolved state here.
+    struct AgendaStatus {
+        /// Coverage per user-agenda item, aligned to the non-empty items in order.
+        var userCovered: [Bool] = []
+        /// Genuinely new substantive topics not already known (verbatim text).
+        var newTopics: [String] = []
+    }
+
+    /// Stateful agenda update. Pass the user's agenda, the dynamic topics already
+    /// discovered so far (`knownDynamic`, verbatim), and the transcript. The model
+    /// (a) marks which user items were covered and (b) proposes only genuinely NEW
+    /// substantive topics — real discussion themes worth a line in the minutes, not
+    /// keywords. The caller keeps `knownDynamic` stable across calls and merges the
+    /// result, so the list accumulates instead of churning. Best-effort: empty on failure.
+    func agendaStatus(userAgenda: [String], knownDynamic: [String] = [],
+                      transcript: String, preferFast: Bool = true) async -> AgendaStatus {
+        let items = userAgenda.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard !apiKey.isEmpty else { return AgendaStatus(userCovered: Array(repeating: false, count: items.count)) }
+
+        // Discovery reads the whole meeting, not just the tail, so a topic from
+        // early on isn't forgotten once it scrolls out of the recent window.
+        let clipped = String(transcript.suffix(24_000))
+        let numberedAgenda = items.isEmpty
+            ? "(none provided)"
+            : items.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+        let knownList = knownDynamic.isEmpty
+            ? "(none yet)"
+            : knownDynamic.map { "- \($0)" }.joined(separator: "\n")
+
+        let body = ChatRequest(
+            model: preferFast ? fastModel : model,
+            messages: [
+                .init(role: "system", content: """
+                You maintain a meeting's agenda as it unfolds. Inputs: the user's numbered agenda
+                (may be "(none provided)"), the discussion topics ALREADY identified so far, and the
+                transcript. Respond with ONLY a JSON object, no prose:
+                "covered": array of the user's item numbers (integers) meaningfully discussed (actually
+                  addressed, not just name-dropped).
+                "new_topics": at most 2 GENUINELY NEW substantive topics not already listed above —
+                  each a real theme, decision, or open question worth a line in the minutes, phrased as
+                  a short noun phrase (e.g. "Q3 hiring plan", not "hiring"). Array of short strings.
+                Rules: Do NOT output keywords or single words. Do NOT restate or rephrase known topics as
+                new ones. Prefer returning an empty "new_topics" over adding something marginal. Only use
+                what's in the transcript.
+                """),
+                .init(role: "user", content: "AGENDA:\n\(numberedAgenda)\n\nKNOWN TOPICS:\n\(knownList)\n\nTRANSCRIPT:\n\(clipped)")
+            ],
+            temperature: 0,
+            max_tokens: 220
+        )
+        guard let content = try? await send(body, timeout: 18),
+              let start = content.firstIndex(of: "{"), let end = content.lastIndex(of: "}"),
+              let data = String(content[start...end]).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return AgendaStatus(userCovered: Array(repeating: false, count: items.count)) }
+
+        let coveredNums = Set((obj["covered"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue ?? Int("\($0)") })
+        var status = AgendaStatus()
+        status.userCovered = (0..<items.count).map { coveredNums.contains($0 + 1) }
+        let knownSet = Set(knownDynamic.map { $0.lowercased() })
+        // Tolerate both ["topic", …] and [{"topic": …}, …] shapes.
+        for element in (obj["new_topics"] as? [Any] ?? []) {
+            let raw = (element as? String) ?? ((element as? [String: Any])?["topic"] as? String)
+            guard let topic = raw?.trimmingCharacters(in: .whitespaces),
+                  topic.count > 2, !knownSet.contains(topic.lowercased()) else { continue }
+            status.newTopics.append(topic)
+            if status.newTopics.count >= 2 { break }
+        }
+        return status
+    }
+
     // MARK: - Follow-up & Tags
 
     /// Draft a follow-up message recapping a meeting, shaped by its template
@@ -295,30 +426,79 @@ final class TextPolisher {
         return try await send(body, timeout: 30)
     }
 
-    /// Extract a few short topic tags (lowercase, hyphenated) for front-matter.
-    /// Best-effort: returns [] on any failure.
-    func extractTags(transcript: String) async -> [String] {
-        guard !apiKey.isEmpty else { return [] }
+    /// Topic tags plus the named entities (people, customer, project) a meeting
+    /// is about — for structured front-matter and richer search.
+    struct MeetingMetadata {
+        var topics: [String] = []      // lowercase, hyphenated subject tags
+        var people: [String] = []      // participant/person names (proper-cased)
+        var customer: String? = nil    // customer / client / org name
+        var project: String? = nil     // project / product name
+
+        var isEmpty: Bool {
+            topics.isEmpty && people.isEmpty && customer == nil && project == nil
+        }
+    }
+
+    /// Extract topic tags and named entities in a single call. `includePeople`
+    /// is dropped when redaction is on, so participant names aren't harvested
+    /// into metadata the user asked to keep private. Best-effort: returns an
+    /// empty value on any failure.
+    func extractMetadata(transcript: String, includePeople: Bool) async -> MeetingMetadata {
+        guard !apiKey.isEmpty else { return MeetingMetadata() }
         let clipped = String(transcript.suffix(16_000))
+        let peopleLine = includePeople
+            ? #""people": array of participant/person names mentioned (proper case, e.g. ["Priya Fernando"]),"#
+            : #""people": [] (leave empty),"#
         let body = ChatRequest(
-            model: model,
+            model: fastModel,
             messages: [
                 .init(role: "system", content: """
-                Extract 3-6 short topic tags describing this meeting's subjects.
-                Output ONLY a comma-separated list of lowercase, hyphenated tags
-                (e.g. budget-review, hiring, q3-roadmap). No other text.
+                Identify what this meeting is about. Respond with ONLY a JSON object, no prose, with keys:
+                "topics": 3-6 short lowercase hyphenated subject tags (e.g. ["budget-review","q3-roadmap"]),
+                \(peopleLine)
+                "customer": the customer/client/company name if this is about one, else null,
+                "project": the project or product name if one is central, else null.
+                Use null (not "") for unknown string fields. Do not invent names.
                 """),
                 .init(role: "user", content: clipped)
             ],
             temperature: 0,
-            max_tokens: 60
+            max_tokens: 200
         )
-        guard let content = try? await send(body, timeout: 15) else { return [] }
-        return content
-            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
-            .map { $0.trimmingCharacters(in: .whitespaces).lowercased()
-                     .replacingOccurrences(of: " ", with: "-") }
+        guard let content = try? await send(body, timeout: 15) else { return MeetingMetadata() }
+        return Self.parseMetadata(content, includePeople: includePeople)
+    }
+
+    /// Parse the model's JSON metadata leniently (tolerates code fences / stray text).
+    static func parseMetadata(_ content: String, includePeople: Bool) -> MeetingMetadata {
+        guard let start = content.firstIndex(of: "{"),
+              let end = content.lastIndex(of: "}"),
+              let data = String(content[start...end]).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return MeetingMetadata() }
+
+        func cleanTag(_ s: String) -> String {
+            s.trimmingCharacters(in: .whitespaces).lowercased()
+                .replacingOccurrences(of: " ", with: "-")
+        }
+        func str(_ key: String) -> String? {
+            guard let v = obj[key] as? String else { return nil }
+            let t = v.trimmingCharacters(in: .whitespaces)
+            return (t.isEmpty || t.lowercased() == "null") ? nil : t
+        }
+
+        var m = MeetingMetadata()
+        m.topics = (obj["topics"] as? [Any] ?? []).compactMap { $0 as? String }
+            .map(cleanTag)
             .filter { !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" } }
+        if includePeople {
+            m.people = (obj["people"] as? [Any] ?? []).compactMap { $0 as? String }
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        }
+        m.customer = str("customer")
+        m.project = str("project")
+        return m
     }
 
     /// Shared chat request: sends, records usage, returns the message content.

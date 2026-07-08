@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import CoreServices
+import EventKit
 
 // MARK: - Permission Guard
 
@@ -155,6 +156,23 @@ final class PermissionGuard {
         }
     }
 
+    /// Reminders access for action-item export, without prompting:
+    ///   true = granted, false = explicitly denied/restricted, nil = not yet asked.
+    func remindersStatus() -> Bool? {
+        let status = EKEventStore.authorizationStatus(for: .reminder)
+        switch status {
+        case .notDetermined:        return nil
+        case .denied, .restricted:  return false
+        default:                    return true   // .authorized / .fullAccess / .writeOnly
+        }
+    }
+
+    func openRemindersSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     private func defaultBrowserBundleID() -> String? {
         guard let url = URL(string: "https://example.com"),
               let appURL = NSWorkspace.shared.urlForApplication(toOpen: url) else { return nil }
@@ -171,8 +189,9 @@ final class PermissionGuard {
         let bundleID = Bundle.main.bundleIdentifier ?? "com.ghostwriter.dictation"
         // Microphone + Accessibility, the CoreAudio system-audio services
         // (AudioCapture is the process-tap service; ScreenCapture covers older
-        // paths), and AppleEvents (browser-tab Automation grants).
-        let services = ["Microphone", "Accessibility", "AudioCapture", "ScreenCapture", "AppleEvents"]
+        // paths), AppleEvents (browser-tab Automation grants), and Reminders
+        // (action-item export).
+        let services = ["Microphone", "Accessibility", "AudioCapture", "ScreenCapture", "AppleEvents", "Reminders"]
 
         var allOK = true
         for service in services {

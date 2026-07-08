@@ -103,6 +103,10 @@ private struct NotesViewerView: View {
                     status = "Copied"
                 } label: { Label("Copy", systemImage: "doc.on.doc") }
 
+                Button {
+                    exportPDF()
+                } label: { Label("Export PDF", systemImage: "arrow.down.doc") }
+
                 if let fileURL {
                     Button {
                         NSWorkspace.shared.open(fileURL)
@@ -164,6 +168,25 @@ private struct NotesViewerView: View {
             } catch {
                 status = "Draft failed: \(error.localizedDescription)"
             }
+        }
+    }
+
+    /// Render the current Markdown to a paginated PDF and let the user save it.
+    private func exportPDF() {
+        let base = fileURL?.deletingPathExtension().lastPathComponent ?? "Note"
+        guard let pdf = MarkdownPDF.data(from: text, title: base) else {
+            status = "Export failed: could not render PDF"; return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = base + ".pdf"
+        panel.directoryURL = fileURL?.deletingLastPathComponent() ?? AppSettings.shared.notesFolder
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try pdf.write(to: url)
+            status = "Exported \(url.lastPathComponent)"
+        } catch {
+            status = "Export failed: \(error.localizedDescription)"
         }
     }
 

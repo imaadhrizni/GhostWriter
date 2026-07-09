@@ -13,7 +13,7 @@ final class NotesViewerWindowController: NSWindowController {
     /// ones are pruned on the next present.
     private static var open: [NotesViewerWindowController] = []
 
-    /// Open a notes file in a viewer (used from the menu and Notes Assistant).
+    /// Open a notes file in a viewer (used from the menu and Catalog).
     static func present(fileURL: URL) {
         open.removeAll { $0.window?.isVisible == false }
         let controller = NotesViewerWindowController(fileURL: fileURL)

@@ -5,7 +5,7 @@ import AppKit
 //
 // A searchable, day-grouped list of archived dictations (the per-dictation
 // Markdown files written when "Save each dictation to a file" is on). Kept
-// separate from the meetings-only Notes Assistant. Rows open in the shared
+// separate from the meetings-only Catalog. Rows open in the shared
 // in-app viewer/editor.
 
 final class DictationsWindowController: NSWindowController {

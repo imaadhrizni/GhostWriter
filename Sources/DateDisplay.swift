@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Date Display
 //
 // Formats the `yyyy-MM-dd` day keys (parsed from note filenames) into the
-// user-configurable display format used across the menu and Notes Assistant.
+// user-configurable display format used across the menu and Catalog.
 // Filenames themselves stay in the fixed, parseable timestamp format — this
 // only affects what's shown.
 

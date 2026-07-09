@@ -278,66 +278,175 @@ private struct CatalogView: View {
 
 // MARK: Quick add — build a whole chain at once
 
-private struct QuickAddSheet: View {
+struct QuickAddSheet: View {
     @ObservedObject var store: CatalogStore
+    /// When set, called on finish with the resolved opportunity id (or nil) —
+    /// used by the Start Meeting flow. Otherwise the sheet just dismisses.
+    var onComplete: ((String?) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
-    @State private var org = ""
+
+    private static let new = "__new__"   // "＋ New …" sentinel
+
+    // Org: an existing id or "__new__" (+ fields for the new case).
+    @State private var orgSel = QuickAddSheet.new
+    @State private var orgName = ""
     @State private var parentID = ""
     @State private var relationship: OrgRelationship = .customer
-    @State private var project = ""
-    @State private var opportunity = ""
-    @State private var people = ""
-    @State private var tags = ""
+    // Project / Opportunity: "" (none), an existing id, or "__new__".
+    @State private var projSel = ""
+    @State private var projName = ""
+    @State private var oppSel = ""
+    @State private var oppName = ""
+    // People / Tags: existing selections + new comma-separated names.
+    @State private var selectedPeople: Set<String> = []
+    @State private var newPeople = ""
+    @State private var selectedTags: Set<String> = []
+    @State private var newTags = ""
+
+    private var orgIsNew: Bool { orgSel == Self.new }
+    /// The existing org chosen (nil when creating a new one).
+    private var existingOrgID: String? { orgIsNew ? nil : orgSel }
+    private var canAdd: Bool { !orgIsNew || !orgName.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    private var projectsForOrg: [CatalogProject] {
+        guard let id = existingOrgID else { return [] }
+        return store.projects(forOrg: id).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+    private var oppsForProject: [CatalogOpportunity] {
+        guard projSel != Self.new, !projSel.isEmpty else { return [] }
+        return store.opportunities(forProject: projSel).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
                 Section("Organisation") {
-                    TextField("Name", text: $org)
-                    Picker("Parent", selection: $parentID) {
-                        Text("None (top level)").tag("")
+                    Picker("Organisation", selection: $orgSel) {
                         ForEach(store.orgsSorted) { Text(store.orgPath(of: $0.id)).tag($0.id) }
+                        Divider()
+                        Text("＋ New organisation").tag(Self.new)
                     }
-                    Picker("Relationship", selection: $relationship) {
-                        ForEach(OrgRelationship.allCases) { Text($0.label).tag($0) }
+                    if orgIsNew {
+                        TextField("New name", text: $orgName)
+                        Picker("Parent", selection: $parentID) {
+                            Text("None (top level)").tag("")
+                            ForEach(store.orgsSorted) { Text(store.orgPath(of: $0.id)).tag($0.id) }
+                        }
+                        Picker("Relationship", selection: $relationship) {
+                            ForEach(OrgRelationship.allCases) { Text($0.label).tag($0) }
+                        }
                     }
                 }
-                Section("Project") { TextField("Name (optional)", text: $project) }
-                Section("Opportunity") { TextField("Name (optional)", text: $opportunity) }
-                Section("People") { TextField("Comma-separated (optional)", text: $people) }
-                Section("Tags") { TextField("Comma-separated (optional)", text: $tags) }
+                Section("Project") {
+                    Picker("Project", selection: $projSel) {
+                        Text("None").tag("")
+                        ForEach(projectsForOrg) { Text($0.name).tag($0.id) }
+                        Divider()
+                        Text("＋ New project").tag(Self.new)
+                    }
+                    if projSel == Self.new { TextField("New name", text: $projName) }
+                }
+                Section("Opportunity") {
+                    Picker("Opportunity", selection: $oppSel) {
+                        Text("None").tag("")
+                        ForEach(oppsForProject) { Text($0.name).tag($0.id) }
+                        Divider()
+                        Text("＋ New opportunity").tag(Self.new)
+                    }
+                    if oppSel == Self.new { TextField("New name", text: $oppName) }
+                }
+                Section("People") {
+                    pickExisting(store.doc.people.sortedByName.map { ($0.id, $0.name) }, $selectedPeople)
+                    TextField("＋ New, comma-separated", text: $newPeople)
+                }
+                Section("Tags") {
+                    pickExisting(store.tagsSorted.map { ($0.id, $0.name) }, $selectedTags)
+                    TextField("＋ New, comma-separated", text: $newTags)
+                }
             }
             .formStyle(.grouped)
+            .onChange(of: orgSel) { _, _ in projSel = ""; oppSel = "" }
+            .onChange(of: projSel) { _, _ in oppSel = "" }
             Divider()
             HStack {
-                Text("Creates a linked org → project → opportunity, plus people and tags.")
+                Text("Pick existing entries or type new ones; links them together.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Add") { add() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(org.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Cancel") { finish(nil) }
+                Button("Add") { add() }.keyboardShortcut(.defaultAction).disabled(!canAdd)
             }
             .padding(12)
         }
-        .frame(width: 420, height: 460)
+        .frame(width: 440, height: 520)
+    }
+
+    /// A capped, scrolling list of existing items as multi-select toggles.
+    private func pickExisting(_ items: [(id: String, name: String)], _ sel: Binding<Set<String>>) -> some View {
+        Group {
+            if items.isEmpty {
+                Text("None yet.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(items, id: \.id) { item in
+                            Toggle(item.name, isOn: Binding(
+                                get: { sel.wrappedValue.contains(item.id) },
+                                set: { on in if on { sel.wrappedValue.insert(item.id) } else { sel.wrappedValue.remove(item.id) } }))
+                        }
+                    }
+                }
+                .frame(height: items.count > 4 ? 96 : nil)
+            }
+        }
     }
 
     private func add() {
-        let orgName = org.trimmingCharacters(in: .whitespaces)
-        guard !orgName.isEmpty else { return }
-        var o = store.addOrg(name: orgName, relationship: relationship)
-        if !parentID.isEmpty { o.parentID = parentID; store.update(o) }
-        var projectID: String?
-        let projName = project.trimmingCharacters(in: .whitespaces)
-        if !projName.isEmpty { projectID = store.addProject(name: projName, orgID: o.id).id }
-        let oppName = opportunity.trimmingCharacters(in: .whitespaces)
-        if !oppName.isEmpty { store.addOpportunity(name: oppName, projectID: projectID) }
-        for name in splitList(people) {
-            var p = store.addPerson(name: name); p.orgIDs = [o.id]; store.update(p)
+        // Organisation — existing or new.
+        let orgID: String
+        if let existing = existingOrgID {
+            orgID = existing
+        } else {
+            let name = orgName.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else { return }
+            var o = store.addOrg(name: name, relationship: relationship)
+            if !parentID.isEmpty { o.parentID = parentID; store.update(o) }
+            orgID = o.id
         }
-        for t in splitList(tags) { _ = store.addTag(name: t) }
-        dismiss()
+
+        // Project — existing, new (under the org), or none.
+        var projectID: String?
+        if projSel == Self.new {
+            let name = projName.trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty { projectID = store.addProject(name: name, orgID: orgID).id }
+        } else if !projSel.isEmpty {
+            projectID = projSel
+        }
+
+        // Opportunity — existing, new (under the project), or none.
+        var resolvedOppID: String?
+        if oppSel == Self.new {
+            let name = oppName.trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty { resolvedOppID = store.addOpportunity(name: name, projectID: projectID).id }
+        } else if !oppSel.isEmpty {
+            resolvedOppID = oppSel
+        }
+
+        // People — attach chosen existing to the org, plus any new names.
+        for pid in selectedPeople {
+            if var p = store.person(pid), !p.orgIDs.contains(orgID) { p.orgIDs.append(orgID); store.update(p) }
+        }
+        for name in splitList(newPeople) {
+            var p = store.addPerson(name: name); p.orgIDs = [orgID]; store.update(p)
+        }
+
+        // Tags — existing selections already exist; just create the new ones.
+        for name in splitList(newTags) { _ = store.addTag(name: name) }
+
+        finish(resolvedOppID)
+    }
+
+    private func finish(_ oppID: String?) {
+        if let onComplete { onComplete(oppID) } else { dismiss() }
     }
 }
 
@@ -1140,7 +1249,7 @@ private struct NoteLinkEditor: View {
 }
 
 /// Action items parsed from the note file, with tick + export-to-Reminders,
-/// mirroring the Notes Assistant. Scrolls when there are many.
+/// mirroring the Catalog. Scrolls when there are many.
 private struct NoteActionItemsSection: View {
     let url: URL
     @State private var items: [NotesLibrary.ActionItem] = []

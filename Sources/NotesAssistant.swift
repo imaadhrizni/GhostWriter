@@ -155,7 +155,13 @@ enum NotesLibrary {
     static func semanticExcerpts(for query: String,
                                  maxFiles: Int = AppSettings.shared.searchDepth,
                                  maxChars: Int = 20_000, topK: Int = 24) async -> ExcerptResult {
-        let files = meetingFiles(limit: maxFiles)
+        await semanticExcerpts(for: query, files: meetingFiles(limit: maxFiles), maxChars: maxChars, topK: topK)
+    }
+
+    /// Semantic retrieval scoped to an explicit set of files (used by the
+    /// Catalog's filter-scoped Ask).
+    static func semanticExcerpts(for query: String, files: [MeetingFile],
+                                 maxChars: Int = 20_000, topK: Int = 24) async -> ExcerptResult {
         let byURL = Dictionary(files.map { ($0.url, $0) }, uniquingKeysWith: { a, _ in a })
         let results = await SemanticIndex.shared.query(query, files: files.map(\.url), topK: topK)
         guard !results.isEmpty else { return ExcerptResult(text: "", sources: []) }
@@ -308,6 +314,31 @@ enum NotesLibrary {
         let file: MeetingFile
         let items: [ActionItem]
         var id: URL { file.url }
+    }
+
+    /// Action items parsed from a single notes file (same rules as
+    /// `actionItemsByMeeting`). Used by the Catalog note editor.
+    static func actionItems(inFile url: URL) -> [ActionItem] {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        let file = MeetingFile(url: url)
+        var items: [ActionItem] = [], inSection = false
+        for rawLine in content.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.lowercased().hasPrefix("## action items") { inSection = true; continue }
+            if inSection {
+                if line.hasPrefix("#") { inSection = false; continue }
+                if line.hasPrefix("-") || line.hasPrefix("*") {
+                    var text = line.dropFirst().trimmingCharacters(in: .whitespaces)
+                    var done = false
+                    while text.hasPrefix("[ ]") || text.lowercased().hasPrefix("[x]") {
+                        if text.lowercased().hasPrefix("[x]") { done = true }
+                        text = text.dropFirst(3).trimmingCharacters(in: .whitespaces)
+                    }
+                    if !text.isEmpty { items.append(ActionItem(file: file, text: text, done: done, rawLine: line)) }
+                }
+            }
+        }
+        return items
     }
 
     /// Bullets under "## Action Items" headings, grouped per meeting,

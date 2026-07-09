@@ -198,6 +198,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictationsWindowController?.showAndActivate()
     }
 
+    private var catalogWindowController: CatalogWindowController?
+
+    /// Open the Catalog — organisations, people, projects, tags over the notes.
+    @objc private func showCatalog() {
+        if catalogWindowController == nil {
+            catalogWindowController = CatalogWindowController()
+        }
+        catalogWindowController?.showAndActivate()
+    }
+
     @objc private func showSettingsWindow() {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController()
@@ -365,6 +375,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictationsItem.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)
         dictationsItem.target = self
         menu.addItem(dictationsItem)
+
+        let catalogItem = NSMenuItem(title: "Catalog…", action: #selector(showCatalog), keyEquivalent: "")
+        catalogItem.image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: nil)
+        catalogItem.target = self
+        menu.addItem(catalogItem)
 
         menu.addItem(NSMenuItem.separator())
 

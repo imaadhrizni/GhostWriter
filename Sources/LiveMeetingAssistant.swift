@@ -38,6 +38,9 @@ final class LiveMeetingAssistant: ObservableObject {
     private var transcriptProvider: (() -> String?)?
     private var template: SummaryTemplate = .builtIn(.general)
     private var agenda: [String] = []
+    // The meeting's project glossary — kept consistent with the transcription
+    // layer so briefs, agenda topics, and answers spell names the same way.
+    private var glossary: [String] = []
     // Accumulated agenda state across ticks (kept stable so the list doesn't churn).
     private var dynamicItems: [String] = []   // discovered topic texts, in discovery order
     private var dismissedTopics: Set<String> = []   // lowercased texts the user waved off
@@ -79,7 +82,7 @@ final class LiveMeetingAssistant: ObservableObject {
     /// Begin briefing for a meeting. `transcriptProvider` returns the current
     /// notes text (nil if unavailable). No-op if the toggle is off, there's no
     /// API key, or Local-only mode is on.
-    func start(transcriptProvider: @escaping () -> String?, template: SummaryTemplate, agenda: [String] = []) {
+    func start(transcriptProvider: @escaping () -> String?, template: SummaryTemplate, agenda: [String] = [], glossary: [String] = []) {
         let settings = AppSettings.shared
         guard settings.liveAssistantEnabled, !settings.localOnlyMode,
               KeychainService.groqAPIKey() != nil else { return }
@@ -87,6 +90,7 @@ final class LiveMeetingAssistant: ObservableObject {
         self.transcriptProvider = transcriptProvider
         self.template = template
         self.agenda = agenda
+        self.glossary = glossary
         self.dynamicItems = []
         self.dismissedTopics = []
         self.manualOverrides = [:]
@@ -155,7 +159,7 @@ final class LiveMeetingAssistant: ObservableObject {
         updating = true
         defer { updating = false }
         do {
-            let result = try await polisher.liveBrief(transcript: transcript, template: template)
+            let result = try await polisher.liveBrief(transcript: transcript, template: template, glossary: glossary)
             lastBriefedLength = transcript.count
             if !result.isEmpty {
                 brief = result
@@ -170,7 +174,7 @@ final class LiveMeetingAssistant: ObservableObject {
         // dynamic topics discovered so far so the model keeps them stable and
         // only appends genuinely new ones — the list accumulates rather than
         // churning on each batch's "hot words".
-        let status = await polisher.agendaStatus(userAgenda: agenda, knownDynamic: dynamicItems, transcript: transcript)
+        let status = await polisher.agendaStatus(userAgenda: agenda, knownDynamic: dynamicItems, transcript: transcript, glossary: glossary)
 
         // The model only SURFACES topics — it never decides they're "resolved".
         // (On the same transcript that surfaced a topic it can't reliably tell
@@ -210,7 +214,7 @@ final class LiveMeetingAssistant: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let result = try await self.polisher.answer(question: q, transcript: transcript)
+                let result = try await self.polisher.answer(question: q, transcript: transcript, glossary: self.glossary)
                 self.answer = result
             } catch {
                 self.answer = "Couldn't answer: \(error.localizedDescription)"

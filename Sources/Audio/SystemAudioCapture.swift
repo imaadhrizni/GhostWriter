@@ -22,7 +22,6 @@ final class SystemAudioCapture {
     /// Self pointer retained for the IOProc's clientData; released in stop().
     private var retainedSelf: UnsafeMutableRawPointer?
 
-    private let audioQueue = DispatchQueue(label: "com.ghostwriter.systemaudio", qos: .userInteractive)
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false)!
     private var converter: AVAudioConverter?

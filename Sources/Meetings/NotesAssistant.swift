@@ -1,11 +1,10 @@
-import SwiftUI
-import AppKit
+import Foundation
 
 // MARK: - Notes folder helpers
 //
 // Shared data layer over the meeting-notes folder (file listing, text/semantic
-// search, cross-meeting excerpt retrieval, action-item parsing). The Catalog
-// and other features build on this; the old Notes Assistant window was removed.
+// search, cross-meeting excerpt retrieval, action-item parsing) that the
+// Catalog and other features build on.
 
 enum NotesLibrary {
 

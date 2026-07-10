@@ -148,35 +148,35 @@ All values are stored in `UserDefaults` (start-at-login lives in macOS Login Ite
 
 | Path | Purpose |
 | --- | --- |
-| `Sources/HotkeyManager.swift` | Global hotkeys (push-to-talk, Esc, ⌃⌥ shortcuts) via CGEvent tap |
-| `Sources/AudioCapture.swift` | Microphone capture + VAD |
-| `Sources/SystemAudioCapture.swift` | System-audio capture via CoreAudio process taps |
-| `Sources/GroqService.swift` | Groq transcription + polishing API client |
-| `Sources/TextPolisher.swift` / `AppDetector.swift` | Context-aware formatting |
-| `Sources/TextInjector.swift` | Accessibility-based text injection |
-| `Sources/MeetingNotesWriter.swift` | Markdown transcript writer (front-matter, summaries, dated subfolders) |
-| `Sources/SpeakerProfiler.swift` | Voice-fingerprint clustering for speaker diarization |
-| `Sources/MeetingDetector.swift` | Per-process mic inspection — call start/end detection |
-| `Sources/RenameSpeakersWindow.swift` | Per-meeting speaker renaming |
-| `Sources/OfflineTranscriber.swift` | On-device speech fallback (Apple Speech) |
-| `Sources/NotificationManager.swift` | Post-meeting, quick-note, and error notifications |
-| `Sources/NotesAssistant.swift` | All Notes / Search / Ask / Action Items window |
-| `Sources/SemanticIndex.swift` | On-device semantic search over notes (Apple `NLEmbedding`, cached) |
-| `Sources/LiveMeetingAssistant.swift` | Floating in-meeting brief + grounded Ask (rolling TL;DR / actions) |
-| `Sources/NotesViewerWindow.swift` | In-app Markdown viewer/editor (find bar, read-only/unlock-to-edit, follow-up, rename, PDF export, open externally) |
-| `Sources/Catalog.swift` | Catalog model + `CatalogStore` (Codable `Catalog.json` store: orgs/projects/opportunities plus per-note people/tags, org hierarchy, project→org inheritance, import, missing-file reconcile, purge) |
-| `Sources/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, toolbar search (Text/Meaning/Ask) + Unassigned/Missing filters, row actions, Quick add |
-| `Sources/MarkdownPDF.swift` | Paginated Markdown → PDF renderer (CoreText) |
-| `Sources/RemindersExporter.swift` | Export action items to Apple Reminders (EventKit) |
-| `Sources/DictationsWindow.swift` | Searchable, day-grouped browser for archived dictations |
-| `Sources/Redactor.swift` | Opt-in redaction of emails / phones / long numbers |
-| `Sources/Diagnostics.swift` | In-memory recent-errors log for the Diagnostics pane |
-| `Sources/UsageStats.swift` | Local usage counters + Groq cost estimate |
-| `Sources/PermissionGuard.swift` | Mic / Accessibility / System-audio permission handling |
-| `Sources/AppSettings.swift` | UserDefaults-backed settings store with defaults |
-| `Sources/Log.swift` | os.Logger categories (visible in Console.app) |
-| `Sources/SettingsView.swift` | Sidebar-style settings window (SwiftUI) |
-| `Sources/GhostWriterApp.swift` | Menu-bar app, meeting mode, permission flow |
+| `Sources/Services/HotkeyManager.swift` | Global hotkeys (push-to-talk, Esc, ⌃⌥ shortcuts) via CGEvent tap |
+| `Sources/Audio/AudioCapture.swift` | Microphone capture + VAD |
+| `Sources/Audio/SystemAudioCapture.swift` | System-audio capture via CoreAudio process taps |
+| `Sources/Transcription/GroqService.swift` | Groq transcription + polishing API client |
+| `Sources/Meetings/TextPolisher.swift` / `AppDetector.swift` | Context-aware formatting |
+| `Sources/Services/TextInjector.swift` | Accessibility-based text injection |
+| `Sources/Meetings/MeetingNotesWriter.swift` | Markdown transcript writer (front-matter, summaries, dated subfolders) |
+| `Sources/Audio/SpeakerProfiler.swift` | Voice-fingerprint clustering for speaker diarization |
+| `Sources/Meetings/MeetingDetector.swift` | Per-process mic inspection — call start/end detection |
+| `Sources/Views/RenameSpeakersWindow.swift` | Per-meeting speaker renaming |
+| `Sources/Transcription/OfflineTranscriber.swift` | On-device speech fallback (Apple Speech) |
+| `Sources/Services/NotificationManager.swift` | Post-meeting, quick-note, and error notifications |
+| `Sources/Meetings/NotesAssistant.swift` | `NotesLibrary` — shared notes data layer (file listing, text/semantic search, cross-meeting excerpts, action-item parsing) |
+| `Sources/Transcription/SemanticIndex.swift` | On-device semantic search over notes (Apple `NLEmbedding`, cached) |
+| `Sources/Meetings/LiveMeetingAssistant.swift` | Floating in-meeting brief + grounded Ask (rolling TL;DR / actions) |
+| `Sources/Views/NotesViewerWindow.swift` | In-app Markdown viewer/editor (find bar, read-only/unlock-to-edit, follow-up, rename, PDF export, open externally) |
+| `Sources/Models/Catalog.swift` | Catalog model + `CatalogStore` (Codable `Catalog.json` store: orgs/projects/opportunities plus per-note people/tags, org hierarchy, project→org inheritance, import, missing-file reconcile, purge) |
+| `Sources/Catalog/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, toolbar search (Text/Meaning/Ask) + Unassigned/Missing filters, row actions, Quick add |
+| `Sources/Utils/MarkdownPDF.swift` | Paginated Markdown → PDF renderer (CoreText) |
+| `Sources/Services/RemindersExporter.swift` | Export action items to Apple Reminders (EventKit) |
+| `Sources/Views/DictationsWindow.swift` | Searchable, day-grouped browser for archived dictations |
+| `Sources/Services/Redactor.swift` | Opt-in redaction of emails / phones / long numbers |
+| `Sources/Utils/Diagnostics.swift` | In-memory recent-errors log for the Diagnostics pane |
+| `Sources/Models/UsageStats.swift` | Local usage counters + Groq cost estimate |
+| `Sources/Services/PermissionGuard.swift` | Mic / Accessibility / System-audio permission handling |
+| `Sources/Models/AppSettings.swift` | UserDefaults-backed settings store with defaults |
+| `Sources/Utils/Log.swift` | os.Logger categories (visible in Console.app) |
+| `Sources/Views/SettingsView.swift` | Sidebar-style settings window (SwiftUI) |
+| `Sources/App/GhostWriterApp.swift` | Menu-bar app, meeting mode, permission flow |
 | `ship.sh` | Build, bundle, sign, and install to `/Applications` |
 | `make_icon.swift` | Generates the app icon (`GhostWriter.icns`) |
 

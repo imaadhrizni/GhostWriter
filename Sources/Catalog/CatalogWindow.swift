@@ -355,11 +355,11 @@ struct QuickAddSheet: View {
 
     private var projectsForOrg: [CatalogProject] {
         guard let id = existingOrgID else { return [] }
-        return store.projects(forOrg: id).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return store.projects(forOrg: id).sortedByName
     }
     private var oppsForProject: [CatalogOpportunity] {
         guard projSel != Self.new, !projSel.isEmpty else { return [] }
-        return store.opportunities(forProject: projSel).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return store.opportunities(forProject: projSel).sortedByName
     }
 
     var body: some View {
@@ -679,16 +679,24 @@ private struct EntityEditorView: View {
 
 // MARK: Badges
 
-private struct RelationshipBadge: View {
-    let rel: OrgRelationship
-    init(_ r: OrgRelationship) { rel = r }
+/// A tinted capsule label — the one pill style used for relationship/stage
+/// badges and the note-list status chips.
+struct CapsulePill: View {
+    let text: String
+    let color: Color
     var body: some View {
-        Text(rel.label)
+        Text(text)
             .font(.caption2).fontWeight(.medium)
             .padding(.horizontal, 6).padding(.vertical, 1)
             .background(Capsule().fill(color.opacity(0.16)))
             .foregroundStyle(color)
     }
+}
+
+private struct RelationshipBadge: View {
+    let rel: OrgRelationship
+    init(_ r: OrgRelationship) { rel = r }
+    var body: some View { CapsulePill(text: rel.label, color: color) }
     private var color: Color {
         switch rel {
         case .root:     return .blue
@@ -704,13 +712,7 @@ private struct RelationshipBadge: View {
 private struct StageBadge: View {
     let stage: OppStage
     init(_ s: OppStage) { stage = s }
-    var body: some View {
-        Text(stage.label)
-            .font(.caption2).fontWeight(.medium)
-            .padding(.horizontal, 6).padding(.vertical, 1)
-            .background(Capsule().fill(color.opacity(0.16)))
-            .foregroundStyle(color)
-    }
+    var body: some View { CapsulePill(text: stage.label, color: color) }
     private var color: Color {
         switch stage {
         case .open: return .blue
@@ -992,9 +994,9 @@ private struct NotesList: View {
                             HStack(spacing: 6) {
                                 Text(n.title).lineLimit(1).foregroundStyle(missing ? .secondary : .primary)
                                 if missing {
-                                    pill("File missing", .red)
+                                    CapsulePill(text: "File missing", color: .red)
                                 } else if store.isUnassigned(n) {
-                                    pill("Unassigned", .orange)
+                                    CapsulePill(text: "Unassigned", color: .orange)
                                 }
                             }
                             HStack(spacing: 6) {
@@ -1034,13 +1036,6 @@ private struct NotesList: View {
         .task(id: "\(scope)|\(trimmedQuery)") { await runSemantic() }
     }
 
-    private func pill(_ text: String, _ color: Color) -> some View {
-        Text(text)
-            .font(.caption2.weight(.medium))
-            .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(Capsule().fill(color.opacity(0.18)))
-            .foregroundStyle(color)
-    }
 
     private func runSemantic() async {
         guard scope == .meaning, !trimmedQuery.isEmpty else { semanticOrder = []; return }
@@ -1334,9 +1329,6 @@ private struct NoteLinkEditor: View {
     private func hint(_ what: String) -> some View {
         Text("No \(what) yet — add one below.").font(.caption).foregroundStyle(.secondary)
     }
-    private var inheritedHint: some View {
-        Text("Assign an opportunity above.").font(.caption).foregroundStyle(.secondary)
-    }
     /// "Org › Project" context for an opportunity.
     private func oppPath(_ o: CatalogOpportunity) -> String {
         var parts: [String] = []
@@ -1478,6 +1470,8 @@ private struct MapTree: View {
             .union(store.doc.projects.map(\.id))
             .union(store.doc.opportunities.map(\.id))
             .union(store.doc.notes.map { "note:" + $0.id })
+            .union(store.doc.notes.map { "note-people:" + $0.id })
+            .union(store.doc.notes.map { "note-tags:" + $0.id })
     }
 
     /// An org matches if its own name — or any descendant org's name — contains
@@ -1624,28 +1618,30 @@ private struct NoteMapNode: View {
             label
         } else {
             DisclosureGroup(isExpanded: exp.binding("note:" + note.id)) {
-                ForEach(people) { p in
-                    MapRow(icon: "person", tint: .teal, title: p.name) { onPick(.people, p.id) }
+                if !people.isEmpty {
+                    DisclosureGroup(isExpanded: exp.binding("note-people:" + note.id)) {
+                        ForEach(people) { p in
+                            MapRow(icon: "person", tint: .teal, title: p.name) { onPick(.people, p.id) }
+                        }
+                    } label: {
+                        Label("People (\(people.count))", systemImage: "person.2").font(.callout)
+                    }
                 }
-                ForEach(tags) { t in
-                    MapRow(icon: "tag", tint: .pink, title: t.name) { onPick(.tags, t.id) }
+                if !tags.isEmpty {
+                    DisclosureGroup(isExpanded: exp.binding("note-tags:" + note.id)) {
+                        ForEach(tags) { t in
+                            MapRow(icon: "tag", tint: .pink, title: t.name) { onPick(.tags, t.id) }
+                        }
+                    } label: {
+                        Label("Tags (\(tags.count))", systemImage: "tag").font(.callout)
+                    }
                 }
             } label: { label }
         }
     }
 }
 
-// MARK: Sorting + small helpers
-
-private extension Array where Element == CatalogPerson {
-    var sortedByName: [CatalogPerson] { sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
-}
-private extension Array where Element == CatalogProject {
-    var sortedByName: [CatalogProject] { sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
-}
-private extension Array where Element == CatalogOpportunity {
-    var sortedByName: [CatalogOpportunity] { sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
-}
+// MARK: Small helpers
 
 private func splitList(_ s: String) -> [String] {
     s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }

@@ -692,19 +692,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// meetings. Local-only mode goes straight to on-device recognition; other-
     /// wise Groq first, falling back on-device when the network is down. The
     /// result is passed through optional redaction before anyone sees it.
-    private func transcribeWithFallback(_ audioData: Data, context: String = "", glossaryTerms: [String] = []) async throws -> String {
+    private func transcribeWithFallback(_ audioData: Data, context: String = "") async throws -> String {
         let text: String
         if settings.localOnlyMode {
-            text = try await offlineTranscriber.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
+            text = try await offlineTranscriber.transcribe(audioData: audioData, context: context)
         } else {
             do {
-                text = try await groqService.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
+                text = try await groqService.transcribe(audioData: audioData, context: context)
             } catch {
                 // Fall back on ANY Groq failure — network down, 5xx, rate
                 // limit, bad response — not just connectivity errors.
                 guard settings.offlineFallback else { throw error }
                 Log.api.warning("⚠️ Groq transcription failed (\(error.localizedDescription)) — falling back to on-device recognition")
-                text = try await offlineTranscriber.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
+                text = try await offlineTranscriber.transcribe(audioData: audioData, context: context)
             }
         }
         return Redactor.redact(text)

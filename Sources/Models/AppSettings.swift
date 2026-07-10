@@ -942,16 +942,12 @@ final class AppSettings: ObservableObject {
         return result
     }
 
-    /// Vocabulary flattened to a single Whisper prompt hint (≤400 chars kept).
-    var vocabularyPrompt: String { vocabularyHint() }
 
-    /// The glossary prompt hint: the user's own vocabulary plus any auto-
-    /// harvested `extraTerms` (the per-meeting seed), deduplicated
-    /// case-insensitively and capped to Whisper's prompt budget. The user's
-    /// terms lead so they take precedence when the cap trims the tail. Empty
-    /// when there are no terms at all.
-    func vocabularyHint(extraTerms: [String] = []) -> String {
-        let raw = vocabulary.components(separatedBy: CharacterSet(charactersIn: ",\n")) + extraTerms
+    /// The glossary prompt hint: the user's own vocabulary, deduplicated
+    /// case-insensitively and capped to Whisper's prompt budget. Empty when
+    /// there are no terms at all.
+    func vocabularyHint() -> String {
+        let raw = vocabulary.components(separatedBy: CharacterSet(charactersIn: ",\n"))
         var seen = Set<String>()
         var terms: [String] = []
         for candidate in raw {

@@ -24,10 +24,8 @@ final class GroqService {
     ///   - audioData: Raw 16kHz, 16-bit, mono PCM data
     ///   - context: Recent transcript text used to self-prime decoding, so
     ///     names/jargon stay consistent once they first appear. Optional.
-    ///   - glossaryTerms: Auto-harvested per-meeting terms merged into the
-    ///     glossary hint, so names transcribe correctly on first mention.
     /// - Returns: Transcribed text
-    func transcribe(audioData: Data, context: String = "", glossaryTerms: [String] = []) async throws -> String {
+    func transcribe(audioData: Data, context: String = "") async throws -> String {
         guard !apiKey.isEmpty else {
             throw GroqError.missingAPIKey
         }
@@ -54,7 +52,7 @@ final class GroqService {
         // consistently once they first appear. Self-priming needs no setup and
         // is the same for every user, which matters for a distributed build.
         let promptHint = Self.composePrompt(
-            vocabulary: AppSettings.shared.vocabularyHint(extraTerms: glossaryTerms), context: context)
+            vocabulary: AppSettings.shared.vocabularyHint(), context: context)
         if !promptHint.isEmpty {
             body.appendMultipart(name: "prompt", value: promptHint, boundary: boundary)
         }

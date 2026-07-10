@@ -1,6 +1,5 @@
 import AVFoundation
 import AppKit
-import CoreServices
 import EventKit
 
 // MARK: - Permission Guard
@@ -119,11 +118,6 @@ final class PermissionGuard {
     }
 
     // MARK: - Convenience
-
-    /// Returns true only if both permissions are granted.
-    var allPermissionsGranted: Bool {
-        hasMicrophonePermission && hasAccessibilityPermission
-    }
 
     /// Opens System Settings to the Privacy & Security → Accessibility pane.
     func openAccessibilitySettings() {

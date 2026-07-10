@@ -97,7 +97,8 @@ struct CatalogNote: Codable, Identifiable, Hashable {
     var kind: String = "meeting"
     /// Notes are assigned to opportunities (and/or projects) and tags. The rest
     /// of the chain — project → org → people — is inherited automatically.
-    /// `orgIDs` is retained for legacy direct links but no longer set from the UI.
+    /// `orgIDs` holds a direct org assignment for internal notes with no
+    /// opportunity (mutually exclusive with `opportunityIDs`).
     var opportunityIDs: [String] = []
     var projectIDs: [String] = []
     var orgIDs: [String] = []
@@ -105,6 +106,22 @@ struct CatalogNote: Codable, Identifiable, Hashable {
     /// People attributed directly to this note (attendees / mentioned), set per
     /// note like tags. Independent of org membership.
     var personIDs: [String] = []
+}
+
+// MARK: Named — one shared case-insensitive sort for every named entity
+
+protocol Named { var name: String { get } }
+extension CatalogOrg: Named {}
+extension CatalogPerson: Named {}
+extension CatalogProject: Named {}
+extension CatalogOpportunity: Named {}
+extension CatalogTag: Named {}
+
+extension Sequence where Element: Named {
+    /// Case-insensitive, locale-aware ascending sort by `name`.
+    var sortedByName: [Element] {
+        sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
 }
 
 // MARK: Document
@@ -178,8 +195,8 @@ final class CatalogStore: ObservableObject {
 
     func opportunity(_ id: String?) -> CatalogOpportunity? { doc.opportunities.first { $0.id == id } }
 
-    var orgsSorted: [CatalogOrg] { doc.orgs.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
-    var tagsSorted: [CatalogTag] { doc.tags.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
+    var orgsSorted: [CatalogOrg] { doc.orgs.sortedByName }
+    var tagsSorted: [CatalogTag] { doc.tags.sortedByName }
 
     func orgs(relationship: OrgRelationship) -> [CatalogOrg] {
         orgsSorted.filter { $0.relationship == relationship }
@@ -266,8 +283,7 @@ final class CatalogStore: ObservableObject {
     func peopleFromNotes(forOrg id: String) -> [CatalogPerson] {
         var ids = Set<String>()
         for n in notes(forOrg: id) { ids.formUnion(n.personIDs) }
-        return doc.people.filter { ids.contains($0.id) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return doc.people.filter { ids.contains($0.id) }.sortedByName
     }
     /// Notes a person appears on directly.
     func notes(forPerson id: String) -> [CatalogNote] {
@@ -275,13 +291,11 @@ final class CatalogStore: ObservableObject {
     }
     /// A note's own people (the ones attributed directly to it).
     func people(of note: CatalogNote) -> [CatalogPerson] {
-        doc.people.filter { note.personIDs.contains($0.id) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        doc.people.filter { note.personIDs.contains($0.id) }.sortedByName
     }
     /// A note's own tags.
     func tags(of note: CatalogNote) -> [CatalogTag] {
-        doc.tags.filter { note.tagIDs.contains($0.id) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        doc.tags.filter { note.tagIDs.contains($0.id) }.sortedByName
     }
 
     // MARK: Org CRUD
@@ -321,12 +335,6 @@ final class CatalogStore: ObservableObject {
     func parentChoices(for id: String) -> [CatalogOrg] {
         let banned = orgSubtree(of: id)
         return orgsSorted.filter { !banned.contains($0.id) }
-    }
-
-    /// Find an org whose name or alias matches a spoken/typed name (case-insensitive).
-    func matchOrg(name: String) -> CatalogOrg? {
-        let n = name.lowercased()
-        return doc.orgs.first { $0.name.lowercased() == n || $0.aliases.contains { $0.lowercased() == n } }
     }
 
     // MARK: Person / Project / Opportunity / Tag CRUD
@@ -491,13 +499,6 @@ final class CatalogStore: ObservableObject {
             } else {
                 doc.notes[i].orgIDs.removeAll { $0 == orgID }
             }
-        }
-    }
-    func setProject(_ projectID: String, on noteID: String, _ on: Bool) {
-        mutate { doc in
-            guard let i = doc.notes.firstIndex(where: { $0.id == noteID }) else { return }
-            if on { if !doc.notes[i].projectIDs.contains(projectID) { doc.notes[i].projectIDs.append(projectID) } }
-            else { doc.notes[i].projectIDs.removeAll { $0 == projectID } }
         }
     }
     func setOpportunity(_ oppID: String, on noteID: String, _ on: Bool) {

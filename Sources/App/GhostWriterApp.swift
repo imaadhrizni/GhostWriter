@@ -343,22 +343,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // ── Notes & history ─────────────────────────────────────
         // Notes submenu — current notes, quick notes, recent meetings, folder —
         // rebuilt on open via menuNeedsUpdate
-        let meetingNotesItem = NSMenuItem(title: "Notes", action: nil, keyEquivalent: "")
+        let meetingNotesItem = NSMenuItem(title: "Notes & History", action: nil, keyEquivalent: "")
         meetingNotesItem.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)
-        let meetingNotesMenu = NSMenu(title: "Notes")
+        let meetingNotesMenu = NSMenu(title: "Notes & History")
         meetingNotesMenu.delegate = self
         meetingNotesItem.submenu = meetingNotesMenu
         menu.addItem(meetingNotesItem)
+
+        // Catalog is the primary organiser — it sits directly under Notes,
+        // above the raw dictation archive.
+        let catalogItem = NSMenuItem(title: "Catalog…", action: #selector(showCatalog), keyEquivalent: "")
+        catalogItem.image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: nil)
+        catalogItem.target = self
+        menu.addItem(catalogItem)
 
         let dictationsItem = NSMenuItem(title: "Dictations…", action: #selector(showDictations), keyEquivalent: "")
         dictationsItem.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)
         dictationsItem.target = self
         menu.addItem(dictationsItem)
-
-        let catalogItem = NSMenuItem(title: "Catalog…", action: #selector(showCatalog), keyEquivalent: "")
-        catalogItem.image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: nil)
-        catalogItem.target = self
-        menu.addItem(catalogItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -1931,7 +1933,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 errorMenuItem?.isHidden = true
             }
 
-        case "Notes":
+        case "Notes & History":
             menu.removeAllItems()
 
             // Current (or latest) meeting notes — same action as ⌃⌥N —

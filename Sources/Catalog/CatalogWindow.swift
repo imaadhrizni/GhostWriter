@@ -44,6 +44,14 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     case tags          = "Tags"
     case notes         = "Notes"
     var id: String { rawValue }
+
+    /// Sidebar layout: the two ways to look at the catalog on top, then the
+    /// underlying records grouped together.
+    static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
+        (nil,        [.map, .notes]),
+        ("Records",  [.organisations, .projects, .opportunities, .people, .tags]),
+    ]
+
     var singular: String {
         switch self {
         case .map:           return "Item"
@@ -141,19 +149,27 @@ private struct CatalogView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(CatalogSection.allCases, selection: $section) { s in
-                Label {
-                    Text(s.rawValue)
-                } icon: {
-                    Image(systemName: s.icon)
-                        .foregroundStyle(.white)
-                        .frame(width: 20, height: 20)
-                        .background(RoundedRectangle(cornerRadius: 5).fill(s.tint))
+            List(selection: $section) {
+                ForEach(CatalogSection.sidebarGroups, id: \.sections.first!.id) { group in
+                    Section {
+                        ForEach(group.sections) { s in
+                            Label {
+                                Text(s.rawValue)
+                            } icon: {
+                                Image(systemName: s.icon)
+                                    .foregroundStyle(.white)
+                                    .frame(width: 20, height: 20)
+                                    .background(RoundedRectangle(cornerRadius: 5).fill(s.tint))
+                            }
+                            .badge(count(s) > 0 ? Text("\(count(s))") : nil)
+                            .tag(s)
+                        }
+                    } header: {
+                        if let title = group.title { Text(title) }
+                    }
                 }
-                .badge(count(s) > 0 ? Text("\(count(s))") : nil)
-                .tag(s)
             }
-            .navigationSplitViewColumnWidth(min: 178, ideal: 192, max: 220)
+            .navigationSplitViewColumnWidth(min: 178, ideal: 200, max: 230)
             .safeAreaInset(edge: .bottom) { importFooter }
         } content: {
             contentColumn

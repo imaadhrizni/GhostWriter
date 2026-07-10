@@ -978,9 +978,11 @@ private struct MeetingNotesPane: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
-            SettingsGroup("Intelligence") {
+            SettingsGroup("Templates") {
                 TemplateManager()
-                Divider()
+            }
+
+            SettingsGroup("Summaries & Action Items") {
                 Toggle("Append AI summary when a meeting ends", isOn: $settings.summariesEnabled)
                 Text("Adds the template's sections to the notes file.")
                     .font(.caption).foregroundColor(.secondary)
@@ -989,15 +991,17 @@ private struct MeetingNotesPane: View {
                 Text("Adds an Action Items checklist (with owners when identifiable). Shown per note in the Catalog, with export to Reminders.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
-                Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
-                Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
-                    .font(.caption).foregroundColor(.secondary)
-                Divider()
                 Toggle("Auto-tag topics & entities into front-matter", isOn: $settings.autoTagging)
                 Text("After summarizing, extract topic tags plus the people, customer, and project a meeting is about — mirrored into tags and written as structured attendees/customer/project fields (great for Obsidian/Notion graphs and Dataview). Names are skipped when redaction is on. Requires front-matter enabled and network access.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Notify when notes are saved", isOn: $settings.notifyOnMeetingEnd)
+            }
+
+            SettingsGroup("Live Brief") {
+                Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
+                Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Catalog Search") {

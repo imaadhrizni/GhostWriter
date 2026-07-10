@@ -21,10 +21,13 @@ final class NotesViewerWindowController: NSWindowController {
         controller.showAndActivate()
     }
 
-    /// Present generated draft text in a viewer.
-    static func present(draftTitle: String, text: String) {
+    /// Present generated draft text in a viewer. `regenerate`, when given, adds a
+    /// "Regenerate" button that discards the cached result and produces a fresh
+    /// one (used by AI summaries and follow-up drafts).
+    static func present(draftTitle: String, text: String,
+                        regenerate: (@MainActor () async throws -> String)? = nil) {
         open.removeAll { $0.window?.isVisible == false }
-        let controller = NotesViewerWindowController(draftTitle: draftTitle, text: text)
+        let controller = NotesViewerWindowController(draftTitle: draftTitle, text: text, regenerate: regenerate)
         open.append(controller)
         controller.showAndActivate()
     }
@@ -36,11 +39,13 @@ final class NotesViewerWindowController: NSWindowController {
     }
 
     /// Present generated text (e.g. a follow-up draft) with no backing file.
-    convenience init(draftTitle: String, text: String) {
-        self.init(title: draftTitle, fileURL: nil, initialText: text)
+    convenience init(draftTitle: String, text: String,
+                     regenerate: (@MainActor () async throws -> String)? = nil) {
+        self.init(title: draftTitle, fileURL: nil, initialText: text, regenerate: regenerate)
     }
 
-    private convenience init(title: String, fileURL: URL?, initialText: String) {
+    private convenience init(title: String, fileURL: URL?, initialText: String,
+                             regenerate: (@MainActor () async throws -> String)? = nil) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -53,7 +58,7 @@ final class NotesViewerWindowController: NSWindowController {
         window.titlebarAppearsTransparent = true
 
         self.init(window: window)
-        window.contentView = NSHostingView(rootView: NotesViewerView(fileURL: fileURL, initialText: initialText))
+        window.contentView = NSHostingView(rootView: NotesViewerView(fileURL: fileURL, initialText: initialText, regenerate: regenerate))
     }
 
     func showAndActivate() {
@@ -112,17 +117,21 @@ private struct FindableTextEditor: NSViewRepresentable {
 
 private struct NotesViewerView: View {
     let fileURL: URL?
+    /// For AI-generated drafts: produce a fresh (cache-bypassing) version.
+    let regenerate: (@MainActor () async throws -> String)?
     @State private var text: String
     @State private var savedText: String
     @State private var status: String = ""
     @State private var drafting = false
     @State private var summarizing = false
+    @State private var regenerating = false
     /// Locked (read-only) by default; unlock to edit. Drafts with no backing
     /// file open unlocked since editing is the whole point.
     @State private var isEditable: Bool
 
-    init(fileURL: URL?, initialText: String) {
+    init(fileURL: URL?, initialText: String, regenerate: (@MainActor () async throws -> String)? = nil) {
         self.fileURL = fileURL
+        self.regenerate = regenerate
         _text = State(initialValue: initialText)
         _savedText = State(initialValue: initialText)
         _isEditable = State(initialValue: fileURL == nil)
@@ -140,9 +149,11 @@ private struct NotesViewerView: View {
         isMeetingNote && !AppSettings.shared.localOnlyMode
     }
 
-    /// A quick AI summary can be run on any non-empty note when cloud is allowed.
+    /// A quick AI summary can be run on any non-empty saved note when cloud is
+    /// allowed. (Generated drafts get a "Regenerate" button instead.)
     private var canSummarize: Bool {
-        !AppSettings.shared.localOnlyMode && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        fileURL != nil && !AppSettings.shared.localOnlyMode
+            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -179,6 +190,12 @@ private struct NotesViewerView: View {
                     Button { summarize() } label: { Label("Summarize", systemImage: "sparkles") }
                         .disabled(summarizing)
                         .help("Open a short AI summary of this note in a new window")
+                }
+
+                if regenerate != nil {
+                    Button { runRegenerate() } label: { Label("Regenerate", systemImage: "arrow.clockwise") }
+                        .disabled(regenerating)
+                        .help("Discard the cached result and generate a fresh one")
                 }
 
                 if let fileURL {
@@ -235,9 +252,29 @@ private struct NotesViewerView: View {
             do {
                 let summary = try await TextPolisher().quickSummary(text: source)
                 status = ""
-                NotesViewerWindowController.present(draftTitle: "Summary — \(base)", text: summary)
+                NotesViewerWindowController.present(
+                    draftTitle: "Summary — \(base)", text: summary,
+                    regenerate: { try await TextPolisher().quickSummary(text: source, forceRefresh: true) })
             } catch {
                 status = "Summary failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Re-run the generator behind this draft, bypassing the cache, and replace
+    /// the shown text with the fresh result.
+    private func runRegenerate() {
+        guard let regenerate else { return }
+        regenerating = true
+        status = "Regenerating…"
+        Task { @MainActor in
+            defer { regenerating = false }
+            do {
+                text = try await regenerate()
+                savedText = text
+                status = "Regenerated"
+            } catch {
+                status = "Regenerate failed: \(error.localizedDescription)"
             }
         }
     }
@@ -257,7 +294,8 @@ private struct NotesViewerView: View {
                 status = ""
                 NotesViewerWindowController.present(
                     draftTitle: "Follow-up — \(fileURL.deletingPathExtension().lastPathComponent)",
-                    text: draft)
+                    text: draft,
+                    regenerate: { try await TextPolisher().draftFollowUp(transcript: transcript, template: template, forceRefresh: true) })
             } catch {
                 status = "Draft failed: \(error.localizedDescription)"
             }

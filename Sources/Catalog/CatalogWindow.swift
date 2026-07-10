@@ -733,30 +733,43 @@ private struct RelationshipSummaryButton: View {
         let name = entityName
         Task { @MainActor in
             defer { working = false }
-            let polisher = TextPolisher()
-            var blocks: [String] = []
-            var lastError: String?
-            // One call per meeting so blocks stay separate (never blended). A
-            // single note failing (e.g. a transient rate limit) is skipped so
-            // the rest of the digest still opens.
-            for e in entries {
-                guard let text = try? String(contentsOf: e.url, encoding: .utf8), !text.isEmpty else { continue }
-                do {
-                    let body = try await polisher.meetingDigest(text: text)
-                    blocks.append("\(e.title)\n\(Self.spaced(body))")
-                } catch {
-                    lastError = error.localizedDescription
-                }
+            do {
+                let (digest, lastError) = try await Self.buildDigest(entries: entries, forceRefresh: false)
+                // Two blank lines between meetings.
+                NotesViewerWindowController.present(
+                    draftTitle: "Relationship — \(name)", text: digest,
+                    regenerate: {
+                        let (fresh, _) = try await Self.buildDigest(entries: entries, forceRefresh: true)
+                        return fresh
+                    })
+                if let lastError { status = "Some meetings were skipped (\(lastError))." }
+            } catch {
+                status = "Summary failed: \(error.localizedDescription)"
             }
-            guard !blocks.isEmpty else {
-                status = "Summary failed: \(lastError ?? "no note content to summarize.")"
-                return
-            }
-            // Two blank lines between meetings.
-            NotesViewerWindowController.present(draftTitle: "Relationship — \(name)",
-                                               text: blocks.joined(separator: "\n\n\n"))
-            if lastError != nil { status = "Some meetings were skipped (\(lastError!))." }
         }
+    }
+
+    /// Digest the given notes into one block per meeting. Skips a note that
+    /// fails (e.g. a transient rate limit) so the rest still open. Throws only
+    /// when nothing could be digested at all. `forceRefresh` bypasses the cache.
+    private static func buildDigest(entries: [(title: String, url: URL)],
+                                    forceRefresh: Bool) async throws -> (text: String, lastError: String?) {
+        let polisher = TextPolisher()
+        var blocks: [String] = []
+        var lastError: String?
+        for e in entries {
+            guard let text = try? String(contentsOf: e.url, encoding: .utf8), !text.isEmpty else { continue }
+            do {
+                let body = try await polisher.meetingDigest(text: text, forceRefresh: forceRefresh)
+                blocks.append("\(e.title)\n\(spaced(body))")
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+        guard !blocks.isEmpty else {
+            throw GroqError.apiError(statusCode: 0, message: lastError ?? "no note content to summarize.")
+        }
+        return (blocks.joined(separator: "\n\n\n"), lastError)
     }
 }
 

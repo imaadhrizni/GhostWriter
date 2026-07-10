@@ -184,10 +184,11 @@ final class TextPolisher {
 
     /// A quick, plain-language recap of an arbitrary note so the reader knows
     /// what's in it — a short prose summary, not tied to any meeting template.
-    func quickSummary(text: String) async throws -> String {
+    func quickSummary(text: String, forceRefresh: Bool = false) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         let clipped = String(text.suffix(24_000))
-        if let cached = AICache.shared.value(.summary, source: clipped, model: model, version: Self.summaryPromptVersion) {
+        if !forceRefresh,
+           let cached = AICache.shared.value(.summary, source: clipped, model: model, version: Self.summaryPromptVersion) {
             return cached
         }
         let requestBody = ChatRequest(
@@ -209,10 +210,11 @@ final class TextPolisher {
     /// Summarize ONE meeting note into the digest template *body* (no title —
     /// the caller prepends the exact note title). Called once per meeting so
     /// each block stays separate rather than blended into one.
-    func meetingDigest(text: String) async throws -> String {
+    func meetingDigest(text: String, forceRefresh: Bool = false) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         let clipped = String(text.suffix(16_000))
-        if let cached = AICache.shared.value(.digest, source: clipped, model: model, version: Self.digestPromptVersion) {
+        if !forceRefresh,
+           let cached = AICache.shared.value(.digest, source: clipped, model: model, version: Self.digestPromptVersion) {
             return cached
         }
         let requestBody = ChatRequest(
@@ -463,12 +465,13 @@ final class TextPolisher {
     /// Draft a follow-up message recapping a meeting, shaped by its template
     /// (recipient, tone, and sections vary by meeting type). The notes may
     /// already contain a summary and action items — the draft builds on them.
-    func draftFollowUp(transcript: String, template: SummaryTemplate = .builtIn(.general)) async throws -> String {
+    func draftFollowUp(transcript: String, template: SummaryTemplate = .builtIn(.general), forceRefresh: Bool = false) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         let clipped = String(transcript.suffix(24_000))
         // Output depends on the template's guidance too, so it's part of the key.
         let cacheSource = template.followUpGuidance + "\u{0}" + clipped
-        if let cached = AICache.shared.value(.followUp, source: cacheSource, model: model, version: Self.followUpPromptVersion) {
+        if !forceRefresh,
+           let cached = AICache.shared.value(.followUp, source: cacheSource, model: model, version: Self.followUpPromptVersion) {
             return cached
         }
         let body = ChatRequest(

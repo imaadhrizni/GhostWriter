@@ -155,22 +155,89 @@ final class CatalogStore: ObservableObject {
 
     // MARK: Persistence
 
+    /// Shared JSON coders. The encoder/decoder settings must stay in lockstep
+    /// (dates especially) or a round-trip throws and the data "vanishes".
+    private static func makeEncoder() -> JSONEncoder {
+        let e = JSONEncoder()
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        e.dateEncodingStrategy = .iso8601
+        return e
+    }
+    private static func makeDecoder() -> JSONDecoder {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }
+
     func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601   // must match the encoder, or decode throws → data "vanishes"
-        guard let decoded = try? decoder.decode(CatalogDocument.self, from: data) else { return }
+        guard let data = try? Data(contentsOf: fileURL),
+              let decoded = try? Self.makeDecoder().decode(CatalogDocument.self, from: data) else { return }
         doc = decoded
     }
 
     private func save() {
         let dir = AppSettings.shared.notesFolder
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(doc) else { return }
+        guard let data = try? Self.makeEncoder().encode(doc) else { return }
         try? data.write(to: fileURL, options: .atomic)
+    }
+
+    // MARK: Export / Import
+
+    enum ImportMode { case merge, replace }
+
+    /// True when there's nothing to export — disables the Export button.
+    var isEmpty: Bool {
+        doc.orgs.isEmpty && doc.people.isEmpty && doc.projects.isEmpty
+            && doc.opportunities.isEmpty && doc.tags.isEmpty && doc.notes.isEmpty
+    }
+
+    /// Encode the whole catalog for export — identical format to the on-disk
+    /// `Catalog.json`, so an exported file is a drop-in backup.
+    func exportData() throws -> Data { try Self.makeEncoder().encode(doc) }
+
+    /// True if `data` decodes as a catalog — used to reject junk files before
+    /// offering merge/replace.
+    func isValidCatalog(_ data: Data) -> Bool {
+        (try? Self.makeDecoder().decode(CatalogDocument.self, from: data)) != nil
+    }
+
+    /// Fold an exported catalog into this one. `merge` upserts every record by
+    /// id (incoming wins on a clash, existing records are otherwise kept);
+    /// `replace` swaps the entire catalog. Returns the record count in the
+    /// imported file. Throws on malformed JSON. Note files are never touched.
+    @discardableResult
+    func importData(_ data: Data, mode: ImportMode) throws -> Int {
+        let incoming = try Self.makeDecoder().decode(CatalogDocument.self, from: data)
+        mutate { doc in
+            switch mode {
+            case .replace:
+                doc = incoming
+            case .merge:
+                Self.upsert(&doc.orgs, incoming.orgs)
+                Self.upsert(&doc.people, incoming.people)
+                Self.upsert(&doc.projects, incoming.projects)
+                Self.upsert(&doc.opportunities, incoming.opportunities)
+                Self.upsert(&doc.tags, incoming.tags)
+                Self.upsert(&doc.notes, incoming.notes)
+            }
+        }
+        return incoming.orgs.count + incoming.people.count + incoming.projects.count
+             + incoming.opportunities.count + incoming.tags.count + incoming.notes.count
+    }
+
+    /// Merge `incoming` into `base` by id: existing entries with a matching id
+    /// are overwritten, genuinely new ones appended, order otherwise preserved.
+    private static func upsert<T: Identifiable>(_ base: inout [T], _ incoming: [T]) where T.ID == String {
+        var indexByID = Dictionary(base.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for item in incoming {
+            if let i = indexByID[item.id] {
+                base[i] = item
+            } else {
+                indexByID[item.id] = base.count
+                base.append(item)
+            }
+        }
     }
 
     /// Route every mutation through here so persistence is never forgotten.

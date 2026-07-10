@@ -65,4 +65,5 @@ These work system-wide, from any app (they ride the same Accessibility event tap
 | **⌃⌥J** | Quick note — dictate into today's notes file (press again to save, Esc to cancel) |
 | **⌃⌥M** | Start / stop Meeting Mode |
 | **⌃⌥P** | Pause / resume meeting transcription |
+| **⌃⌥B** | Bookmark the current moment in a running meeting |
 | **⌃⌥N** | Open meeting notes |

@@ -839,6 +839,7 @@ private struct ShortcutsPane: View {
             SettingsGroup("Meeting Mode") {
                 ShortcutRow(keys: "⌃⌥M", detail: "Start / stop Meeting Mode")
                 ShortcutRow(keys: "⌃⌥P", detail: "Pause / resume meeting transcription")
+                ShortcutRow(keys: "⌃⌥B", detail: "Bookmark the current moment in a running meeting")
                 ShortcutRow(keys: "⌃⌥N", detail: "Open meeting notes (live file, or the notes folder)")
             }
 
@@ -1074,6 +1075,14 @@ private struct MeetingNotesPane: View {
                 Text("Adds an Action Items checklist (with owners when identifiable). Shown per note in the Catalog, with export to Reminders.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
+                Toggle("Extract decisions, risks & open questions", isOn: $settings.structuredExtraction)
+                Text("Adds Decisions, Risks & Blockers, and Open Questions sections to the summary. Requires network access.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Add topic chapters", isOn: $settings.topicChapters)
+                Text("Appends a timestamped jump-list segmenting the meeting into topics. One extra AI call per meeting; disabled in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
                 Toggle("Auto-tag topics & entities into front-matter", isOn: $settings.autoTagging)
                 Text("After summarizing, extract topic tags plus the people, customer, and project a meeting is about — mirrored into tags and written as structured attendees/customer/project fields (great for Obsidian/Notion graphs and Dataview). Names are skipped when redaction is on. Requires front-matter enabled and network access.")
                     .font(.caption).foregroundColor(.secondary)
@@ -1081,9 +1090,13 @@ private struct MeetingNotesPane: View {
                 Toggle("Notify when notes are saved", isOn: $settings.notifyOnMeetingEnd)
             }
 
-            SettingsGroup("Live Brief") {
+            SettingsGroup("During the Meeting") {
                 Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
                 Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Show prep card on start", isOn: $settings.meetingPrepCard)
+                Text("When a meeting is linked to an organisation or opportunity, a floating panel of that entity's recent notes appears as the meeting starts. This is the default for the per-meeting switch in the start dialog.")
                     .font(.caption).foregroundColor(.secondary)
             }
 
@@ -1108,7 +1121,9 @@ private struct MeetingNotesPane: View {
 
     private func pickNotesFolder() {
         if let url = chooseFolder(startingAt: settings.notesFolder) {
+            let oldFolder = settings.notesFolder
             settings.notesFolder = url
+            CatalogStore.shared.notesFolderDidChange(from: oldFolder)
         }
     }
 }

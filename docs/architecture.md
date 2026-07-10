@@ -39,7 +39,7 @@
 | `Sources/Meetings/LiveMeetingAssistant.swift` | Floating in-meeting brief + grounded Ask (rolling TL;DR / actions) |
 | `Sources/Views/NotesViewerWindow.swift` | In-app Markdown viewer/editor (find bar, read-only/unlock-to-edit, follow-up, rename, PDF export, open externally) |
 | `Sources/Models/Catalog.swift` | Catalog model + `CatalogStore` (Codable `Catalog.json` store: orgs/projects/opportunities plus per-note people/tags, org hierarchy, project→org inheritance, import, missing-file reconcile, purge) |
-| `Sources/Catalog/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, search (Text/Meaning/Ask) + consolidated Filter menu with removable chips, row actions, Quick add, catalog export/import |
+| `Sources/Catalog/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, per-entity relationship timeline, search (Text/Meaning/Ask) + consolidated Filter menu with removable chips, row actions, Quick add, catalog export/import |
 | `Sources/Utils/MarkdownPDF.swift` | Paginated Markdown → PDF renderer (CoreText) |
 | `Sources/Services/RemindersExporter.swift` | Export action items to Apple Reminders (EventKit) |
 | `Sources/Services/BackupService.swift` | Full backup/restore — zips notes, quick notes, dictations & Catalog |
@@ -53,6 +53,7 @@
 | `Sources/Views/SettingsView.swift` | Sidebar-style settings window (SwiftUI) |
 | `Sources/Views/APIKeyView.swift` | API-key onboarding UI (SwiftUI) |
 | `Sources/Views/GlowOverlayView.swift` | Floating recording indicator / live-caption overlay |
+| `Sources/Views/MeetingPrepWindow.swift` | Non-modal meeting-prep panel — recent notes for the linked org/opp |
 | `Sources/Utils/DateDisplay.swift` | Date formatting for the menu & Notes Assistant |
 | `Sources/App/GhostWriterApp.swift` | Menu-bar app, meeting mode, permission flow |
 | `Sources/App/main.swift` | Executable entry point |

@@ -484,6 +484,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.toggleQuickNote()
         }
 
+        // ⌃⌥B — drop a timestamped bookmark in the running meeting
+        hotkeyManager.onBookmarkHotkey = { [weak self] in
+            self?.dropMeetingBookmark()
+        }
+
         // Esc — cancel an in-flight dictation without typing anything
         hotkeyManager.shouldCaptureEscape = { [weak self] in
             self?.appState.recordingState == .listening
@@ -712,8 +717,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return Redactor.redact(text)
     }
 
+    /// ⌃⌥B handler — bookmark the current moment in a running meeting. Writes an
+    /// inline marker now; a jump-list is appended when the meeting ends.
+    private func dropMeetingBookmark() {
+        guard appState.isMeetingMode, let start = meetingStartTime else { return }
+        let elapsed = Int(Date().timeIntervalSince(start))
+        meetingNotes.addBookmark(elapsed: elapsed)
+        // Light confirmation — shows in caption mode, harmlessly overwritten by
+        // the next transcript line otherwise.
+        appState.meetingCaption = String(format: "★ Bookmarked %d:%02d", elapsed / 60, elapsed % 60)
+    }
+
     /// After a meeting ends: append the AI summary (if enabled), then notify (if enabled).
-    private func finalizeMeetingNotes(startedAt start: Date, agenda: [String] = []) {
+    private func finalizeMeetingNotes(startedAt start: Date, agenda: [String] = [],
+                                      catalogTarget: (kind: String, id: String)? = nil) {
         guard let fileURL = meetingNotes.lastCompletedFilePath else { return }
 
         let elapsed = Int(Date().timeIntervalSince(start))
@@ -725,8 +742,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Link the note into the Catalog under the opportunity/org chosen at
             // start (if any), creating its catalog row from the file path.
             await MainActor.run {
-                guard let target = self.meetingCatalogTarget else { return }
-                self.meetingCatalogTarget = nil
+                guard let target = catalogTarget else { return }
                 let store = CatalogStore.shared
                 let root = AppSettings.shared.notesFolder.path + "/"
                 let rel = fileURL.path.replacingOccurrences(of: root, with: "")
@@ -737,21 +753,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 else if target.kind == "org" { store.setOrg(target.id, on: note.id, true) }
             }
 
+            // Bookmarks jump-list (timestamps dropped via ⌃⌥B during the meeting).
+            self.meetingNotes.appendBookmarks(to: fileURL)
+
             let wantsSummary = self.settings.summariesEnabled
             let wantsActions = self.settings.actionItemsEnabled
+            let wantsStructured = self.settings.structuredExtraction
+            let wantsChapters = self.settings.topicChapters
             // Local-only mode never contacts the network — no LLM summary/tags.
             // Each cloud feature below is independently toggleable; the shared
             // gate is only "cloud allowed + enough real speech to work with".
             if !self.settings.localOnlyMode,
                let transcript = self.meetingNotes.transcriptText(of: fileURL),
                Self.dialogueLength(of: transcript) > 200 {  // measure actual speech, not header/markers
-                if wantsSummary || wantsActions {
+                if wantsSummary || wantsActions || wantsStructured {
                     do {
                         let raw = try await self.textPolisher.summarize(
                             transcript: transcript,
                             template: self.settings.selectedTemplate,
                             includeSummary: wantsSummary,
-                            includeActionItems: wantsActions)
+                            includeActionItems: wantsActions,
+                            includeStructured: wantsStructured)
                         if let summary = Self.sanitizedSummary(raw) {
                             self.meetingNotes.appendSummary(summary, to: fileURL)
                         } else {
@@ -760,6 +782,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     } catch {
                         Log.meeting.error("❌ Summary failed: \(error.localizedDescription)")
                         self.reportError("Meeting summary failed: \(error.localizedDescription)")
+                    }
+                }
+
+                // Topic chapters: a timestamped jump-list segmenting the meeting.
+                if wantsChapters {
+                    do {
+                        let chapters = try await self.textPolisher.chapters(transcript: transcript)
+                        if !chapters.isEmpty { self.meetingNotes.appendChapters(chapters, to: fileURL) }
+                    } catch {
+                        Log.meeting.error("❌ Chapters failed: \(error.localizedDescription)")
                     }
                 }
 
@@ -1108,6 +1140,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             meetingAgenda = Self.parseAgenda(accessory.agendaField.stringValue)
             meetingLiveBrief = accessory.liveBrief.isEnabled ? (accessory.liveBrief.state == .on) : false
             meetingCatalogTarget = resolveCatalogTarget(accessory.catalog.selectedItem?.representedObject as? String)
+            // Prep card: surface recent context for the chosen org/opp before
+            // recording starts — unless switched off for this meeting.
+            if let target = meetingCatalogTarget, accessory.prepCard.state == .on {
+                showMeetingPrepCard(for: target)
+            }
             // Hold the prompt flag through the async start so a queued ⌃⌥M
             // can't open a spurious second dialog before isMeetingMode flips.
             Task { @MainActor in
@@ -1156,6 +1193,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (parts[0], parts[1])
     }
 
+    /// Meeting prep card: a quick, non-editable recap of recent context for the
+    /// org/opportunity chosen in the Start dialog, shown just before recording.
+    /// Reuses the catalog's relationship timeline (recent notes). Skipped when
+    /// there's no prior history to show.
+    private func showMeetingPrepCard(for target: (kind: String, id: String)) {
+        let prep: (name: String, notes: [CatalogNote])? = MainActor.assumeIsolated {
+            let store = CatalogStore.shared
+            let name: String
+            let notes: [CatalogNote]
+            if target.kind == "opp", let o = store.opportunity(target.id) {
+                name = o.name; notes = store.notes(forOpportunity: o)
+            } else if target.kind == "org", let o = store.org(target.id) {
+                name = store.orgPath(of: o.id); notes = store.notes(forOrg: o.id, includingDescendants: true)
+            } else { return nil }
+            let recent = Array(notes.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }.prefix(3))
+            return recent.isEmpty ? nil : (name, recent)
+        }
+        guard let prep else { return }   // nothing to prep from — don't interrupt
+        // Non-modal so you can open and read a note while the meeting records.
+        MeetingPrepWindowController.present(entityName: prep.name, notes: prep.notes)
+    }
+
     /// Present the Quick Add sheet modally and return the created opportunity's
     /// id (nil if cancelled or no opportunity was named).
     private func runQuickAddForOpportunity() -> String? {
@@ -1196,6 +1255,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let picker = NSPopUpButton(frame: .zero, pullsDown: false)
         let agendaField = NSTextField(frame: .zero)
         let liveBrief = NSSwitch(frame: .zero)
+        let prepCard = NSSwitch(frame: .zero)
+        let prepLabel = NSTextField(labelWithString: "Show prep card")
+
+        /// The prep card only makes sense with a catalog link — enable the
+        /// switch (and un-dim its label) only when an org/opportunity is chosen.
+        @objc func catalogChanged() {
+            let repr = catalog.selectedItem?.representedObject as? String ?? ""
+            let linked = !repr.isEmpty && repr != "__sep__"
+            prepCard.isEnabled = linked
+            prepLabel.textColor = linked ? .labelColor : .tertiaryLabelColor
+        }
     }
 
     /// The catalog entity to link the resulting note to (chosen at start).
@@ -1211,11 +1281,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // and groups are separated by `groupGap`. Everything is laid out top-down
         // with a cursor so the spacing stays even and easy to retune.
         let capH: CGFloat = 15, popH: CGFloat = 26, fieldH: CGFloat = 44, rowH: CGFloat = 22
-        let capGap: CGFloat = 3, groupGap: CGFloat = 14
+        let capGap: CGFloat = 3, groupGap: CGFloat = 14, rowGap: CGFloat = 6
         let height = capH + capGap + popH + groupGap
                    + capH + capGap + popH + groupGap
                    + capH + capGap + fieldH + groupGap
-                   + rowH
+                   + rowH + rowGap + rowH
         let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: height))
 
         // Distance consumed from the top edge; `place` reserves the next element
@@ -1244,6 +1314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             catalog.addItem(withTitle: opt.title)
             catalog.lastItem?.representedObject = opt.repr
         }
+        catalog.target = container
+        catalog.action = #selector(StartAccessory.catalogChanged)
         container.addSubview(catalog)
         top += groupGap
 
@@ -1305,6 +1377,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         liveLabel.toolTip = tip
         container.addSubview(liveLabel)
         container.addSubview(live)
+
+        // Prep card (below live brief) — show recent notes for the linked
+        // org/opp when this meeting starts. On by default; only ever appears
+        // when a link is chosen and it has prior notes.
+        top += rowGap
+        let prepRowY = place(rowH)
+        let prep = container.prepCard
+        prep.controlSize = .mini
+        prep.sizeToFit()
+        prep.frame = NSRect(x: width - prep.frame.width,
+                            y: prepRowY + (rowH - prep.frame.height) / 2,
+                            width: prep.frame.width, height: prep.frame.height)
+        prep.state = AppSettings.shared.meetingPrepCard ? .on : .off
+        let prepLabel = container.prepLabel
+        prepLabel.frame = NSRect(x: 0, y: prepRowY + (rowH - 16) / 2,
+                                 width: width - prep.frame.width - 8, height: 16)
+        prepLabel.font = .systemFont(ofSize: 12)
+        let prepTip = "When linked to an org/opportunity, pops a panel of its recent notes as the meeting starts. Applies to this meeting only."
+        prep.toolTip = prepTip
+        prepLabel.toolTip = prepTip
+        container.addSubview(prepLabel)
+        container.addSubview(prep)
+
+        // Set the prep switch's initial enabled state from the default link.
+        container.catalogChanged()
 
         return container
     }
@@ -1510,6 +1607,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // before clearing it for the next meeting.
         let agendaForNotes = meetingAgenda
         meetingAgenda = []
+        // Snapshot the catalog target NOW, before the async finalize below.
+        // It's a shared field; a meeting started during the ~20s finalize wait
+        // would otherwise overwrite it, mislinking this note (or dropping the
+        // link entirely). Clearing it here also prevents leaking into the next.
+        let catalogTargetForNotes = meetingCatalogTarget
+        meetingCatalogTarget = nil
 
         micCapture.stop()
         systemAudioCapture.stop()
@@ -1545,7 +1648,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 await self.waitForPendingTranscriptions(timeout: 20)
                 await self.finalRetryPass()
                 self.meetingNotes.endSession(startedAt: start)
-                self.finalizeMeetingNotes(startedAt: start, agenda: agendaForNotes)
+                self.finalizeMeetingNotes(startedAt: start, agenda: agendaForNotes,
+                                          catalogTarget: catalogTargetForNotes)
             }
         }
 

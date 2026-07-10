@@ -82,9 +82,10 @@ final class TextPolisher {
     func summarize(transcript: String,
                    template: SummaryTemplate = .builtIn(.general),
                    includeSummary: Bool = true,
-                   includeActionItems: Bool = true) async throws -> String {
+                   includeActionItems: Bool = true,
+                   includeStructured: Bool = false) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
-        guard includeSummary || includeActionItems else { throw GroqError.invalidResponse }
+        guard includeSummary || includeActionItems || includeStructured else { throw GroqError.invalidResponse }
 
         // Keep well under context limits — a long meeting can exceed them.
         let clipped = String(transcript.suffix(24_000))
@@ -92,6 +93,17 @@ final class TextPolisher {
         var sections: [String] = []
         if includeSummary {
             sections.append(contentsOf: template.summarySections)
+        }
+        if includeStructured {
+            sections.append("""
+            A section with the exact heading "## Decisions" listing, as Markdown bullets, the concrete decisions the meeting reached. Body "_None_" if none.
+            """)
+            sections.append("""
+            A section with the exact heading "## Risks & Blockers" listing, as Markdown bullets, risks, blockers, or concerns raised. Body "_None_" if none.
+            """)
+            sections.append("""
+            A section with the exact heading "## Open Questions" listing, as Markdown bullets, questions left unresolved. Body "_None_" if none.
+            """)
         }
         if includeActionItems {
             sections.append("""
@@ -125,8 +137,10 @@ final class TextPolisher {
         request.httpBody = try JSONEncoder().encode(requestBody)
 
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw GroqError.invalidResponse
+        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+        guard http.statusCode == 200 else {
+            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
         recordUsage(result)
@@ -134,6 +148,77 @@ final class TextPolisher {
             throw GroqError.invalidResponse
         }
         return content
+    }
+
+    /// Segment a transcript into a handful of topical chapters, each anchored to
+    /// a timestamp that appears in the transcript (lines start with `**[HH:MM:SS]**`).
+    /// Returns Markdown bullet lines, or "" when there's too little to segment.
+    func chapters(transcript: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(transcript.suffix(24_000))
+
+        let requestBody = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                You split a meeting transcript into 3–8 topical chapters. Every transcript line begins with a wall-clock timestamp like **[14:03:12]**. Output ONLY a Markdown bullet list, one chapter per line, formatted exactly:
+                - [HH:MM:SS] Chapter title
+                Use a timestamp that actually appears in the transcript, at the point each topic begins; the first chapter should use the earliest timestamp. Titles are 2–6 words, no trailing punctuation. Do not invent content. If the meeting is too short or covers a single topic, output exactly NONE and nothing else.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.2,
+            max_tokens: 400
+        )
+
+        let content = try await send(requestBody, timeout: 30)
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed == "NONE" ? "" : trimmed
+    }
+
+    /// A quick, plain-language recap of an arbitrary note so the reader knows
+    /// what's in it — a short prose summary, not tied to any meeting template.
+    func quickSummary(text: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(text.suffix(24_000))
+        let requestBody = ChatRequest(
+            model: model,   // polishing model for summary quality
+            messages: [
+                .init(role: "system", content: """
+                Summarize a note so the reader knows what's in it. Output 5–10 concise Markdown bullet points (each starting with "- ") covering the main topics, any decisions, and any action items. Be factual — never invent content. Output only the bullet list, with no heading, preamble, or closing line.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.3,
+            max_tokens: 600
+        )
+        return try await send(requestBody, timeout: 30)
+    }
+
+    /// Summarize ONE meeting note into the digest template *body* (no title —
+    /// the caller prepends the exact note title). Called once per meeting so
+    /// each block stays separate rather than blended into one.
+    func meetingDigest(text: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(text.suffix(16_000))
+        let requestBody = ChatRequest(
+            model: model,   // polishing model — 70B TPD cap resets daily; 8B's 8k TPM chokes on the burst of per-note calls
+            messages: [
+                .init(role: "system", content: """
+                Summarize ONE meeting note into EXACTLY this template, with NO blank lines and every bullet starting with "- ":
+                - 2–4 summary bullets (key points and decisions)
+                Next Steps
+                - top 2–3 upcoming steps (use "- None" if there are none)
+                Action Items
+                - top 2–3 open action items, with " — @owner" and "(due: …)" only when stated (use "- None" if there are none)
+                Do NOT output any title or heading. Keep the literal labels "Next Steps" and "Action Items" on their own lines (no bullet, no colon). Draw only from this note — never invent. Output only the template, nothing else.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.3,
+            max_tokens: 500
+        )
+        return try await send(requestBody, timeout: 40).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Meeting Q&A
@@ -165,8 +250,10 @@ final class TextPolisher {
         request.httpBody = try JSONEncoder().encode(requestBody)
 
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw GroqError.invalidResponse
+        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+        guard http.statusCode == 200 else {
+            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
         recordUsage(result)
@@ -208,8 +295,10 @@ final class TextPolisher {
         request.httpBody = try JSONEncoder().encode(requestBody)
 
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw GroqError.invalidResponse
+        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+        guard http.statusCode == 200 else {
+            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
         recordUsage(result)
@@ -468,8 +557,10 @@ final class TextPolisher {
         request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw GroqError.invalidResponse
+        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+        guard http.statusCode == 200 else {
+            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
         recordUsage(result)

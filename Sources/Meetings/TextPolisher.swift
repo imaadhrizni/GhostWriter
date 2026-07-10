@@ -21,6 +21,12 @@ final class TextPolisher {
     /// tagging, query expansion, agenda coverage) — keeps latency and cost low.
     private var fastModel: String { AppSettings.shared.fastModel }
 
+    // Prompt versions for the AICache. Bump the matching one whenever a cached
+    // method's system prompt changes, so stale cached outputs miss and refresh.
+    private static let digestPromptVersion = 1
+    private static let summaryPromptVersion = 1
+    private static let followUpPromptVersion = 1
+
     // MARK: - Polishing
 
     /// Polish the raw transcription text based on the active app context.
@@ -181,6 +187,9 @@ final class TextPolisher {
     func quickSummary(text: String) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         let clipped = String(text.suffix(24_000))
+        if let cached = AICache.shared.value(.summary, source: clipped, model: model, version: Self.summaryPromptVersion) {
+            return cached
+        }
         let requestBody = ChatRequest(
             model: model,   // polishing model for summary quality
             messages: [
@@ -192,7 +201,9 @@ final class TextPolisher {
             temperature: 0.3,
             max_tokens: 600
         )
-        return try await send(requestBody, timeout: 30)
+        let result = try await send(requestBody, timeout: 30)
+        AICache.shared.store(result, kind: .summary, source: clipped, model: model, version: Self.summaryPromptVersion)
+        return result
     }
 
     /// Summarize ONE meeting note into the digest template *body* (no title —
@@ -201,6 +212,9 @@ final class TextPolisher {
     func meetingDigest(text: String) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         let clipped = String(text.suffix(16_000))
+        if let cached = AICache.shared.value(.digest, source: clipped, model: model, version: Self.digestPromptVersion) {
+            return cached
+        }
         let requestBody = ChatRequest(
             model: model,   // polishing model — 70B TPD cap resets daily; 8B's 8k TPM chokes on the burst of per-note calls
             messages: [
@@ -218,7 +232,9 @@ final class TextPolisher {
             temperature: 0.3,
             max_tokens: 500
         )
-        return try await send(requestBody, timeout: 40).trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = try await send(requestBody, timeout: 40).trimmingCharacters(in: .whitespacesAndNewlines)
+        AICache.shared.store(result, kind: .digest, source: clipped, model: model, version: Self.digestPromptVersion)
+        return result
     }
 
     // MARK: - Meeting Q&A
@@ -450,6 +466,11 @@ final class TextPolisher {
     func draftFollowUp(transcript: String, template: SummaryTemplate = .builtIn(.general)) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         let clipped = String(transcript.suffix(24_000))
+        // Output depends on the template's guidance too, so it's part of the key.
+        let cacheSource = template.followUpGuidance + "\u{0}" + clipped
+        if let cached = AICache.shared.value(.followUp, source: cacheSource, model: model, version: Self.followUpPromptVersion) {
+            return cached
+        }
         let body = ChatRequest(
             model: model,
             messages: [
@@ -469,7 +490,9 @@ final class TextPolisher {
             temperature: 0.3,
             max_tokens: 800
         )
-        return try await send(body, timeout: 30)
+        let result = try await send(body, timeout: 30)
+        AICache.shared.store(result, kind: .followUp, source: cacheSource, model: model, version: Self.followUpPromptVersion)
+        return result
     }
 
     /// Topic tags plus the named entities (people, customer, project) a meeting

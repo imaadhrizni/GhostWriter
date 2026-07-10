@@ -1313,6 +1313,7 @@ private struct StatsPane: View {
     @ObservedObject private var stats = UsageStats.shared
     @ObservedObject private var settings = AppSettings.shared
     @State private var confirmingReset = false
+    @State private var aiCacheCount = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1373,7 +1374,22 @@ private struct StatsPane: View {
                             Button("Cancel", role: .cancel) {}
                         }
                 }
+                Divider()
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("AI summary cache")
+                        Text("Reuses generated note summaries, relationship digests, and follow-up drafts to save tokens. Rebuilds automatically. \(aiCacheCount) cached.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Button("Clear Cache") {
+                        AICache.shared.clear()
+                        aiCacheCount = AICache.shared.count
+                    }
+                    .disabled(aiCacheCount == 0)
+                }
             }
+            .onAppear { aiCacheCount = AICache.shared.count }
         }
     }
 }

@@ -628,6 +628,26 @@ private func openNote(_ note: CatalogNote) {
     NotesViewerWindowController.present(fileURL: url)
 }
 
+/// Compact inline search field with a clear button — the catalog's shared
+/// filter control for record lists and the note-assignment pickers.
+struct EntitySearchBar: View {
+    @Binding var text: String
+    var placeholder: String
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(.secondary)
+            TextField(placeholder, text: $text).textFieldStyle(.plain)
+            if !text.isEmpty {
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain).help("Clear search")
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+    }
+}
+
 private struct NoteRow: View {
     let note: CatalogNote
     var body: some View {
@@ -669,8 +689,7 @@ private struct TimelineRow: View {
 private struct RelationshipTimeline: View {
     let notes: [CatalogNote]
     var body: some View {
-        let sorted = notes.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
-        ForEach(sorted) { TimelineRow(note: $0) }
+        ForEach(notes.sortedByDateDescending) { TimelineRow(note: $0) }
     }
 }
 
@@ -689,17 +708,27 @@ private struct EntityList: View {
     @ObservedObject var store: CatalogStore
     let section: CatalogSection
     @Binding var selID: String?
+    @State private var search = ""
+
+    /// Case-insensitive substring match against the live search box.
+    private func matches(_ name: String) -> Bool {
+        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+        return q.isEmpty || name.lowercased().contains(q)
+    }
 
     var body: some View {
-        Group {
-            switch section {
-            case .map:           EmptyView()   // handled by CatalogView
-            case .organisations: orgList
-            case .people:        List(store.doc.people.sortedByName, selection: $selID) { Text($0.name).tag($0.id) }
-            case .projects:      projectList
-            case .opportunities: oppList
-            case .tags:          tagList
-            case .notes:         EmptyView()   // handled by CatalogView
+        VStack(spacing: 0) {
+            EntitySearchBar(text: $search, placeholder: "Filter \(section.rawValue.lowercased())")
+            Divider()
+            Group {
+                switch section {
+                case .map, .notes:   EmptyView()   // handled by CatalogView
+                case .organisations: orgList
+                case .people:        peopleList
+                case .projects:      projectList
+                case .opportunities: oppList
+                case .tags:          tagList
+                }
             }
         }
         .toolbar {
@@ -716,8 +745,12 @@ private struct EntityList: View {
         func rows(_ orgs: [CatalogOrg], _ depth: Int) -> [(CatalogOrg, Int)] {
             orgs.flatMap { [($0, depth)] + rows(store.childOrgs(of: $0.id), depth + 1) }
         }
+        // While filtering, flatten to just the matches (tree indent would be
+        // misleading when parents are hidden).
+        let all = rows(store.rootOrgs, 0)
+        let filtered = search.isEmpty ? all : all.filter { matches($0.0.name) }.map { ($0.0, 0) }
         return List(selection: $selID) {
-            ForEach(rows(store.rootOrgs, 0), id: \.0.id) { org, depth in
+            ForEach(filtered, id: \.0.id) { org, depth in
                 HStack(spacing: 6) {
                     if depth > 0 {
                         Image(systemName: "arrow.turn.down.right").font(.caption2).foregroundStyle(.tertiary)
@@ -732,8 +765,26 @@ private struct EntityList: View {
         }
     }
 
+    private var peopleList: some View {
+        List(store.doc.people.sortedByName.filter { matches($0.name) }, selection: $selID) {
+            Text($0.name).tag($0.id)
+        }
+    }
+
+    /// Projects grouped by their organisation, then by project name.
+    private var sortedProjects: [CatalogProject] {
+        store.doc.projects.sorted { a, b in
+            let oa = store.org(a.orgID).map { store.orgPath(of: $0.id) } ?? "~"
+            let ob = store.org(b.orgID).map { store.orgPath(of: $0.id) } ?? "~"
+            if oa.caseInsensitiveCompare(ob) != .orderedSame {
+                return oa.localizedCaseInsensitiveCompare(ob) == .orderedAscending
+            }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+    }
+
     private var projectList: some View {
-        List(store.doc.projects.sortedByName, selection: $selID) { p in
+        List(sortedProjects.filter { matches($0.name) }, selection: $selID) { p in
             VStack(alignment: .leading, spacing: 2) {
                 Text(p.name).lineLimit(1)
                 Text(store.org(p.orgID).map { store.orgPath(of: $0.id) } ?? "No organisation")
@@ -745,7 +796,7 @@ private struct EntityList: View {
     }
 
     private var oppList: some View {
-        List(store.doc.opportunities.sortedByName, selection: $selID) { o in
+        List(store.doc.opportunities.sortedByName.filter { matches($0.name) }, selection: $selID) { o in
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(o.name).lineLimit(1)
@@ -761,7 +812,7 @@ private struct EntityList: View {
     }
 
     private var tagList: some View {
-        List(store.tagsSorted, selection: $selID) { t in
+        List(store.tagsSorted.filter { matches($0.name) }, selection: $selID) { t in
             HStack {
                 Text(t.name)
                 Spacer()
@@ -1314,8 +1365,15 @@ private struct NoteLinkEditor: View {
     @State private var newToken = ""
     @State private var newTag = ""
     @State private var newPerson = ""
+    @State private var personFilter = ""
+    @State private var tagFilter = ""
 
     private var current: CatalogNote { store.note(id: note.id) ?? note }
+
+    private func filterMatch(_ name: String, _ query: String) -> Bool {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return q.isEmpty || name.lowercased().contains(q)
+    }
 
     private func addTag() {
         let name = newTag.trimmingCharacters(in: .whitespaces)
@@ -1424,9 +1482,13 @@ private struct NoteLinkEditor: View {
                 if store.doc.people.isEmpty {
                     Text("No people yet — add one above.").font(.caption).foregroundStyle(.secondary)
                 } else {
+                    if store.doc.people.count > 6 {
+                        EntitySearchBar(text: $personFilter, placeholder: "Filter people")
+                    }
+                    let people = store.doc.people.sortedByName.filter { filterMatch($0.name, personFilter) }
                     ScrollView {
                         VStack(alignment: .leading, spacing: 4) {
-                            ForEach(store.doc.people.sortedByName) { person in
+                            ForEach(people) { person in
                                 Toggle(person.name, isOn: Binding(
                                     get: { current.personIDs.contains(person.id) },
                                     set: { store.setPerson(person.id, on: note.id, $0) }))
@@ -1443,9 +1505,13 @@ private struct NoteLinkEditor: View {
                     Button(action: addTag) { Image(systemName: "plus") }
                         .disabled(newTag.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                if store.tagsSorted.count > 6 {
+                    EntitySearchBar(text: $tagFilter, placeholder: "Filter tags")
+                }
+                let tags = store.tagsSorted.filter { filterMatch($0.name, tagFilter) }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
-                        ForEach(store.tagsSorted) { tag in
+                        ForEach(tags) { tag in
                             Toggle(tag.name, isOn: Binding(
                                 get: { current.tagIDs.contains(tag.id) },
                                 set: { store.setTag(tag.id, on: note.id, $0) }))
@@ -1721,7 +1787,7 @@ private struct OrgMapNode: View {
             ForEach(store.childOrgs(of: org.id)) { OrgMapNode(store: store, org: $0, exp: exp, onPick: onPick) }
             ForEach(store.projects(forOrg: org.id)) { ProjectMapNode(store: store, project: $0, exp: exp, onPick: onPick) }
             // Internal notes attached directly to this org (no opportunity).
-            ForEach(store.notes(directlyOnOrg: org.id)) { NoteMapNode(store: store, note: $0, exp: exp, onPick: onPick) }
+            ForEach(store.notes(directlyOnOrg: org.id).sortedByDateDescending) { NoteMapNode(store: store, note: $0, exp: exp, onPick: onPick) }
         } label: {
             MapRow(icon: "building.2", tint: .blue, title: org.name,
                    trailing: AnyView(RelationshipBadge(org.relationship))) { onPick(.organisations, org.id) }
@@ -1752,7 +1818,7 @@ private struct OppMapNode: View {
     let onPick: MapPick
     var body: some View {
         DisclosureGroup(isExpanded: exp.binding(opp.id)) {
-            let notes = store.notes(forOpportunity: opp)
+            let notes = store.notes(forOpportunity: opp).sortedByDateDescending
             if notes.isEmpty { Text("No notes").font(.caption2).foregroundStyle(.secondary) }
             ForEach(notes) { NoteMapNode(store: store, note: $0, exp: exp, onPick: onPick) }
         } label: {

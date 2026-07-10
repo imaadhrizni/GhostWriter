@@ -124,6 +124,13 @@ extension Sequence where Element: Named {
     }
 }
 
+extension Sequence where Element == CatalogNote {
+    /// Newest first — undated notes sort last.
+    var sortedByDateDescending: [CatalogNote] {
+        sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+    }
+}
+
 // MARK: Document
 
 /// The whole catalog, serialised as one JSON file.

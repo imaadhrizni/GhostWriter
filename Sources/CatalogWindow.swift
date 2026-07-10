@@ -97,9 +97,10 @@ private struct CatalogView: View {
     @State private var fOpp = ""
     @State private var fTag = ""
     @State private var fPerson = ""
+    @State private var fUnassigned = false
     @State private var scope: NoteSearchScope = .text
     @State private var askNonce = 0
-    private var anyFilter: Bool { !(fOrg.isEmpty && fProject.isEmpty && fOpp.isEmpty && fTag.isEmpty && fPerson.isEmpty) }
+    private var anyFilter: Bool { !(fOrg.isEmpty && fProject.isEmpty && fOpp.isEmpty && fTag.isEmpty && fPerson.isEmpty) || fUnassigned }
     private var canAsk: Bool { !AppSettings.shared.localOnlyMode && KeychainService.groqAPIKey() != nil }
 
     /// Notes matching the active facet filters (ignoring the query — in Ask mode
@@ -114,6 +115,7 @@ private struct CatalogView: View {
                 guard let p = store.person(fPerson) else { return false }
                 return !store.effectiveOrgIDs(of: n).isDisjoint(with: Set(p.orgIDs))
             }())
+            && (!fUnassigned || store.isUnassigned(n))
         }.map { NotesLibrary.MeetingFile(url: store.url(of: $0)) }
     }
     private var filterSummary: String {
@@ -195,7 +197,8 @@ private struct CatalogView: View {
                                 files: askFiles, filterSummary: filterSummary) { selID = $0 }
                 } else {
                     NotesList(store: store, selID: $selID, query: query, scope: scope,
-                              fOrg: fOrg, fProject: fProject, fOpp: fOpp, fTag: fTag, fPerson: fPerson)
+                              fOrg: fOrg, fProject: fProject, fOpp: fOpp, fTag: fTag, fPerson: fPerson,
+                              unassignedOnly: fUnassigned)
                 }
             }
                 .searchable(text: $query, placement: .toolbar,
@@ -208,7 +211,8 @@ private struct CatalogView: View {
                         facet("Opp", "chart.line.uptrend.xyaxis", $fOpp, store.doc.opportunities.sortedByName.map { ($0.id, $0.name) })
                         facet("Person", "person", $fPerson, store.doc.people.sortedByName.map { ($0.id, $0.name) })
                         facet("Tag", "tag", $fTag, store.tagsSorted.map { ($0.id, $0.name) })
-                        Button { fOrg = ""; fProject = ""; fOpp = ""; fTag = ""; fPerson = "" } label: {
+                        unassignedToggle
+                        Button { fOrg = ""; fProject = ""; fOpp = ""; fTag = ""; fPerson = ""; fUnassigned = false } label: {
                             Label("Reset", systemImage: "arrow.counterclockwise")
                         }
                         .disabled(!anyFilter)
@@ -228,6 +232,20 @@ private struct CatalogView: View {
                 }
         } else {
             EntityList(store: store, section: section, selID: $selID)
+        }
+    }
+
+    /// One-tap filter for notes that aren't linked to any opportunity or org —
+    /// the ones needing triage. Labels itself with the outstanding count so the
+    /// backlog is visible at a glance, and disappears once everything's linked.
+    @ViewBuilder private var unassignedToggle: some View {
+        let n = store.unassignedNotes.count
+        if n > 0 || fUnassigned {
+            Button { fUnassigned.toggle() } label: {
+                Label(fUnassigned ? "Unassigned" : "Unassigned (\(n))",
+                      systemImage: fUnassigned ? "tray.full.fill" : "tray")
+            }
+            .help("Show only notes not yet linked to an opportunity or organisation")
         }
     }
 
@@ -912,6 +930,7 @@ private struct NotesList: View {
     let query: String
     let scope: NoteSearchScope
     let fOrg: String, fProject: String, fOpp: String, fTag: String, fPerson: String
+    var unassignedOnly: Bool = false
     @State private var semanticOrder: [String] = []
 
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
@@ -926,6 +945,7 @@ private struct NotesList: View {
             let orgs = Set(p.orgIDs)
             ns = ns.filter { !store.effectiveOrgIDs(of: $0).isDisjoint(with: orgs) }
         }
+        if unassignedOnly { ns = ns.filter(store.isUnassigned) }
         return ns
     }
 
@@ -952,7 +972,16 @@ private struct NotesList: View {
             } else {
                 List(filtered, selection: $selID) { n in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(n.title).lineLimit(1)
+                        HStack(spacing: 6) {
+                            Text(n.title).lineLimit(1)
+                            if store.isUnassigned(n) {
+                                Text("Unassigned")
+                                    .font(.caption2.weight(.medium))
+                                    .padding(.horizontal, 5).padding(.vertical, 1)
+                                    .background(Capsule().fill(Color.orange.opacity(0.18)))
+                                    .foregroundStyle(.orange)
+                            }
+                        }
                         HStack(spacing: 6) {
                             if let d = n.date { Text(d, style: .date) }
                             if !n.tagIDs.isEmpty { Text("· \(n.tagIDs.count) tags") }
@@ -1354,12 +1383,31 @@ private struct PromoteMenu: View {
 
 private typealias MapPick = (CatalogSection, String) -> Void
 
+/// Shared, controlled expansion state for the map tree, so Expand/Collapse All
+/// and search can drive every node from one place (uncontrolled
+/// DisclosureGroups can't be opened programmatically).
+final class MapExpansion: ObservableObject {
+    @Published var open: Set<String> = []
+    func binding(_ id: String) -> Binding<Bool> {
+        Binding(get: { self.open.contains(id) },
+                set: { if $0 { self.open.insert(id) } else { self.open.remove(id) } })
+    }
+}
+
 private struct MapTree: View {
     @ObservedObject var store: CatalogStore
     let onPick: MapPick
     @State private var search = ""
+    @StateObject private var exp = MapExpansion()
 
     private var q: String { search.trimmingCharacters(in: .whitespaces).lowercased() }
+
+    /// Every container node's id — used to expand the whole tree at once.
+    private var allNodeIDs: Set<String> {
+        Set(store.doc.orgs.map(\.id))
+            .union(store.doc.projects.map(\.id))
+            .union(store.doc.opportunities.map(\.id))
+    }
 
     /// An org matches if its own name — or any descendant org's name — contains
     /// the query, so nested orgs stay findable and the tree structure is kept.
@@ -1385,6 +1433,15 @@ private struct MapTree: View {
                     Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain).foregroundStyle(.tertiary)
                 }
+                Divider().frame(height: 14)
+                Button { exp.open = allNodeIDs } label: { Image(systemName: "chevron.down.square") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help("Expand all")
+                    .disabled(exp.open.count == allNodeIDs.count)
+                Button { exp.open = [] } label: { Image(systemName: "chevron.right.square") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help("Collapse all")
+                    .disabled(exp.open.isEmpty)
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             Divider()
@@ -1393,14 +1450,17 @@ private struct MapTree: View {
                     Text("Nothing to map yet — add organisations, or import notes.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                ForEach(rootOrgs) { OrgMapNode(store: store, org: $0, onPick: onPick) }
+                ForEach(rootOrgs) { OrgMapNode(store: store, org: $0, exp: exp, onPick: onPick) }
                 if !orphanProjects.isEmpty {
                     Section("No organisation") {
-                        ForEach(orphanProjects) { ProjectMapNode(store: store, project: $0, onPick: onPick) }
+                        ForEach(orphanProjects) { ProjectMapNode(store: store, project: $0, exp: exp, onPick: onPick) }
                     }
                 }
             }
         }
+        // While filtering, open everything so matches deep in the tree are shown;
+        // restore to a collapsed tree when the filter is cleared.
+        .onChange(of: q) { _, new in exp.open = new.isEmpty ? [] : allNodeIDs }
     }
 }
 
@@ -1428,11 +1488,12 @@ private struct MapRow: View {
 private struct OrgMapNode: View {
     @ObservedObject var store: CatalogStore
     let org: CatalogOrg
+    @ObservedObject var exp: MapExpansion
     let onPick: MapPick
     var body: some View {
-        DisclosureGroup {
-            ForEach(store.childOrgs(of: org.id)) { OrgMapNode(store: store, org: $0, onPick: onPick) }
-            ForEach(store.projects(forOrg: org.id)) { ProjectMapNode(store: store, project: $0, onPick: onPick) }
+        DisclosureGroup(isExpanded: exp.binding(org.id)) {
+            ForEach(store.childOrgs(of: org.id)) { OrgMapNode(store: store, org: $0, exp: exp, onPick: onPick) }
+            ForEach(store.projects(forOrg: org.id)) { ProjectMapNode(store: store, project: $0, exp: exp, onPick: onPick) }
             ForEach(store.people(forOrg: org.id)) { p in
                 MapRow(icon: "person", tint: .teal, title: p.name) { onPick(.people, p.id) }
             }
@@ -1450,12 +1511,13 @@ private struct OrgMapNode: View {
 private struct ProjectMapNode: View {
     @ObservedObject var store: CatalogStore
     let project: CatalogProject
+    @ObservedObject var exp: MapExpansion
     let onPick: MapPick
     var body: some View {
-        DisclosureGroup {
+        DisclosureGroup(isExpanded: exp.binding(project.id)) {
             let opps = store.opportunities(forProject: project.id)
             if opps.isEmpty { Text("No opportunities").font(.caption2).foregroundStyle(.secondary) }
-            ForEach(opps) { OppMapNode(store: store, opp: $0, onPick: onPick) }
+            ForEach(opps) { OppMapNode(store: store, opp: $0, exp: exp, onPick: onPick) }
         } label: {
             MapRow(icon: "folder", tint: .orange, title: project.name) { onPick(.projects, project.id) }
         }
@@ -1465,9 +1527,10 @@ private struct ProjectMapNode: View {
 private struct OppMapNode: View {
     @ObservedObject var store: CatalogStore
     let opp: CatalogOpportunity
+    @ObservedObject var exp: MapExpansion
     let onPick: MapPick
     var body: some View {
-        DisclosureGroup {
+        DisclosureGroup(isExpanded: exp.binding(opp.id)) {
             let notes = store.notes(forOpportunity: opp)
             if notes.isEmpty { Text("No notes").font(.caption2).foregroundStyle(.secondary) }
             ForEach(notes) { n in

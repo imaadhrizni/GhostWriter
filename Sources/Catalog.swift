@@ -226,6 +226,14 @@ final class CatalogStore: ObservableObject {
         let orgs = effectiveOrgIDs(of: note)
         return doc.people.filter { !Set($0.orgIDs).isDisjoint(with: orgs) }
     }
+    /// A note with no link at all — not on any opportunity and not directly on
+    /// any org, so it doesn't surface anywhere in the map. These are the ones
+    /// worth triaging into an opportunity or an org.
+    func isUnassigned(_ note: CatalogNote) -> Bool {
+        note.opportunityIDs.isEmpty && effectiveOrgIDs(of: note).isEmpty
+    }
+    var unassignedNotes: [CatalogNote] { doc.notes.filter(isUnassigned) }
+
     /// Notes assigned to an opportunity.
     func notes(forOpportunity o: CatalogOpportunity) -> [CatalogNote] {
         doc.notes.filter { $0.opportunityIDs.contains(o.id) }

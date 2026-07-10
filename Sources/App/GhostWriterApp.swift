@@ -171,22 +171,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         finishInitialization()
     }
 
-    private var notesAssistantWindowController: NotesAssistantWindowController?
-
-    @objc private func showNotesAssistant() {
-        if notesAssistantWindowController == nil {
-            notesAssistantWindowController = NotesAssistantWindowController()
-        }
-        notesAssistantWindowController?.showAndActivate()
-    }
-
-    /// Open the Notes Assistant straight to its "All Notes" browser.
-    @objc private func showAllNotes() {
-        if notesAssistantWindowController == nil {
-            notesAssistantWindowController = NotesAssistantWindowController()
-        }
-        notesAssistantWindowController?.showAllNotes()
-    }
 
     private var dictationsWindowController: DictationsWindowController?
 
@@ -196,6 +180,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             dictationsWindowController = DictationsWindowController()
         }
         dictationsWindowController?.showAndActivate()
+    }
+
+    private var catalogWindowController: CatalogWindowController?
+
+    /// Open the Catalog — organisations, people, projects, tags over the notes.
+    @objc private func showCatalog() {
+        if catalogWindowController == nil {
+            catalogWindowController = CatalogWindowController()
+        }
+        catalogWindowController?.showAndActivate()
     }
 
     @objc private func showSettingsWindow() {
@@ -256,6 +250,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        // Find — drives the built-in NSTextView find bar in the notes viewer
+        // (⌘F opens it, ⌘G / ⇧⌘G step matches). Items dispatch to the first
+        // responder via performTextFinderAction: with the standard action tags.
+        editMenu.addItem(.separator())
+        let findSubmenu = NSMenu(title: "Find")
+        let findItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
+        findItem.submenu = findSubmenu
+        func addFind(_ title: String, _ key: String, _ mods: NSEvent.ModifierFlags,
+                     _ action: NSTextFinder.Action) {
+            let item = NSMenuItem(title: title, action: #selector(NSTextView.performTextFinderAction(_:)), keyEquivalent: key)
+            item.keyEquivalentModifierMask = mods
+            item.tag = action.rawValue
+            findSubmenu.addItem(item)
+        }
+        addFind("Find…", "f", .command, .showFindInterface)
+        addFind("Find Next", "g", .command, .nextMatch)
+        addFind("Find Previous", "g", [.command, .shift], .previousMatch)
+        addFind("Use Selection for Find", "e", .command, .setSearchString)
+        editMenu.addItem(findItem)
         editItem.submenu = editMenu
 
         NSApp.mainMenu = mainMenu
@@ -329,17 +343,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // ── Notes & history ─────────────────────────────────────
         // Notes submenu — current notes, quick notes, recent meetings, folder —
         // rebuilt on open via menuNeedsUpdate
-        let meetingNotesItem = NSMenuItem(title: "Notes", action: nil, keyEquivalent: "")
+        let meetingNotesItem = NSMenuItem(title: "Notes & History", action: nil, keyEquivalent: "")
         meetingNotesItem.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)
-        let meetingNotesMenu = NSMenu(title: "Notes")
+        let meetingNotesMenu = NSMenu(title: "Notes & History")
         meetingNotesMenu.delegate = self
         meetingNotesItem.submenu = meetingNotesMenu
         menu.addItem(meetingNotesItem)
 
-        let assistantItem = NSMenuItem(title: "Notes Assistant…", action: #selector(showNotesAssistant), keyEquivalent: "")
-        assistantItem.image = NSImage(systemSymbolName: "sparkle.magnifyingglass", accessibilityDescription: nil)
-        assistantItem.target = self
-        menu.addItem(assistantItem)
+        // Catalog is the primary organiser — it sits directly under Notes,
+        // above the raw dictation archive.
+        let catalogItem = NSMenuItem(title: "Catalog…", action: #selector(showCatalog), keyEquivalent: "")
+        catalogItem.image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: nil)
+        catalogItem.target = self
+        menu.addItem(catalogItem)
 
         let dictationsItem = NSMenuItem(title: "Dictations…", action: #selector(showDictations), keyEquivalent: "")
         dictationsItem.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)
@@ -678,19 +694,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// meetings. Local-only mode goes straight to on-device recognition; other-
     /// wise Groq first, falling back on-device when the network is down. The
     /// result is passed through optional redaction before anyone sees it.
-    private func transcribeWithFallback(_ audioData: Data, context: String = "", glossaryTerms: [String] = []) async throws -> String {
+    private func transcribeWithFallback(_ audioData: Data, context: String = "") async throws -> String {
         let text: String
         if settings.localOnlyMode {
-            text = try await offlineTranscriber.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
+            text = try await offlineTranscriber.transcribe(audioData: audioData, context: context)
         } else {
             do {
-                text = try await groqService.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
+                text = try await groqService.transcribe(audioData: audioData, context: context)
             } catch {
                 // Fall back on ANY Groq failure — network down, 5xx, rate
                 // limit, bad response — not just connectivity errors.
                 guard settings.offlineFallback else { throw error }
                 Log.api.warning("⚠️ Groq transcription failed (\(error.localizedDescription)) — falling back to on-device recognition")
-                text = try await offlineTranscriber.transcribe(audioData: audioData, context: context, glossaryTerms: glossaryTerms)
+                text = try await offlineTranscriber.transcribe(audioData: audioData, context: context)
             }
         }
         return Redactor.redact(text)
@@ -706,6 +722,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task { [weak self] in
             guard let self else { return }
 
+            // Link the note into the Catalog under the opportunity/org chosen at
+            // start (if any), creating its catalog row from the file path.
+            await MainActor.run {
+                guard let target = self.meetingCatalogTarget else { return }
+                self.meetingCatalogTarget = nil
+                let store = CatalogStore.shared
+                let root = AppSettings.shared.notesFolder.path + "/"
+                let rel = fileURL.path.replacingOccurrences(of: root, with: "")
+                let note = store.note(forRelativePath: rel,
+                                      title: fileURL.deletingPathExtension().lastPathComponent,
+                                      date: start)
+                if target.kind == "opp" { store.setOpportunity(target.id, on: note.id, true) }
+                else if target.kind == "org" { store.setOrg(target.id, on: note.id, true) }
+            }
+
             let wantsSummary = self.settings.summariesEnabled
             let wantsActions = self.settings.actionItemsEnabled
             // Local-only mode never contacts the network — no LLM summary/tags.
@@ -720,8 +751,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             transcript: transcript,
                             template: self.settings.selectedTemplate,
                             includeSummary: wantsSummary,
-                            includeActionItems: wantsActions,
-                            glossary: self.meetingNotes.seedGlossary)
+                            includeActionItems: wantsActions)
                         if let summary = Self.sanitizedSummary(raw) {
                             self.meetingNotes.appendSummary(summary, to: fileURL)
                         } else {
@@ -1044,6 +1074,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// live coverage checklist and the end-of-meeting "did we cover it?" check.
     private var meetingAgenda: [String] = []
 
+    /// Whether to show the live brief for the current meeting. Set from the
+    /// start dialog's checkbox (defaults to the global setting); auto-started
+    /// meetings with no dialog fall back to `nil` → the global setting.
+    private var meetingLiveBrief: Bool?
+
     /// The single start-meeting dialog: template picker + confirm/decline.
     /// Both the manual (⌃⌥M / menu) and auto-detect paths run through here so
     /// they can't drift apart.
@@ -1060,25 +1095,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: declineTitle)
         alert.alertStyle = .informational
 
-        // Inline pickers: the project (scopes the glossary so unrelated
-        // projects can't contaminate it), the template (shapes the summary),
-        // and an optional agenda (drives the end-of-meeting coverage check).
+        // Inline controls: a catalog link (opportunity/org to file the note
+        // under), the template (shapes the summary), an optional agenda, and the
+        // per-meeting live-brief switch.
         let accessory = Self.makeStartAccessory(selectedID: settings.selectedTemplateID,
-                                                lastProjectID: settings.lastProjectID)
+                                                catalogOptions: Self.catalogLinkOptions())
         alert.accessoryView = accessory
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
             applyTemplateSelection(from: accessory.picker)
             meetingAgenda = Self.parseAgenda(accessory.agendaField.stringValue)
-            var projectID = accessory.project.selectedItem?.representedObject as? String
-            if projectID == Self.newProjectSentinel { projectID = promptNewProject() }
-            let resolved = (projectID?.isEmpty ?? true) ? nil : projectID
-            settings.lastProjectID = resolved ?? ""
+            meetingLiveBrief = accessory.liveBrief.isEnabled ? (accessory.liveBrief.state == .on) : false
+            meetingCatalogTarget = resolveCatalogTarget(accessory.catalog.selectedItem?.representedObject as? String)
             // Hold the prompt flag through the async start so a queued ⌃⌥M
             // can't open a spurious second dialog before isMeetingMode flips.
             Task { @MainActor in
-                await startMeetingMode(projectID: resolved)
+                await startMeetingMode()
                 meetingStartPromptActive = false
             }
         } else {
@@ -1087,44 +1120,137 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Sentinel `representedObject` for the "New Project…" item in the picker.
-    private static let newProjectSentinel = "__new_project__"
+    /// Build the start-dialog catalog picker options: opportunities, orgs, and
+    /// two quick-add entries. Runs on the main actor (CatalogStore is isolated).
+    private static func catalogLinkOptions() -> [(title: String, repr: String)] {
+        MainActor.assumeIsolated {
+            let store = CatalogStore.shared
+            var opts: [(String, String)] = [("No link", "")]
+            let opps = store.doc.opportunities.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            let orgs = store.orgsSorted
+            if !opps.isEmpty { opts.append(("__sep__", "__sep__")) }
+            for o in opps { opts.append(("◆ \(o.name)", "opp:\(o.id)")) }
+            if !orgs.isEmpty { opts.append(("__sep__", "__sep__")) }
+            for o in orgs { opts.append(("🏢 \(store.orgPath(of: o.id))", "org:\(o.id)")) }
+            opts.append(("__sep__", "__sep__"))
+            opts.append(("➕ New Opportunity…", "new:opp"))
+            opts.append(("➕ New Organisation…", "new:org"))
+            return opts.map { (title: $0.0, repr: $0.1) }
+        }
+    }
 
-    /// Accessory view for the start dialog: a project popup (scopes the
-    /// glossary), a template popup (shapes the summary), and an optional agenda
-    /// field (drives the end-of-meeting coverage check). Exposes all three.
+    /// Turn the picker's selection into a catalog target, handling the two
+    /// quick-add entries by prompting for a name and creating the entity.
+    private func resolveCatalogTarget(_ repr: String?) -> (kind: String, id: String)? {
+        guard let repr, !repr.isEmpty else { return nil }
+        // A new opportunity gets the full Quick Add (org → project → opp → …).
+        if repr == "new:opp" {
+            return runQuickAddForOpportunity().map { ("opp", $0) }
+        }
+        if repr == "new:org" {
+            guard let name = promptNewCatalogName("New Organisation") else { return nil }
+            return MainActor.assumeIsolated { ("org", CatalogStore.shared.addOrg(name: name).id) }
+        }
+        let parts = repr.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return nil }
+        return (parts[0], parts[1])
+    }
+
+    /// Present the Quick Add sheet modally and return the created opportunity's
+    /// id (nil if cancelled or no opportunity was named).
+    private func runQuickAddForOpportunity() -> String? {
+        MainActor.assumeIsolated {
+            var result: String?
+            let controller = NSHostingController(rootView: QuickAddSheet(store: CatalogStore.shared) { oppID in
+                result = oppID
+                NSApp.stopModal()
+            })
+            let window = NSWindow(contentViewController: controller)
+            window.title = "Quick Add"
+            window.styleMask = [.titled]
+            NSApp.runModal(for: window)
+            window.orderOut(nil)
+            return result
+        }
+    }
+
+    /// Simple name prompt for the quick-add catalog entries.
+    private func promptNewCatalogName(_ title: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = "Name"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+    /// Accessory view for the start dialog: a catalog-link popup, a template
+    /// popup (shapes the summary), an optional agenda field, and a live-brief switch.
     private final class StartAccessory: NSView {
-        let project = NSPopUpButton(frame: .zero, pullsDown: false)
+        let catalog = NSPopUpButton(frame: .zero, pullsDown: false)
         let picker = NSPopUpButton(frame: .zero, pullsDown: false)
         let agendaField = NSTextField(frame: .zero)
+        let liveBrief = NSSwitch(frame: .zero)
     }
+
+    /// The catalog entity to link the resulting note to (chosen at start).
+    /// kind is "opp" or "org".
+    private var meetingCatalogTarget: (kind: String, id: String)?
 
     /// Build the start-dialog accessory. An accessory view without explicit
     /// frames renders but doesn't receive clicks in NSAlert, so everything is
     /// laid out with explicit frames.
-    private static func makeStartAccessory(selectedID: String, lastProjectID: String) -> StartAccessory {
+    private static func makeStartAccessory(selectedID: String, catalogOptions: [(title: String, repr: String)]) -> StartAccessory {
         let width: CGFloat = 300
-        let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: 140))
+        // Consistent vertical rhythm: a caption sits `capGap` above its control,
+        // and groups are separated by `groupGap`. Everything is laid out top-down
+        // with a cursor so the spacing stays even and easy to retune.
+        let capH: CGFloat = 15, popH: CGFloat = 26, fieldH: CGFloat = 44, rowH: CGFloat = 22
+        let capGap: CGFloat = 3, groupGap: CGFloat = 14
+        let height = capH + capGap + popH + groupGap
+                   + capH + capGap + popH + groupGap
+                   + capH + capGap + fieldH + groupGap
+                   + rowH
+        let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: height))
 
-        func label(_ text: String, y: CGFloat) -> NSTextField {
+        // Distance consumed from the top edge; `place` reserves the next element
+        // and returns its bottom-left-origin y.
+        var top: CGFloat = 0
+        func place(_ h: CGFloat) -> CGFloat {
+            let y = height - top - h
+            top += h
+            return y
+        }
+        func caption(_ text: String) {
             let field = NSTextField(labelWithString: text)
-            field.frame = NSRect(x: 0, y: y, width: width, height: 15)
+            field.frame = NSRect(x: 0, y: place(capH), width: width, height: capH)
             field.font = .boldSystemFont(ofSize: 11)
             field.textColor = .secondaryLabelColor
-            return field
+            container.addSubview(field)
+            top += capGap
         }
 
-        // Project (top) — scopes the transcription glossary.
-        let project = container.project
-        project.frame = NSRect(x: 0, y: 99, width: width, height: 26)
-        populateProjectPicker(project, lastProjectID: lastProjectID)
-        container.addSubview(label("Project", y: 125))
-        container.addSubview(project)
+        // Catalog link (top) — file this meeting's note under an opportunity or org.
+        caption("Link to (optional)")
+        let catalog = container.catalog
+        catalog.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
+        for opt in catalogOptions {
+            if opt.repr == "__sep__" { catalog.menu?.addItem(.separator()); continue }
+            catalog.addItem(withTitle: opt.title)
+            catalog.lastItem?.representedObject = opt.repr
+        }
+        container.addSubview(catalog)
+        top += groupGap
 
         // Meeting type (middle) — shapes the summary.
-        container.addSubview(label("Meeting type", y: 78))
+        caption("Meeting type")
         let picker = container.picker
-        picker.frame = NSRect(x: 0, y: 52, width: width, height: 26)
+        picker.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
         let templates = AppSettings.shared.allTemplates
         for template in templates {
             picker.addItem(withTitle: template.displayName)
@@ -1134,76 +1260,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             picker.selectItem(at: index)
         }
         container.addSubview(picker)
+        top += groupGap
 
-        // Agenda (bottom, optional) — drives the end-of-meeting coverage check.
+        // Agenda (optional) — drives the end-of-meeting coverage check.
+        caption("Agenda")
         let field = container.agendaField
-        field.frame = NSRect(x: 0, y: 0, width: width, height: 44)
-        field.placeholderString = "Agenda (optional) — separate items with commas"
+        field.frame = NSRect(x: 0, y: place(fieldH), width: width, height: fieldH)
+        field.placeholderString = "Optional — separate items with commas"
         field.usesSingleLineMode = false
         field.cell?.wraps = true
         field.cell?.isScrollable = false
         field.lineBreakMode = .byWordWrapping
         field.font = .systemFont(ofSize: 12)
         container.addSubview(field)
+        top += groupGap
+
+        // Live brief (bottom) — per-meeting choice, defaulting to the global
+        // setting, as a Settings-style row: label left, switch right. Hard-
+        // disabled when it couldn't run anyway (local-only / no key) so the
+        // dialog never offers something that silently does nothing.
+        let settings = AppSettings.shared
+        let canRun = !settings.localOnlyMode && KeychainService.groqAPIKey() != nil
+        let rowY = place(rowH)
+        let live = container.liveBrief
+        live.controlSize = .mini
+        live.sizeToFit()
+        live.frame = NSRect(x: width - live.frame.width,
+                            y: rowY + (rowH - live.frame.height) / 2,
+                            width: live.frame.width, height: live.frame.height)
+        live.state = (canRun && settings.liveAssistantEnabled) ? .on : .off
+        live.isEnabled = canRun
+
+        let liveLabel = NSTextField(labelWithString: "Show live brief")
+        liveLabel.frame = NSRect(x: 0, y: rowY + (rowH - 16) / 2,
+                                 width: width - live.frame.width - 8, height: 16)
+        liveLabel.font = .systemFont(ofSize: 12)
+        liveLabel.textColor = canRun ? .labelColor : .tertiaryLabelColor
+        let tip = canRun
+            ? "Floating in-meeting brief (TL;DR, actions, agenda coverage). Defaults to your global setting; applies to this meeting only."
+            : settings.localOnlyMode
+                ? "Unavailable in local-only mode — the live brief needs the cloud."
+                : "Add a Groq API key to use the live brief."
+        live.toolTip = tip
+        liveLabel.toolTip = tip
+        container.addSubview(liveLabel)
+        container.addSubview(live)
 
         return container
     }
 
     /// Fill a popup with "Unfiled", top-level projects (children indented), and
     /// "➕ New Project…". Type-to-jump gives quick search.
-    private static func populateProjectPicker(_ picker: NSPopUpButton, lastProjectID: String) {
-        let settings = AppSettings.shared
-        picker.addItem(withTitle: "Unfiled — no glossary")
-        picker.lastItem?.representedObject = ""
-        for top in settings.topLevelProjects {
-            picker.addItem(withTitle: top.name)
-            picker.lastItem?.representedObject = top.id
-            for child in settings.childProjects(of: top.id) {
-                picker.addItem(withTitle: "    " + child.name)
-                picker.lastItem?.representedObject = child.id
-            }
-        }
-        picker.menu?.addItem(.separator())
-        picker.addItem(withTitle: "➕ New Project…")
-        picker.lastItem?.representedObject = newProjectSentinel
-        if let item = picker.itemArray.first(where: { ($0.representedObject as? String) == lastProjectID }) {
-            picker.select(item)
-        }
-    }
-
-    /// Prompt for a new project's name and optional parent, create it, and
-    /// return its id (nil if cancelled or left blank).
-    private func promptNewProject() -> String? {
-        let alert = NSAlert()
-        alert.messageText = "New Project"
-        alert.informativeText = "Name this bucket (e.g. WSO2, MBA). Optionally nest it under a top-level project."
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
-
-        let width: CGFloat = 260
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 56))
-        let nameField = NSTextField(frame: NSRect(x: 0, y: 30, width: width, height: 24))
-        nameField.placeholderString = "Project name"
-        let parentPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: width, height: 26), pullsDown: false)
-        parentPicker.addItem(withTitle: "Top-level project")
-        parentPicker.lastItem?.representedObject = ""
-        for top in settings.topLevelProjects {
-            parentPicker.addItem(withTitle: "Under: \(top.name)")
-            parentPicker.lastItem?.representedObject = top.id
-        }
-        container.addSubview(nameField)
-        container.addSubview(parentPicker)
-        alert.accessoryView = container
-        alert.window.initialFirstResponder = nameField
-
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return nil }
-        let parentID = parentPicker.selectedItem?.representedObject as? String
-        let id = settings.addProject(name: name, parentID: (parentID?.isEmpty ?? true) ? nil : parentID)
-        return id.isEmpty ? nil : id
-    }
-
     /// Split a comma / newline / semicolon-separated agenda string into items.
     private static func parseAgenda(_ raw: String) -> [String] {
         raw.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
@@ -1312,7 +1419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @MainActor
-    private func startMeetingMode(projectID: String? = nil) async {
+    private func startMeetingMode() async {
         // Re-entrancy guard: two confirm dialogs (or a dialog + hotkey) must
         // never double-start the capture chain and leak timers.
         guard !appState.isMeetingMode else { return }
@@ -1341,7 +1448,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingModeMenuItem?.title = "End Meeting"
         meetingStartTime = Date()
         meetingDetector.suppressed = true
-        meetingNotes.beginSession(projectID: projectID)
+        meetingNotes.beginSession()
 
         // Reset the speaker profiles for the new session (safe to touch
         // directly — the capture callbacks haven't started yet)
@@ -1355,7 +1462,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             template: settings.selectedTemplate,
             agenda: meetingAgenda,
-            glossary: meetingNotes.seedGlossary)
+            enabled: meetingLiveBrief)
 
         // Menu-bar elapsed timer — doubles as a "still recording" indicator
         startMeetingTimer()
@@ -1539,7 +1646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             defer { self.endPendingTranscription() }
             do {
-                let text = try await transcribeWithFallback(captured, context: self.meetingNotes.promptContext, glossaryTerms: self.meetingNotes.seedGlossary)
+                let text = try await transcribeWithFallback(captured, context: self.meetingNotes.promptContext)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty,
                       !self.whisperHallucinations.contains(trimmed.lowercased()) else { return }
@@ -1622,7 +1729,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             for var segment in pending {
                 do {
-                    let text = try await self.transcribeWithFallback(segment.audio, context: self.meetingNotes.promptContext, glossaryTerms: self.meetingNotes.seedGlossary)
+                    let text = try await self.transcribeWithFallback(segment.audio, context: self.meetingNotes.promptContext)
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty, !self.whisperHallucinations.contains(trimmed.lowercased()) {
                         self.meetingNotes.append(segment: trimmed, speaker: segment.speaker, at: segment.capturedAt)
@@ -1671,7 +1778,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         for segment in pending {
             do {
-                let text = try await transcribeWithFallback(segment.audio, context: meetingNotes.promptContext, glossaryTerms: meetingNotes.seedGlossary)
+                let text = try await transcribeWithFallback(segment.audio, context: meetingNotes.promptContext)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty, !whisperHallucinations.contains(trimmed.lowercased()) {
                     meetingNotes.append(segment: trimmed, speaker: segment.speaker, at: segment.capturedAt)
@@ -1722,7 +1829,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             defer { self.endPendingTranscription() }
             do {
-                let text = try await transcribeWithFallback(capturedAudio, context: self.meetingNotes.promptContext, glossaryTerms: self.meetingNotes.seedGlossary)
+                let text = try await transcribeWithFallback(capturedAudio, context: self.meetingNotes.promptContext)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
 
@@ -1826,7 +1933,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 errorMenuItem?.isHidden = true
             }
 
-        case "Notes":
+        case "Notes & History":
             menu.removeAllItems()
 
             // Current (or latest) meeting notes — same action as ⌃⌥N —
@@ -1848,8 +1955,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(quickNotesItem)
             menu.addItem(NSMenuItem.separator())
 
-            // Only the 5 most recent here — "Browse All Notes…" (below) opens
-            // the Notes Assistant for the full, searchable history.
+            // Only the 5 most recent here — the Catalog (below) is the full,
+            // searchable browser.
             let files = MeetingNotesWriter.allMeetingFiles(under: settings.notesFolder).prefix(5)
 
             if files.isEmpty {
@@ -1878,7 +1985,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 item.representedObject = file
                 menu.addItem(item)
             }
-            let browseItem = NSMenuItem(title: "Browse All Notes…", action: #selector(showAllNotes), keyEquivalent: "")
+            let browseItem = NSMenuItem(title: "Browse in Catalog…", action: #selector(showCatalog), keyEquivalent: "")
             browseItem.target = self
             menu.addItem(browseItem)
             menu.addItem(NSMenuItem.separator())

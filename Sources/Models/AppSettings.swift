@@ -55,7 +55,6 @@ final class AppSettings: ObservableObject {
         static let streamingDictation     = "dictation.streaming"
         static let streamChunkSeconds     = "dictation.streamChunkSeconds"
         static let maxSpeakers            = "meeting.maxSpeakers"
-        static let actionItemsLookback    = "assistant.actionItemsLookback"
         static let searchDepth            = "assistant.searchDepth"
         static let meetingTemplate        = "meeting.template"
         static let customTemplateSections = "meeting.customTemplateSections"
@@ -83,11 +82,6 @@ final class AppSettings: ObservableObject {
         static let priceInputPerMTok      = "cost.inputPerMTok"
         static let priceOutputPerMTok     = "cost.outputPerMTok"
         static let monthlyBudgetUSD       = "cost.monthlyBudgetUSD"
-        // User content, deliberately NOT in `all` — a settings reset must not
-        // wipe the user's projects or which meetings belong to them.
-        static let projects               = "projects.list"
-        static let projectAssignments     = "projects.assignments"
-        static let lastProjectID          = "projects.lastSelected"
 
         static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
                           preferBuiltInMic,
@@ -104,7 +98,7 @@ final class AppSettings: ObservableObject {
                           notesOrganization, meetingAutoDetect,
                           voiceCommandsEnabled, voiceCommandRules, streamingDictation,
                           streamChunkSeconds, maxSpeakers,
-                          actionItemsLookback, searchDepth, meetingTemplate,
+                          searchDepth, meetingTemplate,
                           customTemplateSections, customTemplateFollowUp, userTemplates,
                           dictationStyleOverrides, userDictationStyles, defaultDictationStyle,
                           quickNotesFolderPath, quickNoteNotify,
@@ -160,7 +154,6 @@ final class AppSettings: ObservableObject {
         static let streamingDictation              = true
         static let streamChunkSeconds: Double      = 10.0
         static let maxSpeakers                     = 4
-        static let actionItemsLookback             = 10
         static let searchDepth                     = 200
         static let meetingTemplate                 = MeetingTemplate.customerCall
         static let quickNoteNotify                 = true
@@ -454,20 +447,14 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.maxSpeakers) }
     }
 
-    /// How many recent meetings the Assistant's Action Items tab aggregates.
-    var actionItemsLookback: Int {
-        get { int(Key.actionItemsLookback, Default.actionItemsLookback) }
-        set { set(newValue, Key.actionItemsLookback) }
-    }
-
-    /// How many recent meetings full-text search and cross-meeting Ask scan.
+    /// How many recent meetings the Catalog's Meaning search and Ask scan.
     var searchDepth: Int {
         get { int(Key.searchDepth, Default.searchDepth) }
         set { set(newValue, Key.searchDepth) }
     }
 
     /// Folder for dictated quick notes (⌃⌥J) — separate from meeting notes so
-    /// the meeting history and Notes Assistant stay meetings-only.
+    /// the meeting history and Catalog stay meetings-only.
     /// Defaults to "Quick Notes" beside the meeting notes, inside the same base.
     var quickNotesFolder: URL {
         get {
@@ -886,7 +873,7 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.errorNotifications) }
     }
 
-    /// DateFormatter pattern for dates shown in the menu and Notes Assistant.
+    /// DateFormatter pattern for dates shown in the menu and Catalog.
     var uiDateFormat: String {
         get { string(Key.uiDateFormat, Default.uiDateFormat) }
         set { set(newValue, Key.uiDateFormat) }
@@ -923,113 +910,6 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.replacements) }
     }
 
-    // MARK: - Projects
-
-    /// User-defined project buckets (one level of nesting). Persisted as JSON.
-    private(set) var projects: [Project] {
-        get {
-            guard let data = defaults.data(forKey: Key.projects),
-                  let list = try? JSONDecoder().decode([Project].self, from: data)
-            else { return [] }
-            return list
-        }
-        set {
-            let data = try? JSONEncoder().encode(newValue)
-            set(data as Any, Key.projects)
-        }
-    }
-
-    /// Which project each meeting file belongs to: note filename → project id.
-    private var projectAssignments: [String: String] {
-        get {
-            guard let data = defaults.data(forKey: Key.projectAssignments),
-                  let dict = try? JSONDecoder().decode([String: String].self, from: data)
-            else { return [:] }
-            return dict
-        }
-        set {
-            let data = try? JSONEncoder().encode(newValue)
-            set(data as Any, Key.projectAssignments)
-        }
-    }
-
-    /// The project chosen for the most recent meeting — the picker defaults to
-    /// it so reusing the same bucket is a single keystroke.
-    var lastProjectID: String {
-        get { string(Key.lastProjectID, "") }
-        set { set(newValue, Key.lastProjectID) }
-    }
-
-    func project(withID id: String?) -> Project? { Projects.project(id, in: projects) }
-    var topLevelProjects: [Project] { Projects.topLevel(in: projects) }
-    func childProjects(of parentID: String) -> [Project] { Projects.children(of: parentID, in: projects) }
-    func projectDisplayPath(_ id: String) -> String { Projects.displayPath(of: id, in: projects) }
-
-    /// Create a project (optionally under a parent) and return its id. Nesting
-    /// is one level: a child cannot itself become a parent.
-    @discardableResult
-    func addProject(name: String, parentID: String? = nil) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-        // A parent must be top-level; ignore an invalid/child parent.
-        let validParent = parentID.flatMap { pid in
-            project(withID: pid).flatMap { $0.parentID == nil ? pid : nil }
-        }
-        let id = UUID().uuidString
-        projects.append(Project(id: id, name: trimmed, parentID: validParent, terms: []))
-        return id
-    }
-
-    func renameProject(id: String, to name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        var list = projects
-        guard let i = list.firstIndex(where: { $0.id == id }) else { return }
-        list[i].name = trimmed
-        projects = list
-    }
-
-    func setProjectTerms(_ terms: [String], forID id: String) {
-        var list = projects
-        guard let i = list.firstIndex(where: { $0.id == id }) else { return }
-        list[i].terms = terms
-        projects = list
-    }
-
-    /// Delete a project and its children, and drop their note assignments.
-    func deleteProject(id: String) {
-        let doomed = Set([id] + childProjects(of: id).map(\.id))
-        projects = projects.filter { !doomed.contains($0.id) }
-        projectAssignments = projectAssignments.filter { !doomed.contains($0.value) }
-    }
-
-    /// The project a meeting file is currently assigned to, if any.
-    func projectID(forNote filename: String) -> String? { projectAssignments[filename] }
-
-    /// Record which project a meeting file belongs to (keyed by filename;
-    /// the timestamped name is unique across the notes tree).
-    func assignNote(_ filename: String, toProjectID id: String?) {
-        var map = projectAssignments
-        if let id { map[filename] = id } else { map.removeValue(forKey: filename) }
-        projectAssignments = map
-    }
-
-    /// Manual seed terms for a project, inheriting its parent's terms.
-    func manualTerms(forProjectID id: String) -> [String] {
-        Projects.manualTerms(forID: id, in: projects)
-    }
-
-    /// Past meeting note files belonging to a project or its parent — the
-    /// scope the glossary is harvested from, so unrelated projects never leak.
-    func noteFiles(inLineageOf id: String) -> [URL] {
-        let lineage = Set(Projects.lineage(of: id, in: projects))
-        guard !lineage.isEmpty else { return [] }
-        let assignments = projectAssignments
-        return MeetingNotesWriter.allMeetingFiles(under: notesFolder).filter { url in
-            assignments[url.lastPathComponent].map { lineage.contains($0) } ?? false
-        }
-    }
-
     /// Per-app polishing style overrides, one per line: `bundle.id: style`
     /// where style ∈ messaging|email|code|browser|notes|general.
     var appProfiles: String {
@@ -1062,16 +942,12 @@ final class AppSettings: ObservableObject {
         return result
     }
 
-    /// Vocabulary flattened to a single Whisper prompt hint (≤400 chars kept).
-    var vocabularyPrompt: String { vocabularyHint() }
 
-    /// The glossary prompt hint: the user's own vocabulary plus any auto-
-    /// harvested `extraTerms` (the per-meeting seed), deduplicated
-    /// case-insensitively and capped to Whisper's prompt budget. The user's
-    /// terms lead so they take precedence when the cap trims the tail. Empty
-    /// when there are no terms at all.
-    func vocabularyHint(extraTerms: [String] = []) -> String {
-        let raw = vocabulary.components(separatedBy: CharacterSet(charactersIn: ",\n")) + extraTerms
+    /// The glossary prompt hint: the user's own vocabulary, deduplicated
+    /// case-insensitively and capped to Whisper's prompt budget. Empty when
+    /// there are no terms at all.
+    func vocabularyHint() -> String {
+        let raw = vocabulary.components(separatedBy: CharacterSet(charactersIn: ",\n"))
         var seen = Set<String>()
         var terms: [String] = []
         for candidate in raw {

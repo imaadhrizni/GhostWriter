@@ -10,8 +10,6 @@ final class MeetingNotesWriter {
     private(set) var currentFilePath: URL?
     /// The most recently finished session's file (survives endSession).
     private(set) var lastCompletedFilePath: URL?
-    /// The project bucket this session belongs to, if any (scopes the glossary).
-    private(set) var currentProjectID: String?
 
     // Rolling recent-transcript context used to self-prime the next segment's
     // transcription (Whisper attends to prior text, so names/jargon stay
@@ -37,21 +35,6 @@ final class MeetingNotesWriter {
         }
     }
 
-    // Per-meeting glossary auto-harvested at session start (people, orgs,
-    // products, acronyms) so first-occurrence names transcribe correctly.
-    // Populated off the main thread; empty until harvesting finishes, so early
-    // segments simply run without it — best-effort, like `promptContext`.
-    private let seedLock = NSLock()
-    private var _seedGlossary: [String] = []
-
-    var seedGlossary: [String] {
-        seedLock.lock(); defer { seedLock.unlock() }
-        return _seedGlossary
-    }
-
-    private func setSeedGlossary(_ terms: [String]) {
-        seedLock.lock(); _seedGlossary = terms; seedLock.unlock()
-    }
 
     /// Read live from settings so a folder change applies to the next session.
     /// Includes the Year/Month subfolder when organization is enabled.
@@ -61,7 +44,7 @@ final class MeetingNotesWriter {
     /// (files may live in Year/Month/Day subfolders), newest first — the
     /// filename encodes the full timestamp so name order is date order.
     ///
-    /// The result is cached briefly: the menu, stats line, and Notes Assistant
+    /// The result is cached briefly: the menu, stats line, and Catalog
     /// all call this, and with years of notes a full tree walk + sort on every
     /// menu open would add up. A new meeting invalidates the cache.
     static func allMeetingFiles(under folder: URL) -> [URL] {
@@ -99,22 +82,13 @@ final class MeetingNotesWriter {
     // from the transcription Tasks one line at a time, so this is safe.
     // en_US_POSIX pins the Gregorian calendar and 0-23 hours regardless of the
     // user's locale — these strings are file/folder names and parsed back later.
-    private static let fileNameFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        return f
-    }()
+    // Filename/day stamps use the shared POSIX formatters in DateDisplay.
+    private static let fileNameFormatter = DateDisplay.posixTimestamp
+    private static let dayFormatter = DateDisplay.posixDay
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "HH:mm:ss"
-        return f
-    }()
-    private static let dayFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd"
         return f
     }()
     private static let displayDateFormatter: DateFormatter = {
@@ -263,20 +237,9 @@ final class MeetingNotesWriter {
     // MARK: - Session Lifecycle
 
     /// Call when meeting mode starts. Creates the notes file and writes the header.
-    func beginSession(projectID: String? = nil) {
-        currentProjectID = projectID
+    func beginSession() {
         nameOverrides.removeAll()
         contextLock.lock(); recentSegments.removeAll(); contextLock.unlock()
-        setSeedGlossary([])
-        // Harvest a glossary scoped to this meeting's project off the main
-        // thread — file I/O plus on-device NER shouldn't delay the start.
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let terms = MeetingVocabulary.seed(forProjectID: projectID)
-            self?.setSeedGlossary(terms)
-            if !terms.isEmpty {
-                Log.meeting.info("📚 Seeded meeting glossary with \(terms.count) term(s)")
-            }
-        }
         do {
             try FileManager.default.createDirectory(at: notesDirectory, withIntermediateDirectories: true)
 
@@ -306,7 +269,6 @@ final class MeetingNotesWriter {
             try header.write(to: fileURL, atomically: true, encoding: .utf8)
 
             currentFilePath = fileURL
-            AppSettings.shared.assignNote(fileURL.lastPathComponent, toProjectID: projectID)
             Self.invalidateFileCache()
             Log.meeting.info("📝 Meeting notes → \(fileURL.path)")
         } catch {

@@ -52,8 +52,6 @@ struct CatalogPerson: Codable, Identifiable, Hashable {
     var name: String
     /// Which side of the call they came from, when known.
     var channel: String?      // "internal" | "external"
-    /// A person can belong to several orgs (org ↔ people is many-to-many).
-    var orgIDs: [String] = []
     var email: String?
 }
 
@@ -104,6 +102,9 @@ struct CatalogNote: Codable, Identifiable, Hashable {
     var projectIDs: [String] = []
     var orgIDs: [String] = []
     var tagIDs: [String] = []
+    /// People attributed directly to this note (attendees / mentioned), set per
+    /// note like tags. Independent of org membership.
+    var personIDs: [String] = []
 }
 
 // MARK: Document
@@ -221,11 +222,6 @@ final class CatalogStore: ObservableObject {
         for pid in effectiveProjectIDs(of: note) { if let o = project(pid)?.orgID { s.insert(o) } }
         return s
     }
-    /// People a note inherits via its (effective) orgs.
-    func inheritedPeople(of note: CatalogNote) -> [CatalogPerson] {
-        let orgs = effectiveOrgIDs(of: note)
-        return doc.people.filter { !Set($0.orgIDs).isDisjoint(with: orgs) }
-    }
     /// A note with no link at all — not on any opportunity and not directly on
     /// any org, so it doesn't surface anywhere in the map. These are the ones
     /// worth triaging into an opportunity or an org.
@@ -264,8 +260,28 @@ final class CatalogStore: ObservableObject {
     func org(forOpportunity o: CatalogOpportunity) -> CatalogOrg? {
         project(o.projectID).flatMap { org($0.orgID) }
     }
-    func people(forOrg id: String) -> [CatalogPerson] {
-        doc.people.filter { $0.orgIDs.contains(id) }
+    /// People are independent of orgs; an org's people are simply whoever
+    /// appears on its notes. An org with no notes contributes nobody, mirroring
+    /// how tags surface only where there's note activity.
+    func peopleFromNotes(forOrg id: String) -> [CatalogPerson] {
+        var ids = Set<String>()
+        for n in notes(forOrg: id) { ids.formUnion(n.personIDs) }
+        return doc.people.filter { ids.contains($0.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+    /// Notes a person appears on directly.
+    func notes(forPerson id: String) -> [CatalogNote] {
+        doc.notes.filter { $0.personIDs.contains(id) }
+    }
+    /// A note's own people (the ones attributed directly to it).
+    func people(of note: CatalogNote) -> [CatalogPerson] {
+        doc.people.filter { note.personIDs.contains($0.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+    /// A note's own tags.
+    func tags(of note: CatalogNote) -> [CatalogTag] {
+        doc.tags.filter { note.tagIDs.contains($0.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     // MARK: Org CRUD
@@ -294,7 +310,6 @@ final class CatalogStore: ObservableObject {
             for i in doc.orgs.indices where doc.orgs[i].parentID == id { doc.orgs[i].parentID = nil } // reparent to root
             doc.projects.removeAll { projIDs.contains($0.id) }          // cascade projects
             doc.opportunities.removeAll { oppIDs.contains($0.id) }      // …and their opps
-            for i in doc.people.indices { doc.people[i].orgIDs.removeAll { $0 == id } }
             for i in doc.notes.indices {
                 doc.notes[i].orgIDs.removeAll { $0 == id }
                 doc.notes[i].projectIDs.removeAll { projIDs.contains($0) }
@@ -326,7 +341,10 @@ final class CatalogStore: ObservableObject {
         mutate { doc in if let i = doc.people.firstIndex(where: { $0.id == p.id }) { doc.people[i] = p } }
     }
     func deletePerson(_ id: String) {
-        mutate { doc in doc.people.removeAll { $0.id == id } }
+        mutate { doc in
+            doc.people.removeAll { $0.id == id }
+            for i in doc.notes.indices { doc.notes[i].personIDs.removeAll { $0 == id } }
+        }
     }
 
     @discardableResult
@@ -419,11 +437,46 @@ final class CatalogStore: ObservableObject {
     }
     func note(id: String) -> CatalogNote? { doc.notes.first { $0.id == id } }
 
+    /// Whether a note's backing Markdown file still exists on disk. Catalog rows
+    /// only reference files by path, so a file deleted in Finder leaves a stale
+    /// row until reconciled.
+    func fileExists(_ note: CatalogNote) -> Bool {
+        FileManager.default.fileExists(atPath: url(of: note).path)
+    }
+    var missingNotes: [CatalogNote] { doc.notes.filter { !fileExists($0) } }
+
+    /// Re-evaluate the view against the current filesystem. `fileExists` reads
+    /// disk live, but SwiftUI only re-renders on a publish — so a file put back
+    /// in Finder keeps showing "missing" until we nudge observers.
+    func refresh() { objectWillChange.send() }
+
+    /// Drop a single catalog row (its Markdown file, if any, is left untouched).
+    func deleteNote(_ id: String) {
+        mutate { $0.notes.removeAll { $0.id == id } }
+    }
+
+    /// Remove every row whose file no longer exists on disk. Returns how many
+    /// were pruned. Note files themselves are never written or deleted here.
+    @discardableResult
+    func pruneMissingNotes() -> Int {
+        let gone = Set(missingNotes.map { $0.id })
+        guard !gone.isEmpty else { return 0 }
+        mutate { $0.notes.removeAll { gone.contains($0.id) } }
+        return gone.count
+    }
+
     func setTag(_ tagID: String, on noteID: String, _ on: Bool) {
         mutate { doc in
             guard let i = doc.notes.firstIndex(where: { $0.id == noteID }) else { return }
             if on { if !doc.notes[i].tagIDs.contains(tagID) { doc.notes[i].tagIDs.append(tagID) } }
             else { doc.notes[i].tagIDs.removeAll { $0 == tagID } }
+        }
+    }
+    func setPerson(_ personID: String, on noteID: String, _ on: Bool) {
+        mutate { doc in
+            guard let i = doc.notes.firstIndex(where: { $0.id == noteID }) else { return }
+            if on { if !doc.notes[i].personIDs.contains(personID) { doc.notes[i].personIDs.append(personID) } }
+            else { doc.notes[i].personIDs.removeAll { $0 == personID } }
         }
     }
     /// Directly assign a note to an org (for internal notes with no opportunity).

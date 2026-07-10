@@ -98,9 +98,10 @@ private struct CatalogView: View {
     @State private var fTag = ""
     @State private var fPerson = ""
     @State private var fUnassigned = false
+    @State private var fMissing = false
     @State private var scope: NoteSearchScope = .text
     @State private var askNonce = 0
-    private var anyFilter: Bool { !(fOrg.isEmpty && fProject.isEmpty && fOpp.isEmpty && fTag.isEmpty && fPerson.isEmpty) || fUnassigned }
+    private var anyFilter: Bool { !(fOrg.isEmpty && fProject.isEmpty && fOpp.isEmpty && fTag.isEmpty && fPerson.isEmpty) || fUnassigned || fMissing }
     private var canAsk: Bool { !AppSettings.shared.localOnlyMode && KeychainService.groqAPIKey() != nil }
 
     /// Notes matching the active facet filters (ignoring the query — in Ask mode
@@ -111,11 +112,9 @@ private struct CatalogView: View {
             && (fProject.isEmpty || store.effectiveProjectIDs(of: n).contains(fProject))
             && (fOpp.isEmpty || n.opportunityIDs.contains(fOpp))
             && (fTag.isEmpty || n.tagIDs.contains(fTag))
-            && (fPerson.isEmpty || {
-                guard let p = store.person(fPerson) else { return false }
-                return !store.effectiveOrgIDs(of: n).isDisjoint(with: Set(p.orgIDs))
-            }())
+            && (fPerson.isEmpty || n.personIDs.contains(fPerson))
             && (!fUnassigned || store.isUnassigned(n))
+            && (!fMissing || !store.fileExists(n))
         }.map { NotesLibrary.MeetingFile(url: store.url(of: $0)) }
     }
     private var filterSummary: String {
@@ -198,7 +197,7 @@ private struct CatalogView: View {
                 } else {
                     NotesList(store: store, selID: $selID, query: query, scope: scope,
                               fOrg: fOrg, fProject: fProject, fOpp: fOpp, fTag: fTag, fPerson: fPerson,
-                              unassignedOnly: fUnassigned)
+                              unassignedOnly: fUnassigned, missingOnly: fMissing)
                 }
             }
                 .searchable(text: $query, placement: .toolbar,
@@ -212,7 +211,8 @@ private struct CatalogView: View {
                         facet("Person", "person", $fPerson, store.doc.people.sortedByName.map { ($0.id, $0.name) })
                         facet("Tag", "tag", $fTag, store.tagsSorted.map { ($0.id, $0.name) })
                         unassignedToggle
-                        Button { fOrg = ""; fProject = ""; fOpp = ""; fTag = ""; fPerson = ""; fUnassigned = false } label: {
+                        missingToggle
+                        Button { fOrg = ""; fProject = ""; fOpp = ""; fTag = ""; fPerson = ""; fUnassigned = false; fMissing = false } label: {
                             Label("Reset", systemImage: "arrow.counterclockwise")
                         }
                         .disabled(!anyFilter)
@@ -249,6 +249,19 @@ private struct CatalogView: View {
         }
     }
 
+    /// One-tap filter for notes whose Markdown file no longer exists on disk.
+    /// Hidden once every file is present, like the unassigned toggle.
+    @ViewBuilder private var missingToggle: some View {
+        let n = store.missingNotes.count
+        if n > 0 || fMissing {
+            Button { fMissing.toggle() } label: {
+                Label(fMissing ? "Missing" : "Missing (\(n))",
+                      systemImage: fMissing ? "doc.badge.ellipsis" : "doc.badge.gearshape")
+            }
+            .help("Show only notes whose file no longer exists on disk")
+        }
+    }
+
     /// A single filter as its own toolbar menu; tints + shows the value when set.
     private func facet(_ label: String, _ icon: String, _ sel: Binding<String>, _ options: [(String, String)]) -> some View {
         let current = options.first { $0.0 == sel.wrappedValue }?.1
@@ -277,12 +290,26 @@ private struct CatalogView: View {
             .help("Create an organisation → project → opportunity → people → tags in one go")
             Button {
                 let n = store.indexNotesFolder()
+                store.refresh()   // also re-checks existing rows against disk
                 status = n > 0 ? "Imported \(n) note\(n == 1 ? "" : "s")" : "Up to date"
             } label: {
-                Label("Import notes", systemImage: "arrow.down.doc").frame(maxWidth: .infinity)
+                Label("Import / reload", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
             }
             .controlSize(.small)
-            .help("Scan the notes folder and add meeting notes not yet in the catalog")
+            .help("Scan the notes folder: add new meeting notes and re-check existing ones")
+            if store.missingNotes.count > 0 {
+                Button {
+                    let n = store.pruneMissingNotes()
+                    store.refresh()
+                    status = n > 0 ? "Removed \(n) missing note\(n == 1 ? "" : "s")"
+                                   : "All files present — nothing to remove"
+                } label: {
+                    Label("Clean up \(store.missingNotes.count) missing", systemImage: "wand.and.stars")
+                        .frame(maxWidth: .infinity)
+                }
+                .controlSize(.small)
+                .help("Remove entries whose file no longer exists. Files restored in Finder are re-checked first, not deleted.")
+            }
             Button(role: .destructive) { showPurge = true } label: {
                 Label("Purge catalog…", systemImage: "trash").frame(maxWidth: .infinity)
             }
@@ -449,13 +476,9 @@ struct QuickAddSheet: View {
             resolvedOppID = oppSel
         }
 
-        // People — attach chosen existing to the org, plus any new names.
-        for pid in selectedPeople {
-            if var p = store.person(pid), !p.orgIDs.contains(orgID) { p.orgIDs.append(orgID); store.update(p) }
-        }
-        for name in splitList(newPeople) {
-            var p = store.addPerson(name: name); p.orgIDs = [orgID]; store.update(p)
-        }
+        // People are org-independent — existing selections already exist; just
+        // create any new names so they're available to pick on notes.
+        for name in splitList(newPeople) { _ = store.addPerson(name: name) }
 
         // Tags — existing selections already exist; just create the new ones.
         for name in splitList(newTags) { _ = store.addTag(name: name) }
@@ -736,8 +759,8 @@ private struct OrgEditor: View {
             Section("Notes") {
                 TextField("Free notes", text: $draft.notes, axis: .vertical).lineLimit(2...6).onSubmit(commit)
             }
-            let people = store.people(forOrg: draft.id)
-            if !people.isEmpty { Section("People") { ForEach(people) { Text($0.name) } } }
+            let people = store.peopleFromNotes(forOrg: draft.id)
+            if !people.isEmpty { Section("People (from notes)") { ForEach(people) { Text($0.name) } } }
             let projects = store.projects(forOrg: draft.id)
             if !projects.isEmpty { Section("Projects") { ForEach(projects) { Text($0.name) } } }
             let notes = store.notes(forOrg: draft.id, includingDescendants: true)
@@ -781,17 +804,9 @@ private struct PersonEditor: View {
                     get: { draft.email ?? "" },
                     set: { draft.email = $0.isEmpty ? nil : $0 })).onSubmit(commit)
             }
-            Section("Organisations") {
-                if store.orgsSorted.isEmpty { Text("No organisations yet.").font(.caption).foregroundStyle(.secondary) }
-                ForEach(store.orgsSorted) { org in
-                    Toggle(store.orgPath(of: org.id), isOn: Binding(
-                        get: { draft.orgIDs.contains(org.id) },
-                        set: { on in
-                            if on { if !draft.orgIDs.contains(org.id) { draft.orgIDs.append(org.id) } }
-                            else { draft.orgIDs.removeAll { $0 == org.id } }
-                            commit()
-                        }))
-                }
+            let notes = store.notes(forPerson: draft.id)
+            if !notes.isEmpty {
+                Section("Notes") { ForEach(notes) { NoteRow(note: $0) } }
             }
             Section { Button("Delete Person", role: .destructive) { store.deletePerson(draft.id); onDelete() } }
         }
@@ -931,7 +946,9 @@ private struct NotesList: View {
     let scope: NoteSearchScope
     let fOrg: String, fProject: String, fOpp: String, fTag: String, fPerson: String
     var unassignedOnly: Bool = false
+    var missingOnly: Bool = false
     @State private var semanticOrder: [String] = []
+    @State private var hovered: String?
 
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
 
@@ -941,11 +958,9 @@ private struct NotesList: View {
         if !fProject.isEmpty { ns = ns.filter { store.effectiveProjectIDs(of: $0).contains(fProject) } }
         if !fOpp.isEmpty { ns = ns.filter { $0.opportunityIDs.contains(fOpp) } }
         if !fTag.isEmpty { ns = ns.filter { $0.tagIDs.contains(fTag) } }
-        if !fPerson.isEmpty, let p = store.person(fPerson) {
-            let orgs = Set(p.orgIDs)
-            ns = ns.filter { !store.effectiveOrgIDs(of: $0).isDisjoint(with: orgs) }
-        }
+        if !fPerson.isEmpty { ns = ns.filter { $0.personIDs.contains(fPerson) } }
         if unassignedOnly { ns = ns.filter(store.isUnassigned) }
+        if missingOnly { ns = ns.filter { !store.fileExists($0) } }
         return ns
     }
 
@@ -971,30 +986,60 @@ private struct NotesList: View {
                 }
             } else {
                 List(filtered, selection: $selID) { n in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(n.title).lineLimit(1)
-                            if store.isUnassigned(n) {
-                                Text("Unassigned")
-                                    .font(.caption2.weight(.medium))
-                                    .padding(.horizontal, 5).padding(.vertical, 1)
-                                    .background(Capsule().fill(Color.orange.opacity(0.18)))
-                                    .foregroundStyle(.orange)
+                    let missing = !store.fileExists(n)
+                    HStack(spacing: 6) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(n.title).lineLimit(1).foregroundStyle(missing ? .secondary : .primary)
+                                if missing {
+                                    pill("File missing", .red)
+                                } else if store.isUnassigned(n) {
+                                    pill("Unassigned", .orange)
+                                }
                             }
+                            HStack(spacing: 6) {
+                                if let d = n.date { Text(d, style: .date) }
+                                if !n.tagIDs.isEmpty { Text("· \(n.tagIDs.count) tags") }
+                            }
+                            .font(.caption2).foregroundStyle(.secondary)
                         }
-                        HStack(spacing: 6) {
-                            if let d = n.date { Text(d, style: .date) }
-                            if !n.tagIDs.isEmpty { Text("· \(n.tagIDs.count) tags") }
+                        Spacer(minLength: 4)
+                        // Row actions — always shown for missing rows (they need
+                        // triage), otherwise revealed on hover to keep it clean.
+                        if hovered == n.id || missing {
+                            if !missing {
+                                Button {
+                                    NSWorkspace.shared.activateFileViewerSelecting([store.url(of: n)])
+                                } label: { Image(systemName: "folder") }
+                                .buttonStyle(.borderless).foregroundStyle(.secondary)
+                                .help("Reveal in Finder")
+                            }
+                            Button {
+                                if selID == n.id { selID = nil }
+                                store.deleteNote(n.id)
+                            } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless).foregroundStyle(missing ? .red : .secondary)
+                            .help(missing ? "Remove this missing entry from the catalog"
+                                          : "Remove from catalog (note file is kept)")
                         }
-                        .font(.caption2).foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 3)
+                    .contentShape(Rectangle())
+                    .onHover { hovered = $0 ? n.id : (hovered == n.id ? nil : hovered) }
                     .tag(n.id)
                 }
                 .overlay { if filtered.isEmpty { ContentUnavailableView.search } }
             }
         }
         .task(id: "\(scope)|\(trimmedQuery)") { await runSemantic() }
+    }
+
+    private func pill(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(Capsule().fill(color.opacity(0.18)))
+            .foregroundStyle(color)
     }
 
     private func runSemantic() async {
@@ -1112,6 +1157,7 @@ private struct NoteLinkEditor: View {
     let note: CatalogNote
     @State private var newToken = ""
     @State private var newTag = ""
+    @State private var newPerson = ""
 
     private var current: CatalogNote { store.note(id: note.id) ?? note }
 
@@ -1121,6 +1167,14 @@ private struct NoteLinkEditor: View {
         let t = store.addTag(name: name)
         store.setTag(t.id, on: note.id, true)
         newTag = ""
+    }
+
+    private func addPerson() {
+        let name = newPerson.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        let p = store.addPerson(name: name)
+        store.setPerson(p.id, on: note.id, true)
+        newPerson = ""
     }
 
     var body: some View {
@@ -1205,9 +1259,26 @@ private struct NoteLinkEditor: View {
                     ForEach(store.doc.projects.sortedByName.filter { projIDs.contains($0.id) }) { Text($0.name) }
                 }
             }
-            let people = store.inheritedPeople(of: current)
-            if !people.isEmpty {
-                Section("People (inherited)") { ForEach(people) { Text($0.name) } }
+            Section("People") {
+                HStack {
+                    TextField("New person", text: $newPerson).textFieldStyle(.roundedBorder).onSubmit(addPerson)
+                    Button(action: addPerson) { Image(systemName: "plus") }
+                        .disabled(newPerson.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if store.doc.people.isEmpty {
+                    Text("No people yet — add one above.").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(store.doc.people.sortedByName) { person in
+                                Toggle(person.name, isOn: Binding(
+                                    get: { current.personIDs.contains(person.id) },
+                                    set: { store.setPerson(person.id, on: note.id, $0) }))
+                            }
+                        }
+                    }
+                    .frame(height: store.doc.people.count > 6 ? 150 : nil)
+                }
             }
 
             Section("Tags") {
@@ -1366,9 +1437,8 @@ private struct PromoteMenu: View {
     }
 
     private func addPerson() {
-        var p = store.addPerson(name: token)
-        if let n = note { p.orgIDs = Array(store.effectiveOrgIDs(of: n)) }   // attach to note's orgs → shows as inherited
-        store.update(p)
+        let p = store.addPerson(name: token)
+        store.setPerson(p.id, on: noteID, true)   // attach directly to the note, like tags
         onDone()
     }
     private func addOpportunity() {
@@ -1407,6 +1477,7 @@ private struct MapTree: View {
         Set(store.doc.orgs.map(\.id))
             .union(store.doc.projects.map(\.id))
             .union(store.doc.opportunities.map(\.id))
+            .union(store.doc.notes.map { "note:" + $0.id })
     }
 
     /// An org matches if its own name — or any descendant org's name — contains
@@ -1494,13 +1565,8 @@ private struct OrgMapNode: View {
         DisclosureGroup(isExpanded: exp.binding(org.id)) {
             ForEach(store.childOrgs(of: org.id)) { OrgMapNode(store: store, org: $0, exp: exp, onPick: onPick) }
             ForEach(store.projects(forOrg: org.id)) { ProjectMapNode(store: store, project: $0, exp: exp, onPick: onPick) }
-            ForEach(store.people(forOrg: org.id)) { p in
-                MapRow(icon: "person", tint: .teal, title: p.name) { onPick(.people, p.id) }
-            }
             // Internal notes attached directly to this org (no opportunity).
-            ForEach(store.notes(directlyOnOrg: org.id)) { n in
-                MapRow(icon: "doc.text", tint: .indigo, title: n.title, openIcon: "arrow.up.forward.app") { openNote(n) }
-            }
+            ForEach(store.notes(directlyOnOrg: org.id)) { NoteMapNode(store: store, note: $0, exp: exp, onPick: onPick) }
         } label: {
             MapRow(icon: "building.2", tint: .blue, title: org.name,
                    trailing: AnyView(RelationshipBadge(org.relationship))) { onPick(.organisations, org.id) }
@@ -1533,12 +1599,38 @@ private struct OppMapNode: View {
         DisclosureGroup(isExpanded: exp.binding(opp.id)) {
             let notes = store.notes(forOpportunity: opp)
             if notes.isEmpty { Text("No notes").font(.caption2).foregroundStyle(.secondary) }
-            ForEach(notes) { n in
-                MapRow(icon: "doc.text", tint: .indigo, title: n.title, openIcon: "arrow.up.forward.app") { openNote(n) }
-            }
+            ForEach(notes) { NoteMapNode(store: store, note: $0, exp: exp, onPick: onPick) }
         } label: {
             MapRow(icon: "chart.line.uptrend.xyaxis", tint: .green, title: opp.name,
                    trailing: AnyView(StageBadge(opp.stage))) { onPick(.opportunities, opp.id) }
+        }
+    }
+}
+
+/// A note in the map, expandable to its own people and tags. Falls back to a
+/// plain row when it has neither, so leaf notes don't show an empty twisty.
+private struct NoteMapNode: View {
+    @ObservedObject var store: CatalogStore
+    let note: CatalogNote
+    @ObservedObject var exp: MapExpansion
+    let onPick: MapPick
+
+    var body: some View {
+        let people = store.people(of: note)
+        let tags = store.tags(of: note)
+        let label = MapRow(icon: "doc.text", tint: .indigo, title: note.title,
+                           openIcon: "arrow.up.forward.app") { openNote(note) }
+        if people.isEmpty && tags.isEmpty {
+            label
+        } else {
+            DisclosureGroup(isExpanded: exp.binding("note:" + note.id)) {
+                ForEach(people) { p in
+                    MapRow(icon: "person", tint: .teal, title: p.name) { onPick(.people, p.id) }
+                }
+                ForEach(tags) { t in
+                    MapRow(icon: "tag", tint: .pink, title: t.name) { onPick(.tags, t.id) }
+                }
+            } label: { label }
         }
     }
 }

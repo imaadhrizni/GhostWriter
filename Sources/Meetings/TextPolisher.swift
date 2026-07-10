@@ -182,7 +182,7 @@ final class TextPolisher {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         let clipped = String(text.suffix(24_000))
         let requestBody = ChatRequest(
-            model: model,
+            model: model,   // polishing model for summary quality
             messages: [
                 .init(role: "system", content: """
                 Summarize a note so the reader knows what's in it. Output 5–10 concise Markdown bullet points (each starting with "- ") covering the main topics, any decisions, and any action items. Be factual — never invent content. Output only the bullet list, with no heading, preamble, or closing line.
@@ -202,7 +202,7 @@ final class TextPolisher {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         let clipped = String(text.suffix(16_000))
         let requestBody = ChatRequest(
-            model: model,
+            model: model,   // polishing model — 70B TPD cap resets daily; 8B's 8k TPM chokes on the burst of per-note calls
             messages: [
                 .init(role: "system", content: """
                 Summarize ONE meeting note into EXACTLY this template, with NO blank lines and every bullet starting with "- ":

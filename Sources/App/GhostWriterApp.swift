@@ -1196,7 +1196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Reuses the catalog's relationship timeline (recent notes). Skipped when
     /// there's no prior history to show.
     private func showMeetingPrepCard(for target: (kind: String, id: String)) {
-        let prep: (name: String, lines: [String])? = MainActor.assumeIsolated {
+        let prep: (name: String, notes: [CatalogNote])? = MainActor.assumeIsolated {
             let store = CatalogStore.shared
             let name: String
             let notes: [CatalogNote]
@@ -1205,20 +1205,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else if target.kind == "org", let o = store.org(target.id) {
                 name = store.orgPath(of: o.id); notes = store.notes(forOrg: o.id, includingDescendants: true)
             } else { return nil }
-            let df = DateFormatter(); df.dateStyle = .medium
-            let recent = notes.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }.prefix(3)
-            let lines = recent.map { n -> String in
-                "• \(n.title)  (\(n.date.map { df.string(from: $0) } ?? "—"))"
-            }
-            return lines.isEmpty ? nil : (name, Array(lines))
+            let recent = Array(notes.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }.prefix(3))
+            return recent.isEmpty ? nil : (name, recent)
         }
         guard let prep else { return }   // nothing to prep from — don't interrupt
-        let alert = NSAlert()
-        alert.messageText = "Prep — \(prep.name)"
-        alert.informativeText = "Recent notes:\n" + prep.lines.joined(separator: "\n")
-        alert.addButton(withTitle: "Start Meeting")
-        alert.alertStyle = .informational
-        alert.runModal()
+        // Non-modal so you can open and read a note while the meeting records.
+        MeetingPrepWindowController.present(entityName: prep.name, notes: prep.notes)
     }
 
     /// Present the Quick Add sheet modally and return the created opportunity's

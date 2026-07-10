@@ -116,6 +116,7 @@ private struct NotesViewerView: View {
     @State private var savedText: String
     @State private var status: String = ""
     @State private var drafting = false
+    @State private var summarizing = false
     /// Locked (read-only) by default; unlock to edit. Drafts with no backing
     /// file open unlocked since editing is the whole point.
     @State private var isEditable: Bool
@@ -137,6 +138,11 @@ private struct NotesViewerView: View {
     /// A follow-up can be drafted from any saved meeting note (needs network).
     private var canDraftFollowUp: Bool {
         isMeetingNote && !AppSettings.shared.localOnlyMode
+    }
+
+    /// A quick AI summary can be run on any non-empty note when cloud is allowed.
+    private var canSummarize: Bool {
+        !AppSettings.shared.localOnlyMode && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -168,6 +174,12 @@ private struct NotesViewerView: View {
                 Button {
                     exportPDF()
                 } label: { Label("Export PDF", systemImage: "arrow.down.doc") }
+
+                if canSummarize {
+                    Button { summarize() } label: { Label("Summarize", systemImage: "sparkles") }
+                        .disabled(summarizing)
+                        .help("Open a short AI summary of this note in a new window")
+                }
 
                 if let fileURL {
                     Button {
@@ -209,6 +221,25 @@ private struct NotesViewerView: View {
             .padding(10)
         }
         .frame(minWidth: 420, minHeight: 360)
+    }
+
+    /// Quick AI recap of the current note, opened in its own viewer window
+    /// (like Draft Follow-up).
+    private func summarize() {
+        let source = text
+        summarizing = true
+        status = "Summarizing…"
+        let base = fileURL?.deletingPathExtension().lastPathComponent ?? "Note"
+        Task { @MainActor in
+            defer { summarizing = false }
+            do {
+                let summary = try await TextPolisher().quickSummary(text: source)
+                status = ""
+                NotesViewerWindowController.present(draftTitle: "Summary — \(base)", text: summary)
+            } catch {
+                status = "Summary failed: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func draftFollowUp() {

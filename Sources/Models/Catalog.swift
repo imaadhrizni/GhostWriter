@@ -474,14 +474,6 @@ final class CatalogStore: ObservableObject {
     func update(_ o: CatalogOpportunity) {
         mutate { doc in if let i = doc.opportunities.firstIndex(where: { $0.id == o.id }) { doc.opportunities[i] = o } }
     }
-    /// Move an opportunity to a stage (pipeline board drag/drop). No-op if unchanged.
-    func setStage(_ id: String, _ stage: OppStage) {
-        mutate { doc in
-            if let i = doc.opportunities.firstIndex(where: { $0.id == id }), doc.opportunities[i].stage != stage {
-                doc.opportunities[i].stage = stage
-            }
-        }
-    }
     func deleteOpportunity(_ id: String) {
         mutate { doc in
             doc.opportunities.removeAll { $0.id == id }

@@ -174,6 +174,25 @@ final class TextPolisher {
         return trimmed == "NONE" ? "" : trimmed
     }
 
+    /// A quick, plain-language recap of an arbitrary note so the reader knows
+    /// what's in it — a short prose summary, not tied to any meeting template.
+    func quickSummary(text: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(text.suffix(24_000))
+        let requestBody = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                Summarize a note so the reader knows what's in it. Output 5–10 concise Markdown bullet points (each starting with "- ") covering the main topics, any decisions, and any action items. Be factual — never invent content. Output only the bullet list, with no heading, preamble, or closing line.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.3,
+            max_tokens: 600
+        )
+        return try await send(requestBody, timeout: 30)
+    }
+
     // MARK: - Meeting Q&A
 
     /// Answer a question about a meeting transcript.

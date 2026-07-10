@@ -1,5 +1,6 @@
 import SwiftUI
 import ServiceManagement
+import UniformTypeIdentifiers
 
 // MARK: - Window Controller
 
@@ -289,6 +290,10 @@ private struct GeneralPane: View {
                     .foregroundColor(.secondary)
             }
 
+            SettingsGroup("Backup") {
+                BackupRow()
+            }
+
             SettingsGroup("Maintenance") {
                 ResetToDefaultsRow()
             }
@@ -296,6 +301,84 @@ private struct GeneralPane: View {
         .onAppear {
             hasAPIKey = KeychainService.groqAPIKey() != nil
             launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
+}
+
+/// Full-app backup: one zip of meeting notes, quick notes, dictations, and the
+/// Catalog — plus a merging restore. Lives in General because it spans every
+/// data folder, not just one feature.
+private struct BackupRow: View {
+    @State private var status = ""
+    @State private var confirmRestore = false
+    @State private var pendingArchive: URL?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Save everything GhostWriter stores — meeting notes, quick notes, dictations, and the Catalog — as a single `.zip` you can archive or move to another Mac. Restore merges a backup back in; your existing files with the same name are overwritten.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            HStack {
+                Button { backUp() } label: {
+                    Label("Back Up…", systemImage: "square.and.arrow.up.on.square")
+                }
+                Button { pickRestore() } label: {
+                    Label("Restore…", systemImage: "square.and.arrow.down.on.square")
+                }
+                Spacer()
+                if !status.isEmpty {
+                    Text(status).font(.caption).foregroundColor(.secondary)
+                }
+            }
+        }
+        .confirmationDialog("Restore from backup?", isPresented: $confirmRestore, titleVisibility: .visible) {
+            Button("Restore", role: .destructive) { runRestore() }
+            Button("Cancel", role: .cancel) { pendingArchive = nil }
+        } message: {
+            Text("Files from the backup are merged into your current notes, quick notes, dictations, and Catalog. Existing files with the same name are overwritten. This can't be undone.")
+        }
+    }
+
+    private func backUp() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = "GhostWriter-Backup.zip"
+        panel.prompt = "Back Up"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try BackupService.createBackup(to: url)
+            status = "Backed up"
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+
+    private func pickRestore() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.zip]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.prompt = "Restore"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        pendingArchive = url
+        confirmRestore = true
+    }
+
+    private func runRestore() {
+        guard let archive = pendingArchive else { return }
+        pendingArchive = nil
+        do {
+            let s = try BackupService.restoreBackup(from: archive)
+            CatalogStore.shared.load()          // pick up the restored Catalog.json
+            _ = CatalogStore.shared.indexNotesFolder()
+            CatalogStore.shared.refresh()
+            var parts: [String] = []
+            if s.notes { parts.append("notes") }
+            if s.quickNotes { parts.append("quick notes") }
+            if s.dictations { parts.append("dictations") }
+            status = parts.isEmpty ? "Nothing to restore" : "Restored \(parts.joined(separator: ", "))"
+        } catch {
+            status = error.localizedDescription
         }
     }
 }

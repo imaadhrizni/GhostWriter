@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Catalog Window
 //
@@ -96,6 +97,8 @@ private struct CatalogView: View {
     @State private var status = ""
     @State private var showQuickAdd = false
     @State private var showPurge = false
+    @State private var showImportChoice = false
+    @State private var pendingImportData: Data?
     @State private var mapSection: CatalogSection?
     @State private var mapID: String?
     // Notes search + filters (in the window toolbar).
@@ -199,6 +202,13 @@ private struct CatalogView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Deletes every organisation, person, project, opportunity, tag and note link. Your Markdown note files are not touched. This cannot be undone.")
+        }
+        .confirmationDialog("Import catalog", isPresented: $showImportChoice, titleVisibility: .visible) {
+            Button("Merge into current") { runImport(.merge) }
+            Button("Replace current…", role: .destructive) { runImport(.replace) }
+            Button("Cancel", role: .cancel) { pendingImportData = nil }
+        } message: {
+            Text("Merge adds and updates records from the file, keeping everything else. Replace swaps your entire catalog for the file's contents. Your Markdown note files are never touched.")
         }
     }
 
@@ -377,6 +387,18 @@ private struct CatalogView: View {
                 .controlSize(.small)
                 .help("Remove entries whose file no longer exists. Files restored in Finder are re-checked first, not deleted.")
             }
+            HStack(spacing: 6) {
+                Button { exportCatalog() } label: {
+                    Label("Export…", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
+                }
+                .disabled(store.isEmpty)
+                .help("Save the whole catalog to a JSON file — a portable backup you can move to another Mac")
+                Button { importCatalog() } label: {
+                    Label("Import…", systemImage: "square.and.arrow.down").frame(maxWidth: .infinity)
+                }
+                .help("Load a previously exported catalog JSON — merge into or replace the current one")
+            }
+            .controlSize(.small)
             Button(role: .destructive) { showPurge = true } label: {
                 Label("Purge catalog…", systemImage: "trash").frame(maxWidth: .infinity)
             }
@@ -385,6 +407,47 @@ private struct CatalogView: View {
             if !status.isEmpty { Text(status).font(.caption2).foregroundStyle(.secondary) }
         }
         .padding(10)
+    }
+
+    /// Write the catalog to a user-chosen `.json` file.
+    private func exportCatalog() {
+        guard let data = try? store.exportData() else { status = "Export failed"; return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "Catalog.json"
+        panel.prompt = "Export"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url, options: .atomic)
+            status = "Exported catalog"
+        } catch {
+            status = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Pick a `.json` file, validate it, then offer merge/replace.
+    private func importCatalog() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.prompt = "Import"
+        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+        guard store.isValidCatalog(data) else { status = "Not a valid catalog file"; return }
+        pendingImportData = data
+        showImportChoice = true
+    }
+
+    private func runImport(_ mode: CatalogStore.ImportMode) {
+        guard let data = pendingImportData else { return }
+        pendingImportData = nil
+        do {
+            let n = try store.importData(data, mode: mode)
+            store.refresh()
+            status = "Imported \(n) record\(n == 1 ? "" : "s")"
+        } catch {
+            status = "Import failed: \(error.localizedDescription)"
+        }
     }
 }
 

@@ -38,6 +38,7 @@ final class CatalogWindowController: NSWindowController {
 
 private enum CatalogSection: String, CaseIterable, Identifiable {
     case map           = "Map"
+    case pipeline      = "Pipeline"
     case organisations = "Organisations"
     case people        = "People"
     case projects      = "Projects"
@@ -49,13 +50,14 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     /// Sidebar layout: the two ways to look at the catalog on top, then the
     /// underlying records grouped together.
     static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
-        (nil,        [.map, .notes]),
+        (nil,        [.map, .pipeline, .notes]),
         ("Records",  [.organisations, .projects, .opportunities, .people, .tags]),
     ]
 
     var singular: String {
         switch self {
         case .map:           return "Item"
+        case .pipeline:      return "Opportunity"
         case .organisations: return "Organisation"
         case .people:        return "Person"
         case .projects:      return "Project"
@@ -67,6 +69,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .map:           return "point.3.filled.connected.trianglepath.dotted"
+        case .pipeline:      return "rectangle.split.3x1"
         case .organisations: return "building.2"
         case .people:        return "person.2"
         case .projects:      return "folder"
@@ -78,6 +81,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     var tint: Color {
         switch self {
         case .map:           return .purple
+        case .pipeline:      return .green
         case .organisations: return .blue
         case .people:        return .teal
         case .projects:      return .orange
@@ -141,6 +145,7 @@ private struct CatalogView: View {
     private func count(_ s: CatalogSection) -> Int {
         switch s {
         case .map:           return 0
+        case .pipeline:      return store.doc.opportunities.count
         case .organisations: return store.doc.orgs.count
         case .people:        return store.doc.people.count
         case .projects:      return store.doc.projects.count
@@ -188,6 +193,8 @@ private struct CatalogView: View {
                     ContentUnavailableView("Catalog map", systemImage: "point.3.filled.connected.trianglepath.dotted",
                                            description: Text("Expand the tree and pick any item to open it here."))
                 }
+            } else if section == .pipeline {
+                PipelineBoard(store: store)
             } else {
                 EntityDetail(store: store, section: section, selID: $selID)
             }
@@ -215,6 +222,9 @@ private struct CatalogView: View {
     @ViewBuilder private var contentColumn: some View {
         if section == .map {
             MapTree(store: store) { sec, id in mapSection = sec; mapID = id }
+        } else if section == .pipeline {
+            ContentUnavailableView("Pipeline", systemImage: "rectangle.split.3x1",
+                                   description: Text("Opportunities grouped by stage. Drag a card between columns to change its stage."))
         } else if section == .notes {
             VStack(spacing: 0) {
                 activeFilterBar
@@ -643,6 +653,125 @@ private struct NoteRow: View {
     }
 }
 
+/// One row in a relationship timeline: date + title, opens the note. Rows are
+/// expected to be fed newest-first by the caller.
+private struct TimelineRow: View {
+    let note: CatalogNote
+    var body: some View {
+        Button { openNote(note) } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(note.title).lineLimit(1)
+                    if let d = note.date {
+                        Text(d, style: .date).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Image(systemName: "arrow.up.forward").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Chronological (newest-first) list of an org's or person's notes — the
+/// relationship history at a glance.
+private struct RelationshipTimeline: View {
+    let notes: [CatalogNote]
+    var body: some View {
+        let sorted = notes.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+        ForEach(sorted) { TimelineRow(note: $0) }
+    }
+}
+
+// MARK: Pipeline (kanban) board
+
+/// Opportunities laid out as columns by stage. Drag a card to another column
+/// to change its stage; tap a card to edit it.
+private struct PipelineBoard: View {
+    @ObservedObject var store: CatalogStore
+    @State private var editID: String?
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(alignment: .top, spacing: 14) {
+                ForEach(OppStage.allCases) { stage in
+                    PipelineColumn(store: store, stage: stage, editID: $editID)
+                }
+            }
+            .padding(14)
+        }
+        .navigationTitle("Pipeline")
+        .sheet(isPresented: Binding(get: { editID != nil }, set: { if !$0 { editID = nil } })) {
+            if let id = editID, let o = store.opportunity(id) {
+                OpportunityEditor(store: store, opp: o) { editID = nil }
+                    .frame(minWidth: 380, minHeight: 420)
+            }
+        }
+    }
+}
+
+private struct PipelineColumn: View {
+    @ObservedObject var store: CatalogStore
+    let stage: OppStage
+    @Binding var editID: String?
+    @State private var targeted = false
+
+    private var opps: [CatalogOpportunity] {
+        store.doc.opportunities.filter { $0.stage == stage }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                StageBadge(stage)
+                Spacer()
+                Text("\(opps.count)").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(opps) { o in
+                PipelineCard(store: store, opp: o)
+                    .draggable(o.id)
+                    .onTapGesture { editID = o.id }
+            }
+            if opps.isEmpty {
+                Text("Drop here").font(.caption2).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 12)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(width: 220, alignment: .top)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(targeted ? 0.18 : 0.06)))
+        .dropDestination(for: String.self) { ids, _ in
+            for id in ids { store.setStage(id, stage) }
+            return !ids.isEmpty
+        } isTargeted: { targeted = $0 }
+    }
+}
+
+private struct PipelineCard: View {
+    @ObservedObject var store: CatalogStore
+    let opp: CatalogOpportunity
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(opp.name).font(.callout).fontWeight(.medium).lineLimit(2)
+            if let org = store.org(forOpportunity: opp) {
+                Text(store.orgPath(of: org.id)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if let cents = opp.valueCents {
+                Text("\(opp.currency) \(cents / 100)").font(.caption2).foregroundStyle(.green)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.15)))
+        .contentShape(Rectangle())
+    }
+}
+
 private struct EmptyDetail: View {
     let section: CatalogSection
     var body: some View {
@@ -662,7 +791,7 @@ private struct EntityList: View {
     var body: some View {
         Group {
             switch section {
-            case .map:           EmptyView()   // handled by CatalogView
+            case .map, .pipeline: EmptyView()   // handled by CatalogView
             case .organisations: orgList
             case .people:        List(store.doc.people.sortedByName, selection: $selID) { Text($0.name).tag($0.id) }
             case .projects:      projectList
@@ -741,7 +870,7 @@ private struct EntityList: View {
 
     private func add() {
         switch section {
-        case .map:           break
+        case .map, .pipeline: break
         case .organisations: selID = store.addOrg(name: "New Organisation").id
         case .people:        selID = store.addPerson(name: "New Person").id
         case .projects:      selID = store.addProject(name: "New Project").id
@@ -787,7 +916,7 @@ private struct EntityEditorView: View {
 
     var body: some View {
         switch section {
-        case .map: EmptyView()
+        case .map, .pipeline: EmptyView()
         case .organisations:
             if let o = store.org(id) { OrgEditor(store: store, org: o, onDelete: onDelete) } else { missing }
         case .people:
@@ -896,7 +1025,7 @@ private struct OrgEditor: View {
             let projects = store.projects(forOrg: draft.id)
             if !projects.isEmpty { Section("Projects") { ForEach(projects) { Text($0.name) } } }
             let notes = store.notes(forOrg: draft.id, includingDescendants: true)
-            if !notes.isEmpty { Section("Notes (incl. sub-orgs)") { ForEach(notes) { NoteRow(note: $0) } } }
+            if !notes.isEmpty { Section("Timeline (incl. sub-orgs)") { RelationshipTimeline(notes: notes) } }
             Section { Button("Delete Organisation", role: .destructive) { store.deleteOrg(draft.id); onDelete() } }
         }
         .formStyle(.grouped)
@@ -938,7 +1067,7 @@ private struct PersonEditor: View {
             }
             let notes = store.notes(forPerson: draft.id)
             if !notes.isEmpty {
-                Section("Notes") { ForEach(notes) { NoteRow(note: $0) } }
+                Section("Timeline") { RelationshipTimeline(notes: notes) }
             }
             Section { Button("Delete Person", role: .destructive) { store.deletePerson(draft.id); onDelete() } }
         }

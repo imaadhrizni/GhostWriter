@@ -839,6 +839,7 @@ private struct ShortcutsPane: View {
             SettingsGroup("Meeting Mode") {
                 ShortcutRow(keys: "⌃⌥M", detail: "Start / stop Meeting Mode")
                 ShortcutRow(keys: "⌃⌥P", detail: "Pause / resume meeting transcription")
+                ShortcutRow(keys: "⌃⌥B", detail: "Bookmark the current moment in a running meeting")
                 ShortcutRow(keys: "⌃⌥N", detail: "Open meeting notes (live file, or the notes folder)")
             }
 
@@ -1072,6 +1073,14 @@ private struct MeetingNotesPane: View {
                 Divider()
                 Toggle("Append action items", isOn: $settings.actionItemsEnabled)
                 Text("Adds an Action Items checklist (with owners when identifiable). Shown per note in the Catalog, with export to Reminders.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Extract decisions, risks & open questions", isOn: $settings.structuredExtraction)
+                Text("Adds Decisions, Risks & Blockers, and Open Questions sections to the summary. Requires network access.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Add topic chapters", isOn: $settings.topicChapters)
+                Text("Appends a timestamped jump-list segmenting the meeting into topics. One extra AI call per meeting; disabled in Local-only mode.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Auto-tag topics & entities into front-matter", isOn: $settings.autoTagging)

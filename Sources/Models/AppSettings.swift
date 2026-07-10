@@ -34,6 +34,8 @@ final class AppSettings: ObservableObject {
         static let overlayMode            = "meeting.overlayMode"
         static let summariesEnabled       = "meeting.summariesEnabled"
         static let actionItemsEnabled     = "meeting.actionItemsEnabled"
+        static let structuredExtraction   = "meeting.structuredExtraction"
+        static let topicChapters          = "meeting.topicChapters"
         static let liveAssistantEnabled   = "meeting.liveAssistantEnabled"
         static let notifyOnMeetingEnd     = "meeting.notifyOnMeetingEnd"
         static let frontMatterEnabled     = "meeting.frontMatterEnabled"
@@ -89,7 +91,8 @@ final class AppSettings: ObservableObject {
                           silenceDebounce, maxSegmentSeconds, echoGateWindow,
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
                           notesFolderPath, overlayMode,
-                          summariesEnabled, actionItemsEnabled, liveAssistantEnabled,
+                          summariesEnabled, actionItemsEnabled,
+                          structuredExtraction, topicChapters, liveAssistantEnabled,
                           notifyOnMeetingEnd, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, transcriptionLanguage,
                           vocabulary, replacements, appProfiles,
@@ -129,6 +132,8 @@ final class AppSettings: ObservableObject {
         static let overlayMode                     = MeetingOverlayMode.minimal
         static let summariesEnabled                = true
         static let actionItemsEnabled              = true
+        static let structuredExtraction            = true
+        static let topicChapters                   = true
         static let liveAssistantEnabled            = true
         static let notifyOnMeetingEnd              = true
         static let frontMatterEnabled              = true
@@ -324,6 +329,18 @@ final class AppSettings: ObservableObject {
     var actionItemsEnabled: Bool {
         get { bool(Key.actionItemsEnabled, Default.actionItemsEnabled) }
         set { set(newValue, Key.actionItemsEnabled) }
+    }
+
+    /// Append Decisions / Risks / Open Questions blocks to the meeting summary.
+    var structuredExtraction: Bool {
+        get { bool(Key.structuredExtraction, Default.structuredExtraction) }
+        set { set(newValue, Key.structuredExtraction) }
+    }
+
+    /// Append a topic-chapter jump-list (timestamped) to finished meeting notes.
+    var topicChapters: Bool {
+        get { bool(Key.topicChapters, Default.topicChapters) }
+        set { set(newValue, Key.topicChapters) }
     }
 
     /// Show a live rolling brief (TL;DR + open action items) during a meeting.

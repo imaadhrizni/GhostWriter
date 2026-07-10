@@ -484,6 +484,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.toggleQuickNote()
         }
 
+        // ⌃⌥B — drop a timestamped bookmark in the running meeting
+        hotkeyManager.onBookmarkHotkey = { [weak self] in
+            self?.dropMeetingBookmark()
+        }
+
         // Esc — cancel an in-flight dictation without typing anything
         hotkeyManager.shouldCaptureEscape = { [weak self] in
             self?.appState.recordingState == .listening
@@ -712,6 +717,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return Redactor.redact(text)
     }
 
+    /// ⌃⌥B handler — bookmark the current moment in a running meeting. Writes an
+    /// inline marker now; a jump-list is appended when the meeting ends.
+    private func dropMeetingBookmark() {
+        guard appState.isMeetingMode, let start = meetingStartTime else { return }
+        let elapsed = Int(Date().timeIntervalSince(start))
+        meetingNotes.addBookmark(elapsed: elapsed)
+        // Light confirmation — shows in caption mode, harmlessly overwritten by
+        // the next transcript line otherwise.
+        appState.meetingCaption = String(format: "★ Bookmarked %d:%02d", elapsed / 60, elapsed % 60)
+    }
+
     /// After a meeting ends: append the AI summary (if enabled), then notify (if enabled).
     private func finalizeMeetingNotes(startedAt start: Date, agenda: [String] = [],
                                       catalogTarget: (kind: String, id: String)? = nil) {
@@ -737,21 +753,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 else if target.kind == "org" { store.setOrg(target.id, on: note.id, true) }
             }
 
+            // Bookmarks jump-list (timestamps dropped via ⌃⌥B during the meeting).
+            self.meetingNotes.appendBookmarks(to: fileURL)
+
             let wantsSummary = self.settings.summariesEnabled
             let wantsActions = self.settings.actionItemsEnabled
+            let wantsStructured = self.settings.structuredExtraction
+            let wantsChapters = self.settings.topicChapters
             // Local-only mode never contacts the network — no LLM summary/tags.
             // Each cloud feature below is independently toggleable; the shared
             // gate is only "cloud allowed + enough real speech to work with".
             if !self.settings.localOnlyMode,
                let transcript = self.meetingNotes.transcriptText(of: fileURL),
                Self.dialogueLength(of: transcript) > 200 {  // measure actual speech, not header/markers
-                if wantsSummary || wantsActions {
+                if wantsSummary || wantsActions || wantsStructured {
                     do {
                         let raw = try await self.textPolisher.summarize(
                             transcript: transcript,
                             template: self.settings.selectedTemplate,
                             includeSummary: wantsSummary,
-                            includeActionItems: wantsActions)
+                            includeActionItems: wantsActions,
+                            includeStructured: wantsStructured)
                         if let summary = Self.sanitizedSummary(raw) {
                             self.meetingNotes.appendSummary(summary, to: fileURL)
                         } else {
@@ -760,6 +782,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     } catch {
                         Log.meeting.error("❌ Summary failed: \(error.localizedDescription)")
                         self.reportError("Meeting summary failed: \(error.localizedDescription)")
+                    }
+                }
+
+                // Topic chapters: a timestamped jump-list segmenting the meeting.
+                if wantsChapters {
+                    do {
+                        let chapters = try await self.textPolisher.chapters(transcript: transcript)
+                        if !chapters.isEmpty { self.meetingNotes.appendChapters(chapters, to: fileURL) }
+                    } catch {
+                        Log.meeting.error("❌ Chapters failed: \(error.localizedDescription)")
                     }
                 }
 
@@ -1108,6 +1140,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             meetingAgenda = Self.parseAgenda(accessory.agendaField.stringValue)
             meetingLiveBrief = accessory.liveBrief.isEnabled ? (accessory.liveBrief.state == .on) : false
             meetingCatalogTarget = resolveCatalogTarget(accessory.catalog.selectedItem?.representedObject as? String)
+            // Prep card: surface recent context for the chosen org/opp before
+            // recording starts. No extra input — driven by the link just picked.
+            if let target = meetingCatalogTarget { showMeetingPrepCard(for: target) }
             // Hold the prompt flag through the async start so a queued ⌃⌥M
             // can't open a spurious second dialog before isMeetingMode flips.
             Task { @MainActor in
@@ -1154,6 +1189,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let parts = repr.split(separator: ":", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { return nil }
         return (parts[0], parts[1])
+    }
+
+    /// Meeting prep card: a quick, non-editable recap of recent context for the
+    /// org/opportunity chosen in the Start dialog, shown just before recording.
+    /// Reuses the catalog's relationship timeline (recent notes). Skipped when
+    /// there's no prior history to show.
+    private func showMeetingPrepCard(for target: (kind: String, id: String)) {
+        let prep: (name: String, lines: [String])? = MainActor.assumeIsolated {
+            let store = CatalogStore.shared
+            let name: String
+            let notes: [CatalogNote]
+            if target.kind == "opp", let o = store.opportunity(target.id) {
+                name = o.name; notes = store.notes(forOpportunity: o)
+            } else if target.kind == "org", let o = store.org(target.id) {
+                name = store.orgPath(of: o.id); notes = store.notes(forOrg: o.id, includingDescendants: true)
+            } else { return nil }
+            let df = DateFormatter(); df.dateStyle = .medium
+            let recent = notes.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }.prefix(3)
+            let lines = recent.map { n -> String in
+                "• \(n.title)  (\(n.date.map { df.string(from: $0) } ?? "—"))"
+            }
+            return lines.isEmpty ? nil : (name, Array(lines))
+        }
+        guard let prep else { return }   // nothing to prep from — don't interrupt
+        let alert = NSAlert()
+        alert.messageText = "Prep — \(prep.name)"
+        alert.informativeText = "Recent notes:\n" + prep.lines.joined(separator: "\n")
+        alert.addButton(withTitle: "Start Meeting")
+        alert.alertStyle = .informational
+        alert.runModal()
     }
 
     /// Present the Quick Add sheet modally and return the created opportunity's

@@ -18,6 +18,10 @@ final class MeetingNotesWriter {
     private let contextLock = NSLock()
     private var recentSegments: [String] = []
 
+    /// Timestamped bookmarks (seconds since start) dropped via the hotkey during
+    /// the meeting; written out as a jump-list at finalize. Reset each session.
+    private var bookmarks: [(elapsed: Int, note: String)] = []
+
     /// The tail of the recent transcript, fed back as a transcription prompt
     /// hint for the next segment. Empty until the first segment lands.
     var promptContext: String {
@@ -239,6 +243,7 @@ final class MeetingNotesWriter {
     /// Call when meeting mode starts. Creates the notes file and writes the header.
     func beginSession() {
         nameOverrides.removeAll()
+        bookmarks.removeAll()
         contextLock.lock(); recentSegments.removeAll(); contextLock.unlock()
         do {
             try FileManager.default.createDirectory(at: notesDirectory, withIntermediateDirectories: true)
@@ -296,6 +301,36 @@ final class MeetingNotesWriter {
         Log.meeting.info("📝 Summary appended")
     }
 
+    /// Drop a timestamped bookmark at the current point in the meeting: writes
+    /// an inline marker into the transcript (so you can find the moment in
+    /// context) and remembers it for the end-of-meeting jump-list. `elapsed` is
+    /// seconds since the meeting began. No-op if no file is open.
+    func addBookmark(elapsed: Int, note: String = "") {
+        guard let fileURL = currentFilePath else { return }
+        bookmarks.append((elapsed, note))
+        let suffix = note.isEmpty ? "" : " — \(note)"
+        append("\n> ★ **Bookmark \(Self.clock(elapsed))**\(suffix)\n", to: fileURL)
+        Log.meeting.info("★ Bookmark at \(Self.clock(elapsed))")
+    }
+
+    /// Number of bookmarks dropped in the current session (for UI feedback).
+    var bookmarkCount: Int { bookmarks.count }
+
+    /// Append a Bookmarks jump-list of the timestamps captured this meeting.
+    func appendBookmarks(to fileURL: URL) {
+        guard !bookmarks.isEmpty else { return }
+        let lines = bookmarks.map { b -> String in
+            let suffix = b.note.isEmpty ? "" : " — \(b.note)"
+            return "- ★ \(Self.clock(b.elapsed))\(suffix)"
+        }
+        append("\n# Bookmarks\n\n\(lines.joined(separator: "\n"))\n", to: fileURL)
+        Log.meeting.info("★ Bookmarks appended")
+    }
+
+    private static func clock(_ seconds: Int) -> String {
+        String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
     /// Append an Agenda section as a Markdown checklist. `entries` are
     /// (text, covered, dynamic) — dynamic items are the topics the meeting
     /// itself raised, marked so they read apart from the planned agenda.
@@ -308,6 +343,15 @@ final class MeetingNotesWriter {
         }
         append("\n# Agenda\n\n\(lines.joined(separator: "\n"))\n", to: fileURL)
         Log.meeting.info("🗒 Agenda appended")
+    }
+
+    /// Append a Chapters section — a timestamped topic jump-list produced by the
+    /// summarizer. `body` is already-formatted Markdown bullet lines.
+    func appendChapters(_ body: String, to fileURL: URL) {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        append("\n# Chapters\n\n\(trimmed)\n", to: fileURL)
+        Log.meeting.info("📖 Chapters appended")
     }
 
     /// Merge topic tags into the YAML front-matter `tags: [...]` line. No-op if

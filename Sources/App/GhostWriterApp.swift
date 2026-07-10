@@ -1141,8 +1141,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             meetingLiveBrief = accessory.liveBrief.isEnabled ? (accessory.liveBrief.state == .on) : false
             meetingCatalogTarget = resolveCatalogTarget(accessory.catalog.selectedItem?.representedObject as? String)
             // Prep card: surface recent context for the chosen org/opp before
-            // recording starts. No extra input — driven by the link just picked.
-            if let target = meetingCatalogTarget { showMeetingPrepCard(for: target) }
+            // recording starts — unless switched off for this meeting.
+            if let target = meetingCatalogTarget, accessory.prepCard.state == .on {
+                showMeetingPrepCard(for: target)
+            }
             // Hold the prompt flag through the async start so a queued ⌃⌥M
             // can't open a spurious second dialog before isMeetingMode flips.
             Task { @MainActor in
@@ -1253,6 +1255,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let picker = NSPopUpButton(frame: .zero, pullsDown: false)
         let agendaField = NSTextField(frame: .zero)
         let liveBrief = NSSwitch(frame: .zero)
+        let prepCard = NSSwitch(frame: .zero)
+        let prepLabel = NSTextField(labelWithString: "Show prep card")
+
+        /// The prep card only makes sense with a catalog link — enable the
+        /// switch (and un-dim its label) only when an org/opportunity is chosen.
+        @objc func catalogChanged() {
+            let repr = catalog.selectedItem?.representedObject as? String ?? ""
+            let linked = !repr.isEmpty && repr != "__sep__"
+            prepCard.isEnabled = linked
+            prepLabel.textColor = linked ? .labelColor : .tertiaryLabelColor
+        }
     }
 
     /// The catalog entity to link the resulting note to (chosen at start).
@@ -1268,11 +1281,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // and groups are separated by `groupGap`. Everything is laid out top-down
         // with a cursor so the spacing stays even and easy to retune.
         let capH: CGFloat = 15, popH: CGFloat = 26, fieldH: CGFloat = 44, rowH: CGFloat = 22
-        let capGap: CGFloat = 3, groupGap: CGFloat = 14
+        let capGap: CGFloat = 3, groupGap: CGFloat = 14, rowGap: CGFloat = 6
         let height = capH + capGap + popH + groupGap
                    + capH + capGap + popH + groupGap
                    + capH + capGap + fieldH + groupGap
-                   + rowH
+                   + rowH + rowGap + rowH
         let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: height))
 
         // Distance consumed from the top edge; `place` reserves the next element
@@ -1301,6 +1314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             catalog.addItem(withTitle: opt.title)
             catalog.lastItem?.representedObject = opt.repr
         }
+        catalog.target = container
+        catalog.action = #selector(StartAccessory.catalogChanged)
         container.addSubview(catalog)
         top += groupGap
 
@@ -1362,6 +1377,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         liveLabel.toolTip = tip
         container.addSubview(liveLabel)
         container.addSubview(live)
+
+        // Prep card (below live brief) — show recent notes for the linked
+        // org/opp when this meeting starts. On by default; only ever appears
+        // when a link is chosen and it has prior notes.
+        top += rowGap
+        let prepRowY = place(rowH)
+        let prep = container.prepCard
+        prep.controlSize = .mini
+        prep.sizeToFit()
+        prep.frame = NSRect(x: width - prep.frame.width,
+                            y: prepRowY + (rowH - prep.frame.height) / 2,
+                            width: prep.frame.width, height: prep.frame.height)
+        prep.state = AppSettings.shared.meetingPrepCard ? .on : .off
+        let prepLabel = container.prepLabel
+        prepLabel.frame = NSRect(x: 0, y: prepRowY + (rowH - 16) / 2,
+                                 width: width - prep.frame.width - 8, height: 16)
+        prepLabel.font = .systemFont(ofSize: 12)
+        let prepTip = "When linked to an org/opportunity, pops a panel of its recent notes as the meeting starts. Applies to this meeting only."
+        prep.toolTip = prepTip
+        prepLabel.toolTip = prepTip
+        container.addSubview(prepLabel)
+        container.addSubview(prep)
+
+        // Set the prep switch's initial enabled state from the default link.
+        container.catalogChanged()
 
         return container
     }

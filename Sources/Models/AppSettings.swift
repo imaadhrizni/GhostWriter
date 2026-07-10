@@ -37,6 +37,7 @@ final class AppSettings: ObservableObject {
         static let structuredExtraction   = "meeting.structuredExtraction"
         static let topicChapters          = "meeting.topicChapters"
         static let liveAssistantEnabled   = "meeting.liveAssistantEnabled"
+        static let meetingPrepCard        = "meeting.prepCard"
         static let notifyOnMeetingEnd     = "meeting.notifyOnMeetingEnd"
         static let frontMatterEnabled     = "meeting.frontMatterEnabled"
         static let diarizationEnabled     = "meeting.diarizationEnabled"
@@ -92,7 +93,7 @@ final class AppSettings: ObservableObject {
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
-                          structuredExtraction, topicChapters, liveAssistantEnabled,
+                          structuredExtraction, topicChapters, liveAssistantEnabled, meetingPrepCard,
                           notifyOnMeetingEnd, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, transcriptionLanguage,
                           vocabulary, replacements, appProfiles,
@@ -135,6 +136,7 @@ final class AppSettings: ObservableObject {
         static let structuredExtraction            = true
         static let topicChapters                   = true
         static let liveAssistantEnabled            = true
+        static let meetingPrepCard                 = true
         static let notifyOnMeetingEnd              = true
         static let frontMatterEnabled              = true
         static let diarizationEnabled              = true
@@ -348,6 +350,13 @@ final class AppSettings: ObservableObject {
     var liveAssistantEnabled: Bool {
         get { bool(Key.liveAssistantEnabled, Default.liveAssistantEnabled) }
         set { set(newValue, Key.liveAssistantEnabled) }
+    }
+
+    /// Default for the per-meeting "Show prep card" switch — pops a panel of the
+    /// linked org/opportunity's recent notes when a meeting starts.
+    var meetingPrepCard: Bool {
+        get { bool(Key.meetingPrepCard, Default.meetingPrepCard) }
+        set { set(newValue, Key.meetingPrepCard) }
     }
 
     /// Show a notification when meeting notes are saved.

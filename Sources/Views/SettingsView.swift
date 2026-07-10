@@ -1090,9 +1090,13 @@ private struct MeetingNotesPane: View {
                 Toggle("Notify when notes are saved", isOn: $settings.notifyOnMeetingEnd)
             }
 
-            SettingsGroup("Live Brief") {
+            SettingsGroup("During the Meeting") {
                 Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
                 Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Show prep card on start", isOn: $settings.meetingPrepCard)
+                Text("When a meeting is linked to an organisation or opportunity, a floating panel of that entity's recent notes appears as the meeting starts. This is the default for the per-meeting switch in the start dialog.")
                     .font(.caption).foregroundColor(.secondary)
             }
 

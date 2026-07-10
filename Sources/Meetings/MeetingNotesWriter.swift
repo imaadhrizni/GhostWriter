@@ -313,9 +313,6 @@ final class MeetingNotesWriter {
         Log.meeting.info("★ Bookmark at \(Self.clock(elapsed))")
     }
 
-    /// Number of bookmarks dropped in the current session (for UI feedback).
-    var bookmarkCount: Int { bookmarks.count }
-
     /// Append a Bookmarks jump-list of the timestamps captured this meeting.
     func appendBookmarks(to fileURL: URL) {
         guard !bookmarks.isEmpty else { return }

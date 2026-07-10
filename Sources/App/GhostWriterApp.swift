@@ -713,7 +713,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// After a meeting ends: append the AI summary (if enabled), then notify (if enabled).
-    private func finalizeMeetingNotes(startedAt start: Date, agenda: [String] = []) {
+    private func finalizeMeetingNotes(startedAt start: Date, agenda: [String] = [],
+                                      catalogTarget: (kind: String, id: String)? = nil) {
         guard let fileURL = meetingNotes.lastCompletedFilePath else { return }
 
         let elapsed = Int(Date().timeIntervalSince(start))
@@ -725,8 +726,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Link the note into the Catalog under the opportunity/org chosen at
             // start (if any), creating its catalog row from the file path.
             await MainActor.run {
-                guard let target = self.meetingCatalogTarget else { return }
-                self.meetingCatalogTarget = nil
+                guard let target = catalogTarget else { return }
                 let store = CatalogStore.shared
                 let root = AppSettings.shared.notesFolder.path + "/"
                 let rel = fileURL.path.replacingOccurrences(of: root, with: "")
@@ -1510,6 +1510,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // before clearing it for the next meeting.
         let agendaForNotes = meetingAgenda
         meetingAgenda = []
+        // Snapshot the catalog target NOW, before the async finalize below.
+        // It's a shared field; a meeting started during the ~20s finalize wait
+        // would otherwise overwrite it, mislinking this note (or dropping the
+        // link entirely). Clearing it here also prevents leaking into the next.
+        let catalogTargetForNotes = meetingCatalogTarget
+        meetingCatalogTarget = nil
 
         micCapture.stop()
         systemAudioCapture.stop()
@@ -1545,7 +1551,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 await self.waitForPendingTranscriptions(timeout: 20)
                 await self.finalRetryPass()
                 self.meetingNotes.endSession(startedAt: start)
-                self.finalizeMeetingNotes(startedAt: start, agenda: agendaForNotes)
+                self.finalizeMeetingNotes(startedAt: start, agenda: agendaForNotes,
+                                          catalogTarget: catalogTargetForNotes)
             }
         }
 

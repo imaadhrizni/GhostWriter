@@ -418,7 +418,7 @@ private struct DictationPane: View {
                     .font(.system(.body, design: .monospaced))
                     .frame(height: 54)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
-                Text("Names, acronyms, jargon — comma or newline separated. Whisper biases toward these terms (e.g. WSO2, Sivanoly, Choreo).")
+                Text("Names, acronyms, jargon — comma or newline separated. Whisper biases toward these terms (e.g. Kubernetes, Grafana, PostgreSQL).")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Text("Replacements").font(.caption.bold())
@@ -426,7 +426,7 @@ private struct DictationPane: View {
                     .font(.system(.body, design: .monospaced))
                     .frame(height: 54)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
-                Text("Applied after transcription, one rule per line: wrong => right (e.g. west of two => WSO2).")
+                Text("Applied after transcription, one rule per line: wrong => right (e.g. cuber netties => Kubernetes).")
                     .font(.caption).foregroundColor(.secondary)
             }
 

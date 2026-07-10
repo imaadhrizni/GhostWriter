@@ -674,7 +674,7 @@ private struct TimelineRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(note.title).lineLimit(1)
                     if let d = note.date {
-                        Text(d, style: .date).font(.caption2).foregroundStyle(.secondary)
+                        Text(d.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
@@ -1284,7 +1284,7 @@ private struct NotesList: View {
                                 }
                             }
                             HStack(spacing: 6) {
-                                if let d = n.date { Text(d, style: .date) }
+                                if let d = n.date { Text(d.formatted(date: .abbreviated, time: .shortened)) }
                                 if !n.tagIDs.isEmpty { Text("· \(n.tagIDs.count) tags") }
                             }
                             .font(.caption2).foregroundStyle(.secondary)
@@ -1442,7 +1442,7 @@ private struct NoteLinkEditor: View {
         Form {
             Section {
                 Button { openNote(note) } label: { Label("Open note", systemImage: "arrow.up.forward.app") }
-                if let d = note.date { LabeledContent("Date") { Text(d, style: .date) } }
+                if let d = note.date { LabeledContent("Date") { Text(d.formatted(date: .abbreviated, time: .shortened)) } }
             }
 
             // Single "Filed under": the note's opportunity OR org, as removable

@@ -1108,7 +1108,9 @@ private struct MeetingNotesPane: View {
 
     private func pickNotesFolder() {
         if let url = chooseFolder(startingAt: settings.notesFolder) {
+            let oldFolder = settings.notesFolder
             settings.notesFolder = url
+            CatalogStore.shared.notesFolderDidChange(from: oldFolder)
         }
     }
 }

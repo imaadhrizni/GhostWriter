@@ -247,6 +247,28 @@ final class CatalogStore: ObservableObject {
         save()
     }
 
+    /// Handle the notes folder being pointed somewhere new in Settings.
+    /// `Catalog.json` lives *in* the notes folder, and every note is stored as
+    /// a path relative to it — so if we did nothing, the next `load()` would
+    /// read an absent file at the new location and the catalog would look
+    /// wiped (with the old one orphaned behind it). Instead we carry the file
+    /// across: if the old folder had a catalog and the new one doesn't, move
+    /// it, then reload so memory matches disk. A folder that already has its
+    /// own `Catalog.json` is respected (loaded, not overwritten). Note files
+    /// themselves are never moved — that's the user's choice.
+    func notesFolderDidChange(from oldFolder: URL) {
+        let fm = FileManager.default
+        let newFolder = AppSettings.shared.notesFolder
+        guard oldFolder.standardizedFileURL.path != newFolder.standardizedFileURL.path else { return }
+        let oldFile = oldFolder.appendingPathComponent("Catalog.json")
+        let newFile = newFolder.appendingPathComponent("Catalog.json")
+        if fm.fileExists(atPath: oldFile.path), !fm.fileExists(atPath: newFile.path) {
+            try? fm.createDirectory(at: newFolder, withIntermediateDirectories: true)
+            try? fm.moveItem(at: oldFile, to: newFile)
+        }
+        load()   // if the move (or an existing catalog) gave us a file to read; otherwise a no-op that keeps memory intact
+    }
+
     /// Wipe the entire catalog (orgs, people, projects, opportunities, tags,
     /// note links). Does not touch the Markdown note files themselves.
     func purgeAll() {

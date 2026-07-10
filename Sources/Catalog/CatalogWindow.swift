@@ -644,7 +644,8 @@ struct EntitySearchBar: View {
                 .buttonStyle(.plain).help("Clear search")
             }
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .quaternaryLabelColor).opacity(0.5)))
     }
 }
 
@@ -693,6 +694,72 @@ private struct RelationshipTimeline: View {
     }
 }
 
+/// On-demand AI digest across an entity's recent notes — "where things stand".
+/// Reads up to the 5 most recent notes and opens the summary in its own window.
+private struct RelationshipSummaryButton: View {
+    @ObservedObject var store: CatalogStore
+    let entityName: String
+    let notes: [CatalogNote]
+    @State private var working = false
+    @State private var status = ""
+
+    private var canRun: Bool { !AppSettings.shared.localOnlyMode && !notes.isEmpty }
+
+    /// Insert a blank line before the "Next Steps" / "Action Items" labels so
+    /// each block reads more clearly, regardless of the model's own spacing.
+    private static func spaced(_ body: String) -> String {
+        body.components(separatedBy: "\n").flatMap { line -> [String] in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            return (t == "Next Steps" || t == "Action Items") ? ["", line] : [line]
+        }.joined(separator: "\n")
+    }
+
+    var body: some View {
+        if canRun {
+            Button { run() } label: {
+                Label(working ? "Summarizing…" : "Summarize relationship", systemImage: "sparkles")
+            }
+            .disabled(working)
+            Text("Reads the 5 most recent notes and opens a cross-meeting digest in a new window.")
+                .font(.caption).foregroundStyle(.secondary)
+            if !status.isEmpty { Text(status).font(.caption).foregroundStyle(.red.opacity(0.8)) }
+        }
+    }
+
+    private func run() {
+        working = true; status = ""
+        let recent = notes.sortedByDateDescending.prefix(5)
+        let entries = recent.map { (title: $0.title, url: store.url(of: $0)) }
+        let name = entityName
+        Task { @MainActor in
+            defer { working = false }
+            let polisher = TextPolisher()
+            var blocks: [String] = []
+            var lastError: String?
+            // One call per meeting so blocks stay separate (never blended). A
+            // single note failing (e.g. a transient rate limit) is skipped so
+            // the rest of the digest still opens.
+            for e in entries {
+                guard let text = try? String(contentsOf: e.url, encoding: .utf8), !text.isEmpty else { continue }
+                do {
+                    let body = try await polisher.meetingDigest(text: text)
+                    blocks.append("\(e.title)\n\(Self.spaced(body))")
+                } catch {
+                    lastError = error.localizedDescription
+                }
+            }
+            guard !blocks.isEmpty else {
+                status = "Summary failed: \(lastError ?? "no note content to summarize.")"
+                return
+            }
+            // Two blank lines between meetings.
+            NotesViewerWindowController.present(draftTitle: "Relationship — \(name)",
+                                               text: blocks.joined(separator: "\n\n\n"))
+            if lastError != nil { status = "Some meetings were skipped (\(lastError!))." }
+        }
+    }
+}
+
 private struct EmptyDetail: View {
     let section: CatalogSection
     var body: some View {
@@ -719,6 +786,7 @@ private struct EntityList: View {
     var body: some View {
         VStack(spacing: 0) {
             EntitySearchBar(text: $search, placeholder: "Filter \(section.rawValue.lowercased())")
+                .padding(.horizontal, 8).padding(.vertical, 6)
             Divider()
             Group {
                 switch section {
@@ -978,7 +1046,10 @@ private struct OrgEditor: View {
             let projects = store.projects(forOrg: draft.id)
             if !projects.isEmpty { Section("Projects") { ForEach(projects) { Text($0.name) } } }
             let notes = store.notes(forOrg: draft.id, includingDescendants: true)
-            if !notes.isEmpty { Section("Timeline (incl. sub-orgs)") { RelationshipTimeline(notes: notes) } }
+            if !notes.isEmpty {
+                Section("Relationship") { RelationshipSummaryButton(store: store, entityName: draft.name, notes: notes) }
+                Section("Timeline (incl. sub-orgs)") { RelationshipTimeline(notes: notes) }
+            }
             Section { Button("Delete Organisation", role: .destructive) { store.deleteOrg(draft.id); onDelete() } }
         }
         .formStyle(.grouped)
@@ -1101,7 +1172,8 @@ private struct OpportunityEditor: View {
             }
             let notes = store.notes(forOpportunity: draft)
             if !notes.isEmpty {
-                Section("Notes") { ForEach(notes) { NoteRow(note: $0) } }
+                Section("Relationship") { RelationshipSummaryButton(store: store, entityName: draft.name, notes: notes) }
+                Section("Timeline") { RelationshipTimeline(notes: notes) }
             }
             Section { Button("Delete Opportunity", role: .destructive) { store.deleteOpportunity(draft.id); onDelete() } }
         }
@@ -1357,39 +1429,14 @@ private struct NoteAskView: View {
     }
 }
 
-// MARK: Note editor (opportunities/projects assignable; org/people inherited)
+// MARK: Note editor — chip-based assignment
 
 private struct NoteLinkEditor: View {
     @ObservedObject var store: CatalogStore
     let note: CatalogNote
-    @State private var newToken = ""
-    @State private var newTag = ""
-    @State private var newPerson = ""
-    @State private var personFilter = ""
-    @State private var tagFilter = ""
+    @State private var showAssign = false
 
     private var current: CatalogNote { store.note(id: note.id) ?? note }
-
-    private func filterMatch(_ name: String, _ query: String) -> Bool {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return q.isEmpty || name.lowercased().contains(q)
-    }
-
-    private func addTag() {
-        let name = newTag.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return }
-        let t = store.addTag(name: name)
-        store.setTag(t.id, on: note.id, true)
-        newTag = ""
-    }
-
-    private func addPerson() {
-        let name = newPerson.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return }
-        let p = store.addPerson(name: name)
-        store.setPerson(p.id, on: note.id, true)
-        newPerson = ""
-    }
 
     var body: some View {
         Form {
@@ -1398,171 +1445,261 @@ private struct NoteLinkEditor: View {
                 if let d = note.date { LabeledContent("Date") { Text(d, style: .date) } }
             }
 
-            // Assign to an opportunity (drives project → org → people) …
-            Section("Opportunity") {
-                let assigned = store.doc.opportunities.filter { current.opportunityIDs.contains($0.id) }
-                ForEach(assigned) { o in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(o.name)
-                            Text(oppPath(o)).font(.caption2).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button { store.setOpportunity(o.id, on: note.id, false) } label: {
-                            Image(systemName: "minus.circle.fill")
-                        }.buttonStyle(.plain).foregroundStyle(.red.opacity(0.8))
-                    }
-                }
-                let unassigned = store.doc.opportunities.sortedByName.filter { !current.opportunityIDs.contains($0.id) }
-                Menu {
-                    if unassigned.isEmpty { Text("No more opportunities") }
-                    ForEach(unassigned) { o in
-                        Button(oppPath(o).isEmpty ? o.name : "\(oppPath(o)) › \(o.name)") {
-                            store.setOpportunity(o.id, on: note.id, true)
-                        }
-                    }
-                } label: { Label("Assign opportunity", systemImage: "plus.circle") }
-                    .disabled(store.doc.opportunities.isEmpty || !current.orgIDs.isEmpty)
-                if !current.orgIDs.isEmpty {
-                    Text("This note is assigned to an organisation. Remove it to assign an opportunity instead.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else if store.doc.opportunities.isEmpty {
-                    Text("No opportunities yet — create one from a note token below or the Opportunities tab.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-
-            // … or, for an internal note with no opportunity, assign an org directly.
-            Section("Organisation") {
-                let direct = store.orgsSorted.filter { current.orgIDs.contains($0.id) }
-                ForEach(direct) { o in
-                    HStack {
-                        Text(store.orgPath(of: o.id))
-                        Spacer()
-                        Button { store.setOrg(o.id, on: note.id, false) } label: {
-                            Image(systemName: "minus.circle.fill")
-                        }.buttonStyle(.plain).foregroundStyle(.red.opacity(0.8))
-                    }
-                }
-                // Orgs reaching the note via an opportunity (read-only).
-                let viaOpp = store.effectiveOrgIDs(of: current).subtracting(current.orgIDs)
-                ForEach(store.orgsSorted.filter { viaOpp.contains($0.id) }) { o in
-                    HStack {
-                        Text(store.orgPath(of: o.id)).foregroundStyle(.secondary)
-                        Spacer()
-                        Text("via opportunity").font(.caption2).foregroundStyle(.tertiary)
-                    }
-                }
-                let assignable = store.orgsSorted.filter { !current.orgIDs.contains($0.id) }
-                Menu {
-                    if assignable.isEmpty { Text("No organisations") }
-                    ForEach(assignable) { o in
-                        Button(store.orgPath(of: o.id)) { store.setOrg(o.id, on: note.id, true) }
-                    }
-                } label: { Label("Assign organisation", systemImage: "plus.circle") }
-                    .disabled(store.orgsSorted.isEmpty || !current.opportunityIDs.isEmpty)
-                if !current.opportunityIDs.isEmpty {
-                    Text("This note is assigned to an opportunity (org comes from it). Remove it to set an org directly.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-
-            let projIDs = store.effectiveProjectIDs(of: current)
-            if !projIDs.isEmpty {
-                Section("Projects (inherited)") {
-                    ForEach(store.doc.projects.sortedByName.filter { projIDs.contains($0.id) }) { Text($0.name) }
-                }
-            }
-            Section("People") {
-                HStack {
-                    TextField("New person", text: $newPerson).textFieldStyle(.roundedBorder).onSubmit(addPerson)
-                    Button(action: addPerson) { Image(systemName: "plus") }
-                        .disabled(newPerson.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                if store.doc.people.isEmpty {
-                    Text("No people yet — add one above.").font(.caption).foregroundStyle(.secondary)
+            // Single "Filed under": the note's opportunity OR org, as removable
+            // chips. One Assign… control handles both (mutually exclusive).
+            Section("Filed under") {
+                let opps = store.doc.opportunities.filter { current.opportunityIDs.contains($0.id) }
+                let orgsDirect = store.orgsSorted.filter { current.orgIDs.contains($0.id) }
+                if opps.isEmpty && orgsDirect.isEmpty {
+                    Text("Unassigned").font(.caption).foregroundStyle(.secondary)
                 } else {
-                    if store.doc.people.count > 6 {
-                        EntitySearchBar(text: $personFilter, placeholder: "Filter people")
-                    }
-                    let people = store.doc.people.sortedByName.filter { filterMatch($0.name, personFilter) }
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(people) { person in
-                                Toggle(person.name, isOn: Binding(
-                                    get: { current.personIDs.contains(person.id) },
-                                    set: { store.setPerson(person.id, on: note.id, $0) }))
-                            }
+                    FlowChips {
+                        ForEach(opps) { o in
+                            Chip(text: o.name, color: .green) { store.setOpportunity(o.id, on: note.id, false) }
+                        }
+                        ForEach(orgsDirect) { o in
+                            Chip(text: store.orgPath(of: o.id), color: .blue) { store.setOrg(o.id, on: note.id, false) }
                         }
                     }
-                    .frame(height: store.doc.people.count > 6 ? 150 : nil)
                 }
+                Button { showAssign = true } label: { Label("Assign…", systemImage: "plus.circle") }
+                    .buttonStyle(.plain).foregroundStyle(.tint).font(.callout)
+                    .popover(isPresented: $showAssign) {
+                        AssignPopover(store: store, noteID: note.id, show: $showAssign)
+                    }
+                // Inherited context (read-only).
+                let viaOpp = store.effectiveOrgIDs(of: current).subtracting(current.orgIDs)
+                if !viaOpp.isEmpty {
+                    Text("Org via opportunity: " + store.orgsSorted.filter { viaOpp.contains($0.id) }
+                        .map { store.orgPath(of: $0.id) }.joined(separator: ", "))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                let projIDs = store.effectiveProjectIDs(of: current)
+                if !projIDs.isEmpty {
+                    Text("Projects: " + store.doc.projects.filter { projIDs.contains($0.id) }
+                        .map { $0.name }.joined(separator: ", "))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
+            Section("People") {
+                let selected = store.doc.people.filter { current.personIDs.contains($0.id) }.sortedByName
+                if selected.isEmpty {
+                    Text("None").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    FlowChips {
+                        ForEach(selected) { p in
+                            Chip(text: p.name, color: .teal) { store.setPerson(p.id, on: note.id, false) }
+                        }
+                    }
+                }
+                AddChipButton(
+                    title: "Add person…", placeholder: "Search people",
+                    options: store.doc.people.sortedByName
+                        .filter { !current.personIDs.contains($0.id) }.map { ($0.id, $0.name) },
+                    onPick: { store.setPerson($0, on: note.id, true) },
+                    onCreate: { store.setPerson(store.addPerson(name: $0).id, on: note.id, true) })
             }
 
             Section("Tags") {
-                HStack {
-                    TextField("New tag", text: $newTag).textFieldStyle(.roundedBorder).onSubmit(addTag)
-                    Button(action: addTag) { Image(systemName: "plus") }
-                        .disabled(newTag.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                if store.tagsSorted.count > 6 {
-                    EntitySearchBar(text: $tagFilter, placeholder: "Filter tags")
-                }
-                let tags = store.tagsSorted.filter { filterMatch($0.name, tagFilter) }
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(tags) { tag in
-                            Toggle(tag.name, isOn: Binding(
-                                get: { current.tagIDs.contains(tag.id) },
-                                set: { store.setTag(tag.id, on: note.id, $0) }))
+                let selected = store.tagsSorted.filter { current.tagIDs.contains($0.id) }
+                if selected.isEmpty {
+                    Text("None").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    FlowChips {
+                        ForEach(selected) { t in
+                            Chip(text: "#\(t.name)", color: .pink) { store.setTag(t.id, on: note.id, false) }
                         }
                     }
                 }
-                .frame(height: store.tagsSorted.count > 6 ? 150 : nil)
+                AddChipButton(
+                    title: "Add tag…", placeholder: "Search tags",
+                    options: store.tagsSorted
+                        .filter { !current.tagIDs.contains($0.id) }.map { ($0.id, $0.name) },
+                    onPick: { store.setTag($0, on: note.id, true) },
+                    onCreate: { store.setTag(store.addTag(name: $0).id, on: note.id, true) })
             }
 
-            // Action items (all shown; the form scrolls).
+            // Words the note's own front-matter suggests — each can become any
+            // entity type (they route differently), so this is its own section.
+            let suggestions = store.suggestedTags(for: current)
+            if !suggestions.isEmpty {
+                Section {
+                    FlowChips {
+                        ForEach(suggestions, id: \.self) { token in
+                            PromoteMenu(store: store, noteID: note.id, token: token, asChip: true) {}
+                        }
+                    }
+                } header: {
+                    Text("From this note")
+                } footer: {
+                    Text("Words pulled from the note — tap one to add it as a tag, person, opportunity, organisation, or project.")
+                        .font(.caption2)
+                }
+            }
+
             NoteActionItemsSection(url: store.url(of: current))
-
-            // Promotion tools last.
-            Section("Add from this note") {
-                HStack {
-                    TextField("Type a word…", text: $newToken).textFieldStyle(.roundedBorder)
-                    PromoteMenu(store: store, noteID: note.id, token: newToken.trimmingCharacters(in: .whitespaces)) { newToken = "" }
-                        .disabled(newToken.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                let suggestions = store.suggestedTags(for: current)
-                if !suggestions.isEmpty {
-                    Text("Suggested from the note").font(.caption).foregroundStyle(.secondary)
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(suggestions, id: \.self) { token in
-                                HStack {
-                                    Text(token)
-                                    Spacer()
-                                    PromoteMenu(store: store, noteID: note.id, token: token) {}
-                                }
-                            }
-                        }
-                    }
-                    .frame(height: suggestions.count > 6 ? 160 : nil)
-                }
-            }
         }
         .formStyle(.grouped)
         .navigationTitle(note.title)
     }
+}
 
-    private func hint(_ what: String) -> some View {
-        Text("No \(what) yet — add one below.").font(.caption).foregroundStyle(.secondary)
-    }
-    /// "Org › Project" context for an opportunity.
-    private func oppPath(_ o: CatalogOpportunity) -> String {
-        var parts: [String] = []
-        if let p = store.project(o.projectID) {
-            if let org = store.org(p.orgID) { parts.append(store.orgPath(of: org.id)) }
-            parts.append(p.name)
+// MARK: Chip-editor building blocks
+
+/// A pill showing a selected value with a remove (✕) button.
+private struct Chip: View {
+    let text: String
+    var color: Color = .blue
+    var onRemove: () -> Void
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(text).font(.caption).lineLimit(1)
+            Button(action: onRemove) { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
+                .buttonStyle(.plain)
         }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Capsule().fill(color.opacity(0.16)))
+        .foregroundStyle(color)
+    }
+}
+
+/// Simple wrapping layout for chips.
+private struct FlowChips<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View { FlowLayout(spacing: 6) { content } }
+}
+
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x + s.width > maxWidth { x = 0; y += rowH + spacing; rowH = 0 }
+            x += s.width + spacing
+            rowH = max(rowH, s.height)
+        }
+        return CGSize(width: maxWidth.isFinite ? maxWidth : x, height: y + rowH)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowH: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x + s.width > bounds.maxX { x = bounds.minX; y += rowH + spacing; rowH = 0 }
+            v.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(s))
+            x += s.width + spacing
+            rowH = max(rowH, s.height)
+        }
+    }
+}
+
+/// A "+ add…" button that opens a searchable picker of existing options, with a
+/// "Create …" row when the query matches nothing.
+private struct AddChipButton: View {
+    let title: String
+    let placeholder: String
+    let options: [(id: String, name: String)]
+    let onPick: (String) -> Void
+    let onCreate: (String) -> Void
+    @State private var show = false
+    @State private var query = ""
+
+    var body: some View {
+        Button { show = true } label: { Label(title, systemImage: "plus.circle").font(.callout) }
+            .buttonStyle(.plain).foregroundStyle(.tint)
+            .popover(isPresented: $show) {
+                let q = query.trimmingCharacters(in: .whitespaces)
+                let matches = options.filter { q.isEmpty || $0.name.localizedCaseInsensitiveContains(q) }
+                let exact = options.contains { $0.name.caseInsensitiveCompare(q) == .orderedSame }
+                VStack(spacing: 6) {
+                    EntitySearchBar(text: $query, placeholder: placeholder)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(matches, id: \.id) { opt in
+                                Button { onPick(opt.id); query = ""; show = false } label: {
+                                    HStack { Text(opt.name); Spacer(); Image(systemName: "plus") }
+                                        .contentShape(Rectangle())
+                                }.buttonStyle(.plain)
+                            }
+                            if !q.isEmpty && !exact {
+                                Button { onCreate(q); query = ""; show = false } label: {
+                                    Label("Create “\(q)”", systemImage: "plus.circle.fill")
+                                }.buttonStyle(.plain).foregroundStyle(.tint)
+                            }
+                            if matches.isEmpty && q.isEmpty {
+                                Text("Nothing to add").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 4)
+                    }
+                    .frame(maxHeight: 220)
+                }
+                .padding(10).frame(width: 250)
+            }
+    }
+}
+
+/// The Assign… picker: choose an opportunity OR an organisation (mutually
+/// exclusive). Assigning clears the other side via the store helpers.
+private struct AssignPopover: View {
+    @ObservedObject var store: CatalogStore
+    let noteID: String
+    @Binding var show: Bool
+    @State private var mode = 0   // 0 = opportunity, 1 = organisation
+    @State private var query = ""
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Picker("", selection: $mode) {
+                Text("Opportunity").tag(0)
+                Text("Organisation").tag(1)
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            EntitySearchBar(text: $query, placeholder: mode == 0 ? "Search opportunities" : "Search organisations")
+            let q = query.trimmingCharacters(in: .whitespaces)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    if mode == 0 {
+                        let opps = store.doc.opportunities.sortedByName
+                            .filter { q.isEmpty || $0.name.localizedCaseInsensitiveContains(q) }
+                        if opps.isEmpty { Text("No opportunities").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(opps) { o in
+                            Button { store.setOpportunity(o.id, on: noteID, true); show = false } label: {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(o.name)
+                                    if let path = oppPath(o) { Text(path).font(.caption2).foregroundStyle(.secondary) }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
+                    } else {
+                        let orgs = store.orgsSorted
+                            .filter { q.isEmpty || store.orgPath(of: $0.id).localizedCaseInsensitiveContains(q) }
+                        if orgs.isEmpty { Text("No organisations").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(orgs) { o in
+                            Button { store.setOrg(o.id, on: noteID, true); show = false } label: {
+                                Text(store.orgPath(of: o.id))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(.horizontal, 4)
+            }
+            .frame(maxHeight: 240)
+        }
+        .padding(10).frame(width: 280)
+    }
+
+    private func oppPath(_ o: CatalogOpportunity) -> String? {
+        guard let p = store.project(o.projectID) else { return nil }
+        var parts: [String] = []
+        if let org = store.org(p.orgID) { parts.append(store.orgPath(of: org.id)) }
+        parts.append(p.name)
         return parts.joined(separator: " › ")
     }
 }
@@ -1631,6 +1768,7 @@ private struct PromoteMenu: View {
     @ObservedObject var store: CatalogStore
     let noteID: String
     let token: String
+    var asChip = false
     var onDone: () -> Void
 
     private var note: CatalogNote? { store.note(id: noteID) }
@@ -1649,7 +1787,17 @@ private struct PromoteMenu: View {
             Button { _ = store.addProject(name: token); onDone() }
                 label: { Label("Project (create only)", systemImage: "folder") }
         } label: {
-            Label("Add as", systemImage: "plus.circle")
+            if asChip {
+                HStack(spacing: 4) {
+                    Text(token).font(.caption).lineLimit(1)
+                    Image(systemName: "plus").font(.system(size: 8, weight: .bold))
+                }
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                .foregroundStyle(.secondary)
+            } else {
+                Label("Add as", systemImage: "plus.circle")
+            }
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

@@ -137,8 +137,10 @@ final class TextPolisher {
         request.httpBody = try JSONEncoder().encode(requestBody)
 
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw GroqError.invalidResponse
+        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+        guard http.statusCode == 200 else {
+            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
         recordUsage(result)
@@ -193,6 +195,32 @@ final class TextPolisher {
         return try await send(requestBody, timeout: 30)
     }
 
+    /// Summarize ONE meeting note into the digest template *body* (no title —
+    /// the caller prepends the exact note title). Called once per meeting so
+    /// each block stays separate rather than blended into one.
+    func meetingDigest(text: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(text.suffix(16_000))
+        let requestBody = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                Summarize ONE meeting note into EXACTLY this template, with NO blank lines and every bullet starting with "- ":
+                - 2–4 summary bullets (key points and decisions)
+                Next Steps
+                - top 2–3 upcoming steps (use "- None" if there are none)
+                Action Items
+                - top 2–3 open action items, with " — @owner" and "(due: …)" only when stated (use "- None" if there are none)
+                Do NOT output any title or heading. Keep the literal labels "Next Steps" and "Action Items" on their own lines (no bullet, no colon). Draw only from this note — never invent. Output only the template, nothing else.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.3,
+            max_tokens: 500
+        )
+        return try await send(requestBody, timeout: 40).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - Meeting Q&A
 
     /// Answer a question about a meeting transcript.
@@ -222,8 +250,10 @@ final class TextPolisher {
         request.httpBody = try JSONEncoder().encode(requestBody)
 
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw GroqError.invalidResponse
+        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+        guard http.statusCode == 200 else {
+            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
         recordUsage(result)
@@ -265,8 +295,10 @@ final class TextPolisher {
         request.httpBody = try JSONEncoder().encode(requestBody)
 
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw GroqError.invalidResponse
+        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+        guard http.statusCode == 200 else {
+            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
         recordUsage(result)
@@ -525,8 +557,10 @@ final class TextPolisher {
         request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw GroqError.invalidResponse
+        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+        guard http.statusCode == 200 else {
+            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
         recordUsage(result)

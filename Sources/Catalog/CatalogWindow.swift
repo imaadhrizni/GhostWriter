@@ -206,34 +206,24 @@ private struct CatalogView: View {
         if section == .map {
             MapTree(store: store) { sec, id in mapSection = sec; mapID = id }
         } else if section == .notes {
-            Group {
-                if scope == .ask {
-                    NoteAskView(store: store, question: query, nonce: askNonce,
-                                files: askFiles, filterSummary: filterSummary) { selID = $0 }
-                } else {
-                    NotesList(store: store, selID: $selID, query: query, scope: scope,
-                              fOrg: fOrg, fProject: fProject, fOpp: fOpp, fTag: fTag, fPerson: fPerson,
-                              unassignedOnly: fUnassigned, missingOnly: fMissing)
+            VStack(spacing: 0) {
+                activeFilterBar
+                Group {
+                    if scope == .ask {
+                        NoteAskView(store: store, question: query, nonce: askNonce,
+                                    files: askFiles, filterSummary: filterSummary) { selID = $0 }
+                    } else {
+                        NotesList(store: store, selID: $selID, query: query, scope: scope,
+                                  fOrg: fOrg, fProject: fProject, fOpp: fOpp, fTag: fTag, fPerson: fPerson,
+                                  unassignedOnly: fUnassigned, missingOnly: fMissing)
+                    }
                 }
             }
                 .searchable(text: $query, placement: .toolbar,
                             prompt: scope == .ask ? "Ask a question…" : "Search notes")
                 .onSubmit(of: .search) { if scope == .ask { askNonce += 1 } }
                 .toolbar {
-                    ToolbarItemGroup(placement: .automatic) {
-                        facet("Org", "building.2", $fOrg, store.orgsSorted.map { ($0.id, store.orgPath(of: $0.id)) })
-                        facet("Project", "folder", $fProject, store.doc.projects.sortedByName.map { ($0.id, $0.name) })
-                        facet("Opp", "chart.line.uptrend.xyaxis", $fOpp, store.doc.opportunities.sortedByName.map { ($0.id, $0.name) })
-                        facet("Person", "person", $fPerson, store.doc.people.sortedByName.map { ($0.id, $0.name) })
-                        facet("Tag", "tag", $fTag, store.tagsSorted.map { ($0.id, $0.name) })
-                        unassignedToggle
-                        missingToggle
-                        Button { fOrg = ""; fProject = ""; fOpp = ""; fTag = ""; fPerson = ""; fUnassigned = false; fMissing = false } label: {
-                            Label("Reset", systemImage: "arrow.counterclockwise")
-                        }
-                        .disabled(!anyFilter)
-                        .help("Reset all filters")
-                    }
+                    ToolbarItem(placement: .automatic) { filterMenu }
                     ToolbarItem(placement: .primaryAction) {
                         Picker("Search type", selection: $scope) {
                             Label("Text", systemImage: "textformat").tag(NoteSearchScope.text)
@@ -251,35 +241,55 @@ private struct CatalogView: View {
         }
     }
 
-    /// One-tap filter for notes that aren't linked to any opportunity or org —
-    /// the ones needing triage. Labels itself with the outstanding count so the
-    /// backlog is visible at a glance, and disappears once everything's linked.
-    @ViewBuilder private var unassignedToggle: some View {
-        let n = store.unassignedNotes.count
-        if n > 0 || fUnassigned {
-            Button { fUnassigned.toggle() } label: {
-                Label(fUnassigned ? "Unassigned" : "Unassigned (\(n))",
-                      systemImage: fUnassigned ? "tray.full.fill" : "tray")
-            }
-            .help("Show only notes not yet linked to an opportunity or organisation")
-        }
+    /// Number of active filters, for the toolbar badge.
+    private var activeFilterCount: Int {
+        [fOrg, fProject, fOpp, fPerson, fTag].filter { !$0.isEmpty }.count
+            + (fUnassigned ? 1 : 0) + (fMissing ? 1 : 0)
     }
 
-    /// One-tap filter for notes whose Markdown file no longer exists on disk.
-    /// Hidden once every file is present, like the unassigned toggle.
-    @ViewBuilder private var missingToggle: some View {
-        let n = store.missingNotes.count
-        if n > 0 || fMissing {
-            Button { fMissing.toggle() } label: {
-                Label(fMissing ? "Missing" : "Missing (\(n))",
-                      systemImage: fMissing ? "doc.badge.ellipsis" : "doc.badge.gearshape")
-            }
-            .help("Show only notes whose file no longer exists on disk")
-        }
+    private func clearFilters() {
+        fOrg = ""; fProject = ""; fOpp = ""; fTag = ""; fPerson = ""
+        fUnassigned = false; fMissing = false
     }
 
-    /// A single filter as its own toolbar menu; tints + shows the value when set.
-    private func facet(_ label: String, _ icon: String, _ sel: Binding<String>, _ options: [(String, String)]) -> some View {
+    /// Single toolbar entry point for every note filter. Triage presets sit at
+    /// the top (with live backlog counts), each facet is a submenu, and the
+    /// whole thing badges itself with the active-filter count so state is
+    /// visible without opening it.
+    private var filterMenu: some View {
+        Menu {
+            let unassigned = store.unassignedNotes.count
+            let missing = store.missingNotes.count
+            if unassigned > 0 || fUnassigned {
+                Button { fUnassigned.toggle() } label: {
+                    Label("Unassigned (\(unassigned))", systemImage: fUnassigned ? "checkmark" : "tray")
+                }
+            }
+            if missing > 0 || fMissing {
+                Button { fMissing.toggle() } label: {
+                    Label("Missing (\(missing))", systemImage: fMissing ? "checkmark" : "doc.badge.ellipsis")
+                }
+            }
+            Divider()
+            facetSubmenu("Org", "building.2", $fOrg, store.orgsSorted.map { ($0.id, store.orgPath(of: $0.id)) })
+            facetSubmenu("Project", "folder", $fProject, store.doc.projects.sortedByName.map { ($0.id, $0.name) })
+            facetSubmenu("Opportunity", "chart.line.uptrend.xyaxis", $fOpp, store.doc.opportunities.sortedByName.map { ($0.id, $0.name) })
+            facetSubmenu("Person", "person", $fPerson, store.doc.people.sortedByName.map { ($0.id, $0.name) })
+            facetSubmenu("Tag", "tag", $fTag, store.tagsSorted.map { ($0.id, $0.name) })
+            if anyFilter {
+                Divider()
+                Button("Clear all filters", role: .destructive) { clearFilters() }
+            }
+        } label: {
+            Label(anyFilter ? "Filter (\(activeFilterCount))" : "Filter",
+                  systemImage: anyFilter ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+        }
+        .help("Filter notes")
+    }
+
+    /// A single facet as a submenu inside the Filter menu; its label shows the
+    /// current selection (or the facet name when unset).
+    private func facetSubmenu(_ label: String, _ icon: String, _ sel: Binding<String>, _ options: [(String, String)]) -> some View {
         let current = options.first { $0.0 == sel.wrappedValue }?.1
         return Menu {
             Button("Any \(label)") { sel.wrappedValue = "" }
@@ -294,7 +304,48 @@ private struct CatalogView: View {
         } label: {
             Label(current ?? label, systemImage: icon)
         }
-        .help("Filter by \(label)")
+    }
+
+    /// Slim bar under the search field that surfaces every active filter as a
+    /// removable token. Hidden entirely when nothing is filtered.
+    @ViewBuilder private var activeFilterBar: some View {
+        if anyFilter {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    if let o = store.org(fOrg)         { filterChip(o.name, .blue)      { fOrg = "" } }
+                    if let p = store.project(fProject) { filterChip(p.name, .teal)      { fProject = "" } }
+                    if let o = store.opportunity(fOpp) { filterChip(o.name, .green)     { fOpp = "" } }
+                    if let p = store.person(fPerson)   { filterChip(p.name, .purple)    { fPerson = "" } }
+                    if let t = store.tag(fTag)         { filterChip("#\(t.name)", .pink) { fTag = "" } }
+                    if fUnassigned { filterChip("Unassigned", .orange) { fUnassigned = false } }
+                    if fMissing    { filterChip("Missing", .red)       { fMissing = false } }
+                    Button("Clear all") { clearFilters() }
+                        .buttonStyle(.plain)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 2)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            Divider()
+        }
+    }
+
+    /// A removable filter token — tap anywhere on the capsule to clear it.
+    private func filterChip(_ text: String, _ color: Color, remove: @escaping () -> Void) -> some View {
+        Button(action: remove) {
+            HStack(spacing: 3) {
+                Text(text).lineLimit(1)
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+            }
+            .font(.caption2).fontWeight(.medium)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(Capsule().fill(color.opacity(0.16)))
+            .foregroundStyle(color)
+        }
+        .buttonStyle(.plain)
+        .help("Remove filter")
     }
 
     private var importFooter: some View {

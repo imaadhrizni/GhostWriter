@@ -75,10 +75,7 @@ enum RemindersExporter {
     /// (what the summary is asked to emit); anything else is left off the
     /// reminder rather than guessed wrong.
     private static func dueComponents(from text: String) -> DateComponents? {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        guard let date = formatter.date(from: text.trimmingCharacters(in: .whitespaces)) else {
+        guard let date = DateDisplay.posixDay.date(from: text.trimmingCharacters(in: .whitespaces)) else {
             return nil
         }
         return Calendar.current.dateComponents([.year, .month, .day], from: date)

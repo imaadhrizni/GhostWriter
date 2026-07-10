@@ -9,13 +9,25 @@ import Foundation
 
 enum DateDisplay {
 
-    /// Parses the fixed `yyyy-MM-dd` day key. POSIX so it's locale-independent.
-    private static let parser: DateFormatter = {
+    /// Fixed, locale-independent formatter for the `yyyy-MM-dd` day key used in
+    /// note filenames/folders. Configured once and only read → safe to share.
+    static let posixDay: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
         return f
     }()
+
+    /// Fixed formatter for the full `yyyy-MM-dd_HH-mm-ss` filename timestamp.
+    static let posixTimestamp: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return f
+    }()
+
+    /// Parses the fixed `yyyy-MM-dd` day key. POSIX so it's locale-independent.
+    private static var parser: DateFormatter { posixDay }
 
     /// Reused output formatter; reconfigured when the chosen format changes.
     /// UI-only, main-thread use.

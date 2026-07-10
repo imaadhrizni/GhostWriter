@@ -113,15 +113,11 @@ final class UsageStats: ObservableObject {
     /// Meetings recorded in the last 7 days, derived from notes filenames
     /// (Meeting_yyyy-MM-dd_HH-mm-ss.md) — no extra bookkeeping needed.
     func meetingsThisWeek(in folder: URL) -> Int {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let cutoff = Date().addingTimeInterval(-7 * 24 * 3600)
-
         return MeetingNotesWriter.allMeetingFiles(under: folder).filter { url in
             let stamp = url.deletingPathExtension().lastPathComponent
                 .replacingOccurrences(of: "Meeting_", with: "")
-            guard let date = formatter.date(from: stamp) else { return false }
+            guard let date = DateDisplay.posixTimestamp.date(from: stamp) else { return false }
             return date >= cutoff
         }.count
     }

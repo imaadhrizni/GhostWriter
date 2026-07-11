@@ -37,19 +37,22 @@ final class CatalogWindowController: NSWindowController {
 // MARK: Sections
 
 private enum CatalogSection: String, CaseIterable, Identifiable {
+    // Declared in sidebar order so the enum and `sidebarGroups` can't drift:
+    // the two ways to browse first, then records in containment order.
+    case notes         = "Notes"
     case map           = "Map"
     case organisations = "Organisations"
-    case people        = "People"
     case projects      = "Projects"
     case opportunities = "Opportunities"
+    case people        = "People"
     case tags          = "Tags"
-    case notes         = "Notes"
     var id: String { rawValue }
 
-    /// Sidebar layout: the two ways to look at the catalog on top, then the
-    /// underlying records grouped together.
+    /// Sidebar layout: the two ways to look at the catalog on top (Notes is the
+    /// primary document list; Map is the graph explorer), then the underlying
+    /// records grouped in containment order (org → project → opportunity).
     static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
-        (nil,        [.map, .notes]),
+        ("Browse",   [.notes, .map]),
         ("Records",  [.organisations, .projects, .opportunities, .people, .tags]),
     ]
 

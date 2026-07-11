@@ -1,5 +1,4 @@
 import Cocoa
-import Carbon
 import CoreGraphics
 
 /// Manages the global hotkey (Right Option) using a CoreGraphics Event Tap.

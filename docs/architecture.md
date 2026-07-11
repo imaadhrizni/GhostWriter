@@ -9,7 +9,7 @@
 - **System audio:** CoreAudio process taps — `CATapDescription` → `AudioHardwareCreateProcessTap` → aggregate device → direct `AudioDeviceIOProc` callback, converted to 16 kHz mono via `AVAudioConverter`. Uses only the **System Audio Recording** permission (`NSAudioCaptureUsageDescription`), not Screen Recording.
 - **Input/Output:** `CoreGraphics` CGEvent taps for the global hotkey; `ApplicationServices` `AXUIElement` API for text injection.
 - **UI:** SwiftUI for the API-key onboarding and the floating recording indicator.
-- **AI backend:** REST calls to Groq's Whisper (`whisper-large-v3`) and Llama (`llama-3.3-70b-versatile`) models.
+- **AI backend:** REST calls to Groq's Whisper (`whisper-large-v3`) and Llama (`llama-3.3-70b-versatile`) models, with an on-device path via Apple **Foundation Models** (the Apple Intelligence LLM, macOS **26+**) for summaries/briefs/follow-ups and Apple **NaturalLanguage** for entity/topic tagging. On-device is used in Local-only mode, when "Prefer on-device AI" is on, and as an automatic fallback when Groq fails. Deterministic derivations (note briefs, follow-up drafts) are cached on disk (see `AICache`).
 - **Logging:** unified `os.Logger` with per-feature categories. Rare lifecycle events at info, errors/warnings always persisted, high-frequency events at debug (transcript content is privacy-redacted). Inspect with:
   ```bash
   log stream --predicate 'subsystem BEGINSWITH "com.ghostwriter"' --level debug
@@ -24,7 +24,10 @@
 | `Sources/Audio/VoiceActivityDetector.swift` | RMS-based voice-activity detection |
 | `Sources/Audio/SystemAudioCapture.swift` | System-audio capture via CoreAudio process taps |
 | `Sources/Transcription/GroqService.swift` | Groq transcription + polishing API client |
-| `Sources/Meetings/TextPolisher.swift` / `Sources/Services/AppDetector.swift` | Context-aware formatting |
+| `Sources/Meetings/TextPolisher.swift` / `Sources/Services/AppDetector.swift` | Context-aware formatting; also the unified `noteBrief` and the cached, Groq→Apple degrading generation path |
+| `Sources/Services/AICache.swift` | On-disk cache for deterministic AI derivations (note briefs, follow-up drafts) in Application Support, keyed by content hash + model + prompt version |
+| `Sources/Meetings/AppleIntelligence.swift` | On-device LLM wrapper (Apple Foundation Models, macOS 26+) — availability-gated summaries/briefs/follow-ups |
+| `Sources/Transcription/OnDeviceNLP.swift` | On-device entity/topic tagging via Apple `NaturalLanguage` NER (universal — every Mac) |
 | `Sources/Services/TextInjector.swift` | Accessibility-based text injection |
 | `Sources/Services/BrowserURL.swift` | Reads the active browser tab's address for per-site styling |
 | `Sources/Services/KeychainService.swift` | Groq API-key storage in the macOS Keychain |
@@ -37,7 +40,7 @@
 | `Sources/Meetings/NotesAssistant.swift` | `NotesLibrary` — shared notes data layer (file listing, text/semantic search, cross-meeting excerpts, action-item parsing) |
 | `Sources/Transcription/SemanticIndex.swift` | On-device semantic search over notes (Apple `NLEmbedding`, cached) |
 | `Sources/Meetings/LiveMeetingAssistant.swift` | Floating in-meeting brief + grounded Ask (rolling TL;DR / actions) |
-| `Sources/Views/NotesViewerWindow.swift` | In-app Markdown viewer/editor (find bar, read-only/unlock-to-edit, follow-up, rename, PDF export, open externally) |
+| `Sources/Views/NotesViewerWindow.swift` | In-app Markdown viewer/editor (find bar, read-only/unlock-to-edit, Summarize brief + Regenerate, follow-up, rename, PDF export, open externally) |
 | `Sources/Models/Catalog.swift` | Catalog model + `CatalogStore` (Codable `Catalog.json` store: orgs/projects/opportunities plus per-note people/tags, org hierarchy, project→org inheritance, import, missing-file reconcile, purge) |
 | `Sources/Catalog/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, per-entity relationship timeline, search (Text/Meaning/Ask) + consolidated Filter menu with removable chips, row actions, Quick add, catalog export/import |
 | `Sources/Utils/MarkdownPDF.swift` | Paginated Markdown → PDF renderer (CoreText) |

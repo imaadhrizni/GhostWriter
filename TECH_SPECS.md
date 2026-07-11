@@ -1,9 +1,11 @@
 # Voiceeee — Technical Specifications
 > *Privacy-First, Zero-Latency Voice Intelligence for macOS*
 
+> ⚠️ **Archived Sprint-1 snapshot.** This document predates the project's rename to **GhostWriter** and covers only the initial dictation sprint. It does **not** reflect Meeting Mode, the Catalog, on-device AI (Apple Intelligence / NaturalLanguage), AI response caching, or later features. For current docs see [README.md](README.md) and [docs/](docs/). Kept for historical reference.
+
 **Version**: 0.1.0 (Sprint 1)  
 **Last Updated**: 2026-04-21  
-**Status**: 🚧 Active Development
+**Status**: 📦 Archived (superseded — see README/docs)
 
 ---
 

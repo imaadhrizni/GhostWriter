@@ -126,25 +126,13 @@ final class TextPolisher {
             max_tokens: 2048
         )
 
-        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 15
-        request.httpBody = try JSONEncoder().encode(requestBody)
-
-        let (data, response) = try await session.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            // Graceful degradation: return raw text on error
+        // Graceful degradation: on any failure, return the raw text unchanged.
+        do {
+            return try await send(requestBody, timeout: 15)
+        } catch {
             Log.api.warning("⚠️ Polishing failed — returning raw text")
             return rawText
         }
-
-        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
-        recordUsage(result)
-        return result.choices.first?.message.content ?? rawText
     }
 
     // MARK: - Meeting Summaries
@@ -200,26 +188,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 1024
         )
-
-        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
-        request.httpBody = try JSONEncoder().encode(requestBody)
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
-        guard http.statusCode == 200 else {
-            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
-        }
-        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
-        recordUsage(result)
-        guard let content = result.choices.first?.message.content, !content.isEmpty else {
-            throw GroqError.invalidResponse
-        }
-        return content
+        return try await send(requestBody, timeout: 30)
     }
 
     /// Segment a transcript into a handful of topical chapters, each anchored to
@@ -310,26 +279,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 1024
         )
-
-        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
-        request.httpBody = try JSONEncoder().encode(requestBody)
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
-        guard http.statusCode == 200 else {
-            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
-        }
-        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
-        recordUsage(result)
-        guard let content = result.choices.first?.message.content, !content.isEmpty else {
-            throw GroqError.invalidResponse
-        }
-        return content
+        return try await send(requestBody, timeout: 30)
     }
 
     // MARK: - Cross-Meeting Q&A
@@ -355,26 +305,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 1024
         )
-
-        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
-        request.httpBody = try JSONEncoder().encode(requestBody)
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
-        guard http.statusCode == 200 else {
-            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
-        }
-        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
-        recordUsage(result)
-        guard let content = result.choices.first?.message.content, !content.isEmpty else {
-            throw GroqError.invalidResponse
-        }
-        return content
+        return try await send(requestBody, timeout: 30)
     }
 
     // MARK: - Usage

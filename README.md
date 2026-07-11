@@ -12,7 +12,7 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 - **Meeting Mode** — captures your mic *and* system audio via CoreAudio process taps (no screen-recording permission), producing a timestamped, speaker-labeled transcript with AI summaries, action items, and a live in-meeting brief.
 - **Notes Assistant** — browse, text/semantic-search, and Ask across your whole meeting archive with cited sources; export action items to Apple Reminders.
 - **Catalog** — a CRM-style graph of the organisations, people, projects, opportunities and tags your meetings are about, sitting beside your notes without touching them.
-- **Private by default** — Local-Only mode keeps everything on-device; opt-in redaction; API key in the Keychain; semantic search runs on Apple's on-device `NLEmbedding`.
+- **Private by default** — Local-Only mode keeps everything on-device, including AI summaries via **Apple Intelligence** and entity/topic tags via **NaturalLanguage**; opt-in redaction; API key in the Keychain; semantic search runs on Apple's on-device `NLEmbedding`. On-device AI also serves as a Groq fallback and can be preferred outright while keeping Groq for transcription.
 
 See **[Features](docs/features.md)** for the full list.
 

@@ -323,20 +323,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(pauseItem)
         self.pauseMenuItem = pauseItem
 
-        let liveBriefItem = NSMenuItem(title: "Hide Live Brief", action: #selector(toggleLiveBrief), keyEquivalent: "")
-        liveBriefItem.image = NSImage(systemSymbolName: "sparkles.rectangle.stack", accessibilityDescription: nil)
-        liveBriefItem.target = self
-        menu.addItem(liveBriefItem)
-        self.liveBriefMenuItem = liveBriefItem
-
-        // Quick note sits with the capture actions — all three are "record
-        // something now" verbs sharing the same hotkey family.
+        // Quick Note sits with the capture actions — Start Meeting, Pause, and
+        // Quick Note are all "record something now" verbs sharing the ⌃⌥ hotkey
+        // family, so they stay contiguous.
         let quickNoteItem = NSMenuItem(title: "Quick Note", action: #selector(toggleQuickNote), keyEquivalent: "j")
         quickNoteItem.keyEquivalentModifierMask = [.control, .option]
         quickNoteItem.image = NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: nil)
         quickNoteItem.target = self
         menu.addItem(quickNoteItem)
         self.quickNoteMenuItem = quickNoteItem
+
+        // Live Brief is a display toggle (show/hide the floating panel), not a
+        // capture verb, so it follows the capture cluster. Hidden unless a
+        // meeting's live assistant is active (see menuNeedsUpdate).
+        let liveBriefItem = NSMenuItem(title: "Hide Live Brief", action: #selector(toggleLiveBrief), keyEquivalent: "")
+        liveBriefItem.image = NSImage(systemSymbolName: "sparkles.rectangle.stack", accessibilityDescription: nil)
+        liveBriefItem.target = self
+        menu.addItem(liveBriefItem)
+        self.liveBriefMenuItem = liveBriefItem
 
         menu.addItem(NSMenuItem.separator())
 

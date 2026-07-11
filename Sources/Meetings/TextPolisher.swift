@@ -52,14 +52,7 @@ final class TextPolisher {
     /// tag edit would force a re-summary) and wastes input tokens. The body is
     /// what we actually summarize.
     private static func summarizableBody(_ text: String) -> String {
-        var s = text
-        if s.hasPrefix("---") {
-            let lines = s.components(separatedBy: "\n")
-            if let close = lines.dropFirst().firstIndex(of: "---") {
-                s = lines[(close + 1)...].joined(separator: "\n")
-            }
-        }
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+        FrontMatter.body(text).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Model id under which on-device (Apple Intelligence) results are cached,

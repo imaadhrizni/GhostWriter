@@ -2279,9 +2279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 item.representedObject = file
                 menu.addItem(item)
             }
-            let browseItem = NSMenuItem(title: "Browse in Catalog…", action: #selector(showCatalog), keyEquivalent: "")
-            browseItem.target = self
-            menu.addItem(browseItem)
+            // (Catalog has its own top-level menu entry — no duplicate here.)
             menu.addItem(NSMenuItem.separator())
             let renameItem = NSMenuItem(title: "Rename Speakers…", action: #selector(showRenameSpeakers), keyEquivalent: "")
             renameItem.target = self

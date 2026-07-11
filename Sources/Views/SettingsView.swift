@@ -34,6 +34,7 @@ final class SettingsWindowController: NSWindowController {
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general     = "General"
+    case ai          = "AI & Models"
     case dictation   = "Dictation"
     case styles      = "Writing Styles"
     case quickNotes  = "Quick Notes"
@@ -52,16 +53,18 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     /// Sidebar layout: related panes grouped under headers, the way
     /// System Settings clusters its domains.
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
-        (nil,                  [.general]),
+        (nil,                  [.general, .ai]),
         ("Capture",            [.dictation, .styles, .quickNotes]),
         ("Meetings",           [.meeting, .notes, .digest]),
         ("Privacy & Security", [.privacy, .permissions]),
-        ("App",                [.shortcuts, .stats, .diagnostics, .about]),
+        ("System",             [.shortcuts, .stats]),
+        ("About",              [.diagnostics, .about]),
     ]
 
     var icon: String {
         switch self {
         case .general:     return "gearshape.fill"
+        case .ai:          return "cpu.fill"
         case .dictation:   return "mic.fill"
         case .styles:      return "textformat"
         case .quickNotes:  return "square.and.pencil"
@@ -80,6 +83,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     var iconColor: Color {
         switch self {
         case .general:     return .gray
+        case .ai:          return .mint
         case .dictation:   return .blue
         case .styles:      return .cyan
         case .quickNotes:  return .yellow
@@ -145,6 +149,7 @@ struct SettingsView: View {
                 Group {
                     switch selection {
                     case .general:     GeneralPane()
+                    case .ai:          AIPane()
                     case .dictation:   DictationPane()
                     case .styles:      WritingStylesPane()
                     case .quickNotes:  QuickNotesPane()
@@ -173,26 +178,9 @@ struct SettingsView: View {
 
 // MARK: - General
 
-private struct GeneralPane: View {
+private struct AIPane: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var hasAPIKey = KeychainService.groqAPIKey() != nil
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
-
-    /// Registers/unregisters the app as a macOS login item. The system stores
-    /// this (System Settings → General → Login Items), so there is no
-    /// UserDefaults setting to keep in sync — status is re-read on appear.
-    private func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-        } catch {
-            Log.app.error("❌ Login item change failed: \(error.localizedDescription)")
-            launchAtLogin = SMAppService.mainApp.status == .enabled
-        }
-    }
 
     private static let transcriptionModels = [
         "whisper-large-v3",
@@ -210,7 +198,7 @@ private struct GeneralPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SettingsGroup("Groq API") {
+            SettingsGroup("Groq Account") {
                 HStack {
                     Image(systemName: hasAPIKey ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                         .foregroundColor(hasAPIKey ? .green : .orange)
@@ -220,9 +208,9 @@ private struct GeneralPane: View {
                         NotificationCenter.default.post(name: .showAPIKeyWindow, object: nil)
                     }
                 }
+            }
 
-                Divider()
-
+            SettingsGroup("Models") {
                 ModelField(
                     title: "Transcription model",
                     presets: Self.transcriptionModels,
@@ -265,9 +253,9 @@ private struct GeneralPane: View {
                 )
                 Text("A cheaper, faster model for high-frequency background work — the live brief, agenda coverage, auto-tagging, and search-term expansion. Summaries, follow-ups, and Ask use the polishing model above.")
                     .font(.caption).foregroundColor(.secondary)
+            }
 
-                Divider()
-
+            SettingsGroup("On-Device & Fallback") {
                 Toggle("Offline fallback (Apple on-device recognition)", isOn: $settings.offlineFallback)
                 Text("If Groq can't be reached, transcribe on-device instead of failing — applies to dictation, quick notes, and meetings. Lower accuracy and no AI polishing or summaries (transcription only), but zero network. Triggers on connectivity errors, not on API-key or server errors.")
                     .font(.caption)
@@ -285,9 +273,35 @@ private struct GeneralPane: View {
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundColor(.orange)
                 }
+            }
+        }
+        .onAppear { hasAPIKey = KeychainService.groqAPIKey() != nil }
+    }
+}
 
-                Divider()
+private struct GeneralPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
+    /// Registers/unregisters the app as a macOS login item. The system stores
+    /// this (System Settings → General → Login Items), so there is no
+    /// UserDefaults setting to keep in sync — status is re-read on appear.
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            Log.app.error("❌ Login item change failed: \(error.localizedDescription)")
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Notes") {
                 Toggle("Open notes in external editor", isOn: $settings.openNotesExternally)
                 Text("Open note files in your default Markdown app (e.g. VS Code, Obsidian, Typora) instead of the in-app viewer — everywhere notes open: the menu, recent list, Catalog, and Ask. Set your preferred app in Finder → a .md file → Get Info → Open with → Change All. Off uses the built-in viewer.")
                     .font(.caption)
@@ -324,7 +338,6 @@ private struct GeneralPane: View {
             }
         }
         .onAppear {
-            hasAPIKey = KeychainService.groqAPIKey() != nil
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
     }

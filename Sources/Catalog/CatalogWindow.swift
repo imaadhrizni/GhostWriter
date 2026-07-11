@@ -48,7 +48,10 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     /// records grouped in containment order (org → project → opportunity).
     static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
         ("Browse",   [.notes, .map]),
-        ("Records",  [.organisations, .projects, .opportunities, .people, .tags]),
+        // Lead with the entities you search by most (who), then the deal-flow
+        // pair (what). Tags are a cross-cutting label, not a peer record.
+        ("Records",  [.organisations, .people, .projects, .opportunities]),
+        ("Labels",   [.tags]),
     ]
 
     var singular: String {

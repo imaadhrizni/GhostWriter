@@ -186,12 +186,8 @@ actor SemanticIndex {
     /// Split a note into overlapping windows of a few non-empty content lines,
     /// skipping YAML front-matter and Markdown structure noise.
     static func chunk(_ content: String, linesPerChunk: Int = 6, stride: Int = 4) -> [String] {
-        var body = content
         // Drop leading YAML front-matter.
-        if body.hasPrefix("---"), let end = body.range(of: "\n---", range: body.index(body.startIndex, offsetBy: 3)..<body.endIndex) {
-            body = String(body[end.upperBound...])
-        }
-        let lines = body
+        let lines = FrontMatter.body(content)
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && $0 != "---" }

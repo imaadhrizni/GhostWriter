@@ -250,11 +250,11 @@ private struct NotesViewerView: View {
         Task { @MainActor in
             defer { summarizing = false }
             do {
-                let summary = try await TextPolisher().quickSummary(text: source)
+                let brief = try await TextPolisher().noteBrief(text: source)
                 status = ""
                 NotesViewerWindowController.present(
-                    draftTitle: "Summary — \(base)", text: summary,
-                    regenerate: { try await TextPolisher().quickSummary(text: source, forceRefresh: true) })
+                    draftTitle: "Summary — \(base)", text: TextPolisher.spacedBrief(brief),
+                    regenerate: { TextPolisher.spacedBrief(try await TextPolisher().noteBrief(text: source, forceRefresh: true)) })
             } catch {
                 status = "Summary failed: \(error.localizedDescription)"
             }

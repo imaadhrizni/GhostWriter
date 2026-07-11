@@ -42,6 +42,7 @@ final class AppSettings: ObservableObject {
         static let frontMatterEnabled     = "meeting.frontMatterEnabled"
         static let diarizationEnabled     = "meeting.diarizationEnabled"
         static let offlineFallback        = "transcription.offlineFallback"
+        static let preferOnDeviceAI       = "ai.preferOnDevice"
         static let transcriptionLanguage  = "transcription.language"
         static let vocabulary             = "transcription.vocabulary"
         static let replacements           = "transcription.replacements"
@@ -141,6 +142,7 @@ final class AppSettings: ObservableObject {
         static let frontMatterEnabled              = true
         static let diarizationEnabled              = true
         static let offlineFallback                 = true
+        static let preferOnDeviceAI                = false
         static let transcriptionLanguage           = "en"
         static let dictationHistoryOn              = true
         static let dictationHistoryLimit           = 20
@@ -885,6 +887,14 @@ final class AppSettings: ObservableObject {
     var offlineFallback: Bool {
         get { bool(Key.offlineFallback, Default.offlineFallback) }
         set { set(newValue, Key.offlineFallback) }
+    }
+
+    /// Prefer Apple's on-device model for summaries & drafts over Groq, while
+    /// still using Groq for transcription. Falls back to Groq if the on-device
+    /// model isn't available on this Mac.
+    var preferOnDeviceAI: Bool {
+        get { bool(Key.preferOnDeviceAI, Default.preferOnDeviceAI) }
+        set { set(newValue, Key.preferOnDeviceAI) }
     }
 
     /// Have the summarizer extract topic tags into the notes front-matter.

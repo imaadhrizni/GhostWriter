@@ -23,9 +23,75 @@ final class TextPolisher {
 
     // Prompt versions for the AICache. Bump the matching one whenever a cached
     // method's system prompt changes, so stale cached outputs miss and refresh.
-    private static let digestPromptVersion = 1
-    private static let summaryPromptVersion = 1
-    private static let followUpPromptVersion = 1
+    private static let briefPromptVersion = 1
+    private static let followUpPromptVersion = 2
+
+    /// Strip the leading YAML front-matter block and trailing whitespace from a
+    /// note before summarizing. The front-matter (tags, attendees) is derived
+    /// metadata that auto-tagging and speaker-renaming rewrite without changing
+    /// the meeting's substance — leaving it in churns the AI cache (a cosmetic
+    /// tag edit would force a re-summary) and wastes input tokens. The body is
+    /// what we actually summarize.
+    private static func summarizableBody(_ text: String) -> String {
+        var s = text
+        if s.hasPrefix("---") {
+            let lines = s.components(separatedBy: "\n")
+            if let close = lines.dropFirst().firstIndex(of: "---") {
+                s = lines[(close + 1)...].joined(separator: "\n")
+            }
+        }
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Model id under which on-device (Apple Intelligence) results are cached,
+    /// kept distinct from the Groq model so cloud and local results never shadow
+    /// each other but both can be reused.
+    static let appleModelID = "apple-on-device"
+    private static let appleFooter = "\n\n_— generated on-device with Apple Intelligence_"
+
+    /// Run a cached generation with graceful degradation:
+    ///  • Local-only mode → straight to the on-device model (never touches the network).
+    ///  • Otherwise → Groq first; on failure, fall back to the on-device model.
+    /// Cloud results cache under the Groq model id, on-device under `appleModelID`;
+    /// both are consulted on lookup so an offline result is reused next time too.
+    private func generateCached(kind: AICache.Kind, source: String, version: Int,
+                                forceRefresh: Bool, footer: Bool,
+                                groq: () async throws -> String,
+                                apple: () async -> String?) async throws -> String {
+        if !forceRefresh {
+            if let c = AICache.shared.value(kind, source: source, model: model, version: version) { return c }
+            if let c = AICache.shared.value(kind, source: source, model: Self.appleModelID, version: version) { return c }
+        }
+        func storeApple(_ text: String) -> String {
+            let out = footer ? text + Self.appleFooter : text
+            AICache.shared.store(out, kind: kind, source: source, model: Self.appleModelID, version: version)
+            return out
+        }
+        // Local-only mode: on-device only, never touches the network.
+        if AppSettings.shared.localOnlyMode {
+            if let a = await apple() { return storeApple(a) }
+            throw GroqError.apiError(statusCode: 0,
+                message: "On-device AI unavailable. \(AppleIntelligence.unavailableReason ?? "")")
+        }
+        // User preference: prefer the on-device model when it's available, and
+        // only fall back to Groq if it isn't (or produced nothing).
+        if AppSettings.shared.preferOnDeviceAI, AppleIntelligence.isAvailable {
+            if let a = await apple() { return storeApple(a) }
+        }
+        guard !apiKey.isEmpty else {
+            if let a = await apple() { return storeApple(a) }
+            throw GroqError.missingAPIKey
+        }
+        do {
+            let r = try await groq()
+            AICache.shared.store(r, kind: kind, source: source, model: model, version: version)
+            return r
+        } catch {
+            // Groq failed (rate limit, offline, …) — try the on-device model.
+            if let a = await apple() { return storeApple(a) }
+            throw error
+        }
+    }
 
     // MARK: - Polishing
 
@@ -182,47 +248,18 @@ final class TextPolisher {
         return trimmed == "NONE" ? "" : trimmed
     }
 
-    /// A quick, plain-language recap of an arbitrary note so the reader knows
-    /// what's in it — a short prose summary, not tied to any meeting template.
-    func quickSummary(text: String, forceRefresh: Bool = false) async throws -> String {
-        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
-        let clipped = String(text.suffix(24_000))
-        if !forceRefresh,
-           let cached = AICache.shared.value(.summary, source: clipped, model: model, version: Self.summaryPromptVersion) {
-            return cached
-        }
-        let requestBody = ChatRequest(
-            model: model,   // polishing model for summary quality
-            messages: [
-                .init(role: "system", content: """
-                Summarize a note so the reader knows what's in it. Output 5–10 concise Markdown bullet points (each starting with "- ") covering the main topics, any decisions, and any action items. Be factual — never invent content. Output only the bullet list, with no heading, preamble, or closing line.
-                """),
-                .init(role: "user", content: clipped)
-            ],
-            temperature: 0.3,
-            max_tokens: 600
-        )
-        let result = try await send(requestBody, timeout: 30)
-        AICache.shared.store(result, kind: .summary, source: clipped, model: model, version: Self.summaryPromptVersion)
-        return result
-    }
-
-    /// Summarize ONE meeting note into the digest template *body* (no title —
-    /// the caller prepends the exact note title). Called once per meeting so
-    /// each block stays separate rather than blended into one.
-    func meetingDigest(text: String, forceRefresh: Bool = false) async throws -> String {
-        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
-        let clipped = String(text.suffix(16_000))
-        if !forceRefresh,
-           let cached = AICache.shared.value(.digest, source: clipped, model: model, version: Self.digestPromptVersion) {
-            return cached
-        }
+    /// The single structured artifact for a note — key points, Next Steps, and
+    /// Action Items — cached once and reused for BOTH the notes-viewer summary
+    /// and the relationship digest (which renders up to 5 of these). Returns the
+    /// raw template with no blank lines; call `spacedBrief` when displaying.
+    func noteBrief(text: String, forceRefresh: Bool = false) async throws -> String {
+        let clipped = String(Self.summarizableBody(text).suffix(16_000))
         let requestBody = ChatRequest(
             model: model,   // polishing model — 70B TPD cap resets daily; 8B's 8k TPM chokes on the burst of per-note calls
             messages: [
                 .init(role: "system", content: """
-                Summarize ONE meeting note into EXACTLY this template, with NO blank lines and every bullet starting with "- ":
-                - 2–4 summary bullets (key points and decisions)
+                Summarize ONE note into EXACTLY this template, with NO blank lines and every bullet starting with "- ":
+                - 3–6 summary bullets (key points and decisions)
                 Next Steps
                 - top 2–3 upcoming steps (use "- None" if there are none)
                 Action Items
@@ -232,11 +269,25 @@ final class TextPolisher {
                 .init(role: "user", content: clipped)
             ],
             temperature: 0.3,
-            max_tokens: 500
+            max_tokens: 600
         )
-        let result = try await send(requestBody, timeout: 40).trimmingCharacters(in: .whitespacesAndNewlines)
-        AICache.shared.store(result, kind: .digest, source: clipped, model: model, version: Self.digestPromptVersion)
-        return result
+        // No source footer — the brief is composed into a strict template and
+        // may be assembled per-meeting; a footer would break the block.
+        return try await generateCached(
+            kind: .brief, source: clipped, version: Self.briefPromptVersion,
+            forceRefresh: forceRefresh, footer: false,
+            groq: { try await self.send(requestBody, timeout: 40).trimmingCharacters(in: .whitespacesAndNewlines) },
+            apple: { await AppleIntelligence.noteBrief(text: clipped) })
+    }
+
+    /// Insert a blank line before the "Next Steps" / "Action Items" labels so a
+    /// brief reads clearly, regardless of the model's own spacing. Shared by the
+    /// notes-viewer summary and the relationship digest so both look identical.
+    static func spacedBrief(_ body: String) -> String {
+        body.components(separatedBy: "\n").flatMap { line -> [String] in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            return (t == "Next Steps" || t == "Action Items") ? ["", line] : [line]
+        }.joined(separator: "\n")
     }
 
     // MARK: - Meeting Q&A
@@ -466,14 +517,9 @@ final class TextPolisher {
     /// (recipient, tone, and sections vary by meeting type). The notes may
     /// already contain a summary and action items — the draft builds on them.
     func draftFollowUp(transcript: String, template: SummaryTemplate = .builtIn(.general), forceRefresh: Bool = false) async throws -> String {
-        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
-        let clipped = String(transcript.suffix(24_000))
+        let clipped = String(Self.summarizableBody(transcript).suffix(24_000))
         // Output depends on the template's guidance too, so it's part of the key.
         let cacheSource = template.followUpGuidance + "\u{0}" + clipped
-        if !forceRefresh,
-           let cached = AICache.shared.value(.followUp, source: cacheSource, model: model, version: Self.followUpPromptVersion) {
-            return cached
-        }
         let body = ChatRequest(
             model: model,
             messages: [
@@ -493,9 +539,11 @@ final class TextPolisher {
             temperature: 0.3,
             max_tokens: 800
         )
-        let result = try await send(body, timeout: 30)
-        AICache.shared.store(result, kind: .followUp, source: cacheSource, model: model, version: Self.followUpPromptVersion)
-        return result
+        return try await generateCached(
+            kind: .followUp, source: cacheSource, version: Self.followUpPromptVersion,
+            forceRefresh: forceRefresh, footer: true,
+            groq: { try await self.send(body, timeout: 30) },
+            apple: { await AppleIntelligence.draftFollowUp(notes: clipped, guidance: template.followUpGuidance) })
     }
 
     /// Topic tags plus the named entities (people, customer, project) a meeting

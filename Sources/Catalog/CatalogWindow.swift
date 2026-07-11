@@ -705,14 +705,6 @@ private struct RelationshipSummaryButton: View {
 
     private var canRun: Bool { !AppSettings.shared.localOnlyMode && !notes.isEmpty }
 
-    /// Insert a blank line before the "Next Steps" / "Action Items" labels so
-    /// each block reads more clearly, regardless of the model's own spacing.
-    private static func spaced(_ body: String) -> String {
-        body.components(separatedBy: "\n").flatMap { line -> [String] in
-            let t = line.trimmingCharacters(in: .whitespaces)
-            return (t == "Next Steps" || t == "Action Items") ? ["", line] : [line]
-        }.joined(separator: "\n")
-    }
 
     var body: some View {
         if canRun {
@@ -760,8 +752,8 @@ private struct RelationshipSummaryButton: View {
         for e in entries {
             guard let text = try? String(contentsOf: e.url, encoding: .utf8), !text.isEmpty else { continue }
             do {
-                let body = try await polisher.meetingDigest(text: text, forceRefresh: forceRefresh)
-                blocks.append("\(e.title)\n\(spaced(body))")
+                let body = try await polisher.noteBrief(text: text, forceRefresh: forceRefresh)
+                blocks.append("\(e.title)\n\(TextPolisher.spacedBrief(body))")
             } catch {
                 lastError = error.localizedDescription
             }

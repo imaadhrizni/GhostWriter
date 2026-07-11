@@ -760,12 +760,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let wantsActions = self.settings.actionItemsEnabled
             let wantsStructured = self.settings.structuredExtraction
             let wantsChapters = self.settings.topicChapters
-            // Local-only mode never contacts the network — no LLM summary/tags.
-            // Each cloud feature below is independently toggleable; the shared
-            // gate is only "cloud allowed + enough real speech to work with".
-            if !self.settings.localOnlyMode,
-               let transcript = self.meetingNotes.transcriptText(of: fileURL),
-               Self.dialogueLength(of: transcript) > 200 {  // measure actual speech, not header/markers
+            // Enough real speech to work with? (measure dialogue, not header/markers)
+            if let transcript = self.meetingNotes.transcriptText(of: fileURL),
+               Self.dialogueLength(of: transcript) > 200 {
+
+            // Local-only mode never contacts the network. It used to skip all AI;
+            // now it runs on-device (Apple Intelligence + NaturalLanguage) instead.
+            if self.settings.localOnlyMode {
+                await self.finalizeOnDevice(transcript: transcript, fileURL: fileURL,
+                                            wantsSummary: wantsSummary, wantsActions: wantsActions)
+            } else {
+                // Cloud path. Each feature below is independently toggleable.
                 if wantsSummary || wantsActions || wantsStructured {
                     do {
                         let raw = try await self.textPolisher.summarize(
@@ -817,20 +822,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // Auto-tag topics + entities into the front-matter (needs front-matter on).
                 // Person names are only harvested when redaction is off.
                 if self.settings.autoTagging, self.settings.frontMatterEnabled {
-                    let meta = await self.textPolisher.extractMetadata(
-                        transcript: transcript, includePeople: !self.settings.redactionEnabled)
+                    let includePeople = !self.settings.redactionEnabled
+                    var meta = await self.textPolisher.extractMetadata(
+                        transcript: transcript, includePeople: includePeople)
+                    // Fall back to on-device NER when the cloud call came back empty
+                    // (e.g. Groq rate-limited) so tagging still happens.
+                    if meta.isEmpty {
+                        meta = OnDeviceNLP.extractMetadata(transcript: transcript, includePeople: includePeople)
+                    }
                     if !meta.isEmpty {
                         MeetingNotesWriter.addMeetingMetadata(
                             topics: meta.topics, people: meta.people,
                             customer: meta.customer, project: meta.project, to: fileURL)
                     }
                 }
-            }
+            }   // end cloud path
+            }   // end "enough speech"
 
             if self.settings.notifyOnMeetingEnd {
                 NotificationManager.shared.notifyMeetingSaved(duration: duration, fileURL: fileURL)
             }
             self.warnIfOverBudget()
+        }
+    }
+
+    /// Local-only finalize: summarize and tag entirely on-device (Apple
+    /// Intelligence for the summary when available, NaturalLanguage NER for
+    /// front-matter tags — which works on every Mac). Best-effort; anything
+    /// unavailable is simply skipped, matching the old "no network" contract.
+    private func finalizeOnDevice(transcript: String, fileURL: URL,
+                                  wantsSummary: Bool, wantsActions: Bool) async {
+        if (wantsSummary || wantsActions), AppleIntelligence.isAvailable {
+            let sections = wantsSummary ? settings.selectedTemplate.summarySections : []
+            if let raw = await AppleIntelligence.summarizeMeeting(
+                transcript: transcript, sections: sections, includeActionItems: wantsActions),
+               let summary = Self.sanitizedSummary(raw) {
+                meetingNotes.appendSummary(
+                    summary + "\n\n_— generated on-device with Apple Intelligence_", to: fileURL)
+            } else {
+                Log.meeting.info("⏭ On-device summary unavailable or empty")
+            }
+        }
+
+        // Front-matter tags via on-device NER — available on every Mac.
+        if settings.autoTagging, settings.frontMatterEnabled {
+            let meta = OnDeviceNLP.extractMetadata(
+                transcript: transcript, includePeople: !settings.redactionEnabled)
+            if !meta.isEmpty {
+                MeetingNotesWriter.addMeetingMetadata(
+                    topics: meta.topics, people: meta.people,
+                    customer: meta.customer, project: meta.project, to: fileURL)
+            }
         }
     }
 

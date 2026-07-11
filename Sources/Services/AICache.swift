@@ -25,8 +25,9 @@ final class AICache {
     /// The kinds of derivation we cache. Each has its own prompt version so a
     /// prompt tweak only invalidates that kind.
     enum Kind: String, Codable {
-        case digest      // TextPolisher.meetingDigest — per-note relationship digest
-        case summary     // TextPolisher.quickSummary — notes-viewer recap
+        case brief       // TextPolisher.noteBrief — one structured artifact per note,
+                         // rendered as both the notes-viewer summary and the
+                         // relationship digest (single AI call, reused for both)
         case followUp    // TextPolisher.draftFollowUp — meeting follow-up draft
     }
 

@@ -267,6 +267,19 @@ private struct GeneralPane: View {
                 Text("If Groq can't be reached, transcribe on-device instead of failing — applies to dictation, quick notes, and meetings. Lower accuracy and no AI polishing or summaries (transcription only), but zero network. Triggers on connectivity errors, not on API-key or server errors.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                Divider()
+
+                Toggle("Prefer on-device AI for summaries & drafts", isOn: $settings.preferOnDeviceAI)
+                    .disabled(!AppleIntelligence.isAvailable)
+                Text("Generate note summaries, relationship digests, and follow-up drafts with Apple Intelligence instead of Groq — keeping Groq for transcription. Private and free; falls back to Groq if the on-device model isn't available. Groq still handles the live brief, auto-tags, and Ask.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if !AppleIntelligence.isAvailable {
+                    Label(AppleIntelligence.unavailableReason ?? "Apple Intelligence is unavailable on this Mac.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundColor(.orange)
+                }
             }
 
             SettingsGroup("Microphone") {
@@ -1437,8 +1450,17 @@ private struct PrivacyPane: View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Network") {
                 Toggle("Local-only mode (never contact the network)", isOn: $settings.localOnlyMode)
-                Text("Transcribe entirely on-device and skip every cloud step — no polishing, summaries, auto-tags, or follow-up drafts, and no API cost. Lower transcription accuracy; nothing leaves this Mac.")
+                Text("Transcribe on-device (Apple Speech) and run AI on-device too — summaries and follow-ups via Apple Intelligence, and entity/topic tags via macOS NaturalLanguage. No API cost and nothing leaves this Mac. Lower transcription accuracy than the cloud.")
                     .font(.caption).foregroundColor(.secondary)
+                Label {
+                    Text(AppleIntelligence.isAvailable
+                         ? "Apple Intelligence is available — on-device summaries are on."
+                         : "Apple Intelligence unavailable: \(AppleIntelligence.unavailableReason ?? "") On-device tagging still works; summaries need the cloud.")
+                } icon: {
+                    Image(systemName: AppleIntelligence.isAvailable ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                }
+                .font(.caption)
+                .foregroundColor(AppleIntelligence.isAvailable ? .secondary : .orange)
             }
 
             SettingsGroup("Redaction") {

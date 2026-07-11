@@ -224,7 +224,7 @@ final class TextPolisher {
     func noteBrief(text: String, forceRefresh: Bool = false) async throws -> String {
         let clipped = String(Self.summarizableBody(text).suffix(16_000))
         let requestBody = ChatRequest(
-            model: model,   // polishing model — 70B TPD cap resets daily; 8B's 8k TPM chokes on the burst of per-note calls
+            model: model,   // polishing model — the brief drives quality-sensitive output; the fast model's low TPM chokes on a burst of per-note calls
             messages: [
                 .init(role: "system", content: """
                 Summarize ONE note into EXACTLY this template, with NO blank lines and every bullet starting with "- ":

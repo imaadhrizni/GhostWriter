@@ -8,7 +8,7 @@ It also has a **Meeting Mode** that captures both sides of a conversation — yo
 
 ## Highlights
 
-- **Zero-latency dictation** — hold Right Option, speak, release; Groq `whisper-large-v3` transcribes (streaming for long dictations) and `llama-3.3-70b-versatile` polishes to match the app you're typing in.
+- **Zero-latency dictation** — hold Right Option, speak, release; Groq `whisper-large-v3` transcribes (streaming for long dictations) and a Llama model (default `llama-4-scout`) polishes to match the app you're typing in.
 - **Meeting Mode** — captures your mic *and* system audio via CoreAudio process taps (no screen-recording permission), producing a timestamped, speaker-labeled transcript with AI summaries, action items, and a live in-meeting brief.
 - **Notes Assistant** — browse, text/semantic-search, and Ask across your whole meeting archive with cited sources; export action items to Apple Reminders.
 - **Catalog** — a CRM-style graph of the organisations, people, projects, opportunities and tags your meetings are about, sitting beside your notes without touching them.

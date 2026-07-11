@@ -119,7 +119,7 @@ final class AppSettings: ObservableObject {
 
     enum Default {
         static let transcriptionModel              = "whisper-large-v3"
-        static let polishingModel                  = "llama-3.3-70b-versatile"
+        static let polishingModel                  = "meta-llama/llama-4-scout-17b-16e-instruct"  // 500K TPD / 30K TPM — avoids the 70B daily cap
         static let fastModel                       = "llama-3.1-8b-instant"
         static let pttKeyCode: Int                 = 61     // Right Option
         static let preferBuiltInMic                = false  // use the system default input

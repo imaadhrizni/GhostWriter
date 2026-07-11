@@ -69,6 +69,12 @@ final class VoiceIdentityStore {
         }
     }
 
+    /// Every saved identity name — used to prime transcription with the people
+    /// you've taught, so Whisper spells them right.
+    var knownNames: [String] {
+        queue.sync { model.identities.map(\.name) }
+    }
+
     // MARK: Teaching
 
     /// Save (or refine, via EMA) a named identity from a fingerprint.

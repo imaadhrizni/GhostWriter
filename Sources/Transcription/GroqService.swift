@@ -17,6 +17,14 @@ final class GroqService {
     private let baseURL = "https://api.groq.com/openai/v1"
     private let session = URLSession.shared
 
+    /// Proper nouns for the meeting in progress — the linked org / project /
+    /// opportunity, its people, and taught voice-identity names — set when a
+    /// meeting starts and cleared when it ends. Merged into the Whisper prompt
+    /// so these names transcribe correctly from the very first mention (vs.
+    /// self-priming, which only helps *after* a term first appears). Set/read
+    /// on the main thread around the meeting lifecycle.
+    static var sessionGlossary = ""
+
     // MARK: - Transcription
 
     /// Transcribe raw PCM audio data to text using Groq Whisper-v3.
@@ -51,8 +59,10 @@ final class GroqService {
         // the recent transcript — so names, acronyms, and jargon transcribe
         // consistently once they first appear. Self-priming needs no setup and
         // is the same for every user, which matters for a distributed build.
-        let promptHint = Self.composePrompt(
-            vocabulary: AppSettings.shared.vocabularyHint(), context: context)
+        let glossary = [AppSettings.shared.vocabularyHint(), Self.sessionGlossary]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let promptHint = Self.composePrompt(vocabulary: glossary, context: context)
         if !promptHint.isEmpty {
             body.appendMultipart(name: "prompt", value: promptHint, boundary: boundary)
         }

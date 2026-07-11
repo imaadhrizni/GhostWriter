@@ -24,7 +24,26 @@ final class TextPolisher {
     // Prompt versions for the AICache. Bump the matching one whenever a cached
     // method's system prompt changes, so stale cached outputs miss and refresh.
     private static let briefPromptVersion = 1
-    private static let followUpPromptVersion = 2
+    private static let followUpPromptVersion = 3   // structured Subject/body email format
+
+    /// How a follow-up should be laid out, appended to every template's
+    /// guidance. Emails get an explicit Subject line + greeting/body/sign-off;
+    /// internal recaps get a titled, skimmable structure.
+    private static let followUpFormat = """
+    FORMAT — use Markdown:
+    - If this is an EMAIL to someone, format it exactly as:
+      **Subject:** <a concise, specific subject line>
+
+      <greeting, e.g. "Hi <name>,">
+
+      <the body: 1–2 short paragraphs and/or bullets covering the key points, \
+      commitments, and next steps with owners and dates>
+
+      <a brief sign-off>
+      Leave "<name>" as a placeholder if the recipient isn't clear.
+    - If this is an INTERNAL recap/debrief (not addressed to someone), start with a \
+      short "## <Title>" heading, then skimmable bullets grouped under bold labels.
+    """
 
     /// Strip the leading YAML front-matter block and trailing whitespace from a
     /// note before summarizing. The front-matter (tags, attendees) is derived
@@ -147,8 +166,10 @@ final class TextPolisher {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         guard includeSummary || includeActionItems || includeStructured else { throw GroqError.invalidResponse }
 
-        // Keep well under context limits — a long meeting can exceed them.
-        let clipped = String(transcript.suffix(24_000))
+        // Long meetings exceed the context window. Rather than dropping the
+        // opening (a tail-only clip), map-reduce: condense the whole meeting in
+        // chunks first, so early decisions survive into the summary.
+        let clipped = await condenseIfNeeded(transcript, cap: 24_000)
 
         var sections: [String] = []
         if includeSummary {
@@ -181,6 +202,7 @@ final class TextPolisher {
                 - Do not invent content that is not in the transcript.
                 - Always include EVERY section heading listed above, in that order — even when a section is empty. When a section has nothing, write exactly "_None_" as its body. Ignore any "(omit if none)" note in a section's description; never drop a heading.
                 - Never repeat a heading.
+                - Cite sources: transcript lines begin with a timestamp like **[HH:MM:SS]** (a pre-condensed input keeps them as "[HH:MM:SS]" at the start of a bullet). When a point comes from a specific moment, append that source timestamp in brackets at the END of the point, e.g. "- Agreed to ship Friday [00:14:02]". Use only a timestamp that actually appears in the input; omit it when unsure. Never put a timestamp on the TL;DR.
                 - If the ENTIRE meeting has too little substantive discussion to summarize at all, output exactly NOT_ENOUGH_CONTENT and nothing else.
                 """),
                 .init(role: "user", content: "Summarize this meeting transcript:\n\n\(clipped)")
@@ -189,6 +211,61 @@ final class TextPolisher {
             max_tokens: 1024
         )
         return try await send(requestBody, timeout: 30)
+    }
+
+    /// Map step of map-reduce summarization: when a transcript is longer than
+    /// `cap`, condense it chunk-by-chunk into timestamped bullets that preserve
+    /// every decision / action / owner / date / number, so the whole meeting —
+    /// not just its tail — reaches the final summary. Returns the transcript
+    /// unchanged when it already fits, and degrades to a tail-clip on failure.
+    private func condenseIfNeeded(_ transcript: String, cap: Int) async -> String {
+        guard transcript.count > cap else { return transcript }
+        // Bound the number of chunks so a marathon meeting can't fan out into
+        // dozens of calls; oversized inputs just use larger chunks.
+        let maxChunks = 12
+        let chunkSize = max(12_000, Int((Double(transcript.count) / Double(maxChunks)).rounded(.up)))
+        let chunks = Self.splitOnLines(transcript, maxChars: chunkSize)
+
+        var condensed: [String] = []
+        for chunk in chunks {
+            let body = ChatRequest(
+                model: fastModel,   // cheap: this is compression, not the final prose
+                messages: [
+                    .init(role: "system", content: """
+                    Condense this meeting-transcript segment into terse Markdown bullets, preserving EVERY decision, action item, owner, date, number, and key point. Start each bullet with the source timestamp in brackets, taken from the line the point came from, like "- [00:12:33] …". Drop small talk. No preamble, no headings — bullets only.
+                    """),
+                    .init(role: "user", content: chunk)
+                ],
+                temperature: 0.1,
+                max_tokens: 700
+            )
+            if let text = try? await send(body, timeout: 30) {
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { condensed.append(trimmed) }
+            } else {
+                // Keep the chunk's head so its content isn't lost entirely.
+                condensed.append(String(chunk.prefix(1_500)))
+            }
+        }
+        let joined = condensed.joined(separator: "\n")
+        return joined.isEmpty ? String(transcript.suffix(cap))
+             : (joined.count > cap ? String(joined.suffix(cap)) : joined)
+    }
+
+    /// Split text into pieces of at most `maxChars`, breaking only at line
+    /// boundaries so a transcript line (and its timestamp) is never cut in two.
+    static func splitOnLines(_ text: String, maxChars: Int) -> [String] {
+        var chunks: [String] = []
+        var current = ""
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if current.count + line.count + 1 > maxChars, !current.isEmpty {
+                chunks.append(current)
+                current = ""
+            }
+            current += line + "\n"
+        }
+        if !current.trimmingCharacters(in: .whitespaces).isEmpty { chunks.append(current) }
+        return chunks
     }
 
     /// Segment a transcript into a handful of topical chapters, each anchored to
@@ -449,8 +526,9 @@ final class TextPolisher {
     /// already contain a summary and action items — the draft builds on them.
     func draftFollowUp(transcript: String, template: SummaryTemplate = .builtIn(.general), forceRefresh: Bool = false) async throws -> String {
         let clipped = String(Self.summarizableBody(transcript).suffix(24_000))
+        let guidance = template.followUpGuidance + "\n\n" + Self.followUpFormat
         // Output depends on the template's guidance too, so it's part of the key.
-        let cacheSource = template.followUpGuidance + "\u{0}" + clipped
+        let cacheSource = guidance + "\u{0}" + clipped
         let body = ChatRequest(
             model: model,
             messages: [
@@ -459,11 +537,10 @@ final class TextPolisher {
                 notes below — which may already include a summary and action items;
                 build on them and never contradict or invent facts.
 
-                \(template.followUpGuidance)
+                \(guidance)
 
                 Keep it tight and skimmable. Attribute owners where identifiable.
-                If it's an email, start with a one-line subject. Output the follow-up
-                text only — no preamble or meta-commentary.
+                Output the follow-up text only — no preamble or meta-commentary.
                 """),
                 .init(role: "user", content: "Notes:\n\n\(clipped)")
             ],
@@ -474,7 +551,7 @@ final class TextPolisher {
             kind: .followUp, source: cacheSource, version: Self.followUpPromptVersion,
             forceRefresh: forceRefresh, footer: true,
             groq: { try await self.send(body, timeout: 30) },
-            apple: { await AppleIntelligence.draftFollowUp(notes: clipped, guidance: template.followUpGuidance) })
+            apple: { await AppleIntelligence.draftFollowUp(notes: clipped, guidance: guidance) })
     }
 
     /// Topic tags plus the named entities (people, customer, project) a meeting

@@ -285,6 +285,13 @@ private struct GeneralPane: View {
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundColor(.orange)
                 }
+
+                Divider()
+
+                Toggle("Open notes in external editor", isOn: $settings.openNotesExternally)
+                Text("Open note files in your default Markdown app (e.g. VS Code, Obsidian, Typora) instead of the in-app viewer — everywhere notes open: the menu, recent list, Catalog, and Ask. Set your preferred app in Finder → a .md file → Get Info → Open with → Change All. Off uses the built-in viewer.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             SettingsGroup("Microphone") {

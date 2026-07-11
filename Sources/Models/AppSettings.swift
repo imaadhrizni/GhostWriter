@@ -36,6 +36,7 @@ final class AppSettings: ObservableObject {
         static let actionItemsEnabled     = "meeting.actionItemsEnabled"
         static let structuredExtraction   = "meeting.structuredExtraction"
         static let extractKeyFields       = "meeting.extractKeyFields"
+        static let openNotesExternally    = "notes.openExternally"
         static let topicChapters          = "meeting.topicChapters"
         static let liveAssistantEnabled   = "meeting.liveAssistantEnabled"
         static let meetingPrepCard        = "meeting.prepCard"
@@ -101,7 +102,7 @@ final class AppSettings: ObservableObject {
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
-                          structuredExtraction, extractKeyFields, topicChapters, liveAssistantEnabled, meetingPrepCard,
+                          structuredExtraction, extractKeyFields, openNotesExternally, topicChapters, liveAssistantEnabled, meetingPrepCard,
                           notifyOnMeetingEnd, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, transcriptionLanguage,
                           vocabulary, replacements, appProfiles,
@@ -143,6 +144,7 @@ final class AppSettings: ObservableObject {
         static let actionItemsEnabled              = true
         static let structuredExtraction            = true
         static let extractKeyFields                = true
+        static let openNotesExternally             = false
         static let topicChapters                   = true
         static let liveAssistantEnabled            = true
         static let meetingPrepCard                 = true
@@ -359,6 +361,13 @@ final class AppSettings: ObservableObject {
     var extractKeyFields: Bool {
         get { bool(Key.extractKeyFields, Default.extractKeyFields) }
         set { set(newValue, Key.extractKeyFields) }
+    }
+
+    /// Open notes in the OS default app (e.g. VS Code) instead of the in-app
+    /// viewer. Applies wherever a note file is opened.
+    var openNotesExternally: Bool {
+        get { bool(Key.openNotesExternally, Default.openNotesExternally) }
+        set { set(newValue, Key.openNotesExternally) }
     }
 
     /// Append a topic-chapter jump-list (timestamped) to finished meeting notes.

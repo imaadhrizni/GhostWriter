@@ -991,7 +991,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let file = meetingNotes.currentFilePath
             ?? meetingNotes.lastCompletedFilePath
             ?? MeetingNotesWriter.allMeetingFiles(under: settings.notesFolder).first {
-            NSWorkspace.shared.open(file)
+            // Routes to the in-app viewer, or the OS default app when
+            // "open notes externally" is on.
+            NotesViewerWindowController.present(fileURL: file)
         } else {
             let folder = settings.notesFolder
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -1331,6 +1333,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let parts = repr.split(separator: ":", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { return nil }
         return (parts[0], parts[1])
+    }
+
+    /// Proper-noun glossary for the meeting in progress — the linked entity
+    /// (opportunity / project / org), the people on its recent notes, and the
+    /// voice identities taught so far — capped and formatted for the Whisper
+    /// prompt. CatalogStore is main-actor isolated, so this is too.
+    @MainActor
+    private func buildSessionGlossary(for target: (kind: String, id: String)?) -> String {
+        let store = CatalogStore.shared
+        var terms: [String] = []
+        var scope: [CatalogNote] = []
+
+        if let target {
+            if target.kind == "opp", let opp = store.opportunity(target.id) {
+                terms.append(opp.name)
+                if let proj = store.project(opp.projectID) { terms.append(proj.name) }
+                if let org = store.org(forOpportunity: opp) { terms.append(org.name) }
+                scope = store.notes(forOpportunity: opp)
+            } else if target.kind == "org", let org = store.org(target.id) {
+                terms.append(org.name)
+                scope = store.notes(forOrg: org.id, includingDescendants: true)
+            }
+        }
+
+        // People who appear on the linked entity's notes.
+        let personIDs = Set(scope.flatMap { $0.personIDs })
+        terms.append(contentsOf: store.doc.people.filter { personIDs.contains($0.id) }.map(\.name))
+        // Voices you've taught by renaming speakers in past meetings.
+        terms.append(contentsOf: VoiceIdentityStore.shared.knownNames)
+
+        // Dedupe (case-insensitive), drop empties, cap length for Whisper's
+        // short prompt window.
+        var seen = Set<String>(), unique: [String] = []
+        for t in terms {
+            let name = t.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty, seen.insert(name.lowercased()).inserted else { continue }
+            unique.append(name)
+        }
+        guard !unique.isEmpty else { return "" }
+        return String(("Names: " + unique.joined(separator: ", ")).prefix(400))
     }
 
     /// Meeting prep card: a quick, non-editable recap of recent context for the
@@ -1687,6 +1729,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingDetector.suppressed = true
         meetingNotes.beginSession()
 
+        // Prime Whisper with the proper nouns for this meeting (linked entity,
+        // its people, taught voices) so names transcribe right from the start.
+        GroqService.sessionGlossary = buildSessionGlossary(for: meetingCatalogTarget)
+
         // Reset the speaker profiles for the new session (safe to touch
         // directly — the capture callbacks haven't started yet)
         speakerProfiler.reset()
@@ -1753,6 +1799,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // link entirely). Clearing it here also prevents leaking into the next.
         let catalogTargetForNotes = meetingCatalogTarget
         meetingCatalogTarget = nil
+
+        // Session glossary is per-meeting — clear it so it can't bias the next
+        // meeting's transcription (or dictation) with stale names.
+        GroqService.sessionGlossary = ""
 
         micCapture.stop()
         systemAudioCapture.stop()

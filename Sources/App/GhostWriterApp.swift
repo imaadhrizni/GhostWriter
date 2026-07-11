@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private var retryQueue: [PendingSegment] = []
     private var retryTimer: Timer?
+    private var digestTimer: Timer?
     private var maxRetryAttempts: Int { max(1, settings.retryMaxAttempts) }
 
     // In-flight transcription counter: meeting shutdown waits for these so the
@@ -141,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(resetPermissions), name: .resetAllPermissions, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(clearDictationHistory), name: .dictationHistoryDisabled, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(renameSpeakersForFile(_:)), name: .renameSpeakersForFile, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showDigestWindow), name: .openDigest, object: nil)
 
         if KeychainService.groqAPIKey() == nil {
             Log.app.info("🔑 API Key missing — showing setup window")
@@ -156,8 +158,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.offerToStopMeeting()
         }
         meetingDetector.start()
+        startDigestScheduler()
 
         Log.app.info("🎤 GhostWriter launched")
+    }
+
+    // MARK: - Digest scheduler
+
+    /// Check hourly (and once shortly after launch) whether a scheduled digest
+    /// is due. Cheap — the real work only runs when the window arrives.
+    private func startDigestScheduler() {
+        digestTimer?.invalidate()
+        digestTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkDigestDue() }   // timer fires on the main run loop
+        }
+        // A short delay so first-launch UI/permission prompts settle first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+            MainActor.assumeIsolated { self?.checkDigestDue() }
+        }
+    }
+
+    /// Generate the digest if enabled, the scheduled hour has passed today, and
+    /// it hasn't already run for this period.
+    @MainActor
+    private func checkDigestDue() {
+        guard settings.digestEnabled else { return }
+        let cal = Calendar.current
+        let now = Date()
+        guard cal.component(.hour, from: now) >= settings.digestHour else { return }
+
+        let today = DateDisplay.posixDay.string(from: now)
+        guard settings.lastDigestDay != today else { return }
+
+        // Fire only on the period's boundary: weekly on the chosen weekday,
+        // monthly on the 1st, yearly on Jan 1 (daily every day).
+        let period = DigestService.period(from: settings.digestFrequency)
+        switch period {
+        case .daily:   break
+        case .weekly:  if cal.component(.weekday, from: now) != settings.digestWeekday { return }
+        case .monthly: if cal.component(.day, from: now) != 1 { return }
+        case .yearly:  if cal.component(.day, from: now) != 1 || cal.component(.month, from: now) != 1 { return }
+        }
+
+        settings.lastDigestDay = today
+        DigestService.generate(period: period, notify: true)
+        Log.app.info("🗞 Generated \(period.rawValue) digest")
+    }
+
+    /// Menu action: open the Ask-your-notes chat window.
+    @MainActor @objc private func showAskWindow() {
+        AskWindowController.present()
+    }
+
+    /// Menu action / notification click: open the interactive Digest window.
+    @MainActor @objc private func showDigestWindow() {
+        DigestWindowController.present()
     }
 
     private func finishInitialization() {
@@ -179,7 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if dictationsWindowController == nil {
             dictationsWindowController = DictationsWindowController()
         }
-        dictationsWindowController?.showAndActivate()
+        dictationsWindowController?.bringToFront()
     }
 
     private var catalogWindowController: CatalogWindowController?
@@ -189,7 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if catalogWindowController == nil {
             catalogWindowController = CatalogWindowController()
         }
-        catalogWindowController?.showAndActivate()
+        catalogWindowController?.bringToFront()
     }
 
     @objc private func showSettingsWindow() {
@@ -365,6 +420,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictationsItem.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)
         dictationsItem.target = self
         menu.addItem(dictationsItem)
+
+        // AI-over-notes actions, set apart from the raw browse/archive items above.
+        menu.addItem(NSMenuItem.separator())
+
+        let digestItem = NSMenuItem(title: "Today's Digest…", action: #selector(showDigestWindow), keyEquivalent: "")
+        digestItem.image = NSImage(systemSymbolName: "newspaper", accessibilityDescription: nil)
+        digestItem.target = self
+        menu.addItem(digestItem)
+
+        let askItem = NSMenuItem(title: "Ask Your Notes…", action: #selector(showAskWindow), keyEquivalent: "")
+        askItem.image = NSImage(systemSymbolName: "sparkle.magnifyingglass", accessibilityDescription: nil)
+        askItem.target = self
+        menu.addItem(askItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -759,6 +827,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             // Bookmarks jump-list (timestamps dropped via ⌃⌥B during the meeting).
             self.meetingNotes.appendBookmarks(to: fileURL)
+
+            // Auto-name recurring voices (learned from past renames) before
+            // summarizing, so real names flow into the summary and tags too.
+            self.applyVoiceIdentities(to: fileURL)
 
             let wantsSummary = self.settings.summariesEnabled
             let wantsActions = self.settings.actionItemsEnabled
@@ -2182,10 +2254,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             liveFile: meetingNotes.currentFilePath,
             preselect: preselect,
             onRename: { [weak self] old, new, file in
-                guard let self, self.meetingNotes.currentFilePath == file else { return }
-                self.meetingNotes.setNameOverride(new, replacing: old)
+                guard let self else { return }
+                // Teach the voice identity: if we have this meeting's fingerprint
+                // for the renamed label, save it under the new name so this voice
+                // is auto-labeled in future meetings.
+                if let fp = VoiceIdentityStore.shared.fingerprint(forLabel: old, file: file.path) {
+                    VoiceIdentityStore.shared.remember(name: new, pitch: fp.pitch, zcr: fp.zcr)
+                }
+                // Keep a live meeting using the new name for later segments.
+                if self.meetingNotes.currentFilePath == file {
+                    self.meetingNotes.setNameOverride(new, replacing: old)
+                }
             })
-        renameSpeakersWindowController?.showAndActivate()
+        renameSpeakersWindowController?.bringToFront()
+    }
+
+    /// Cache this meeting's voice fingerprints and auto-rename any speaker whose
+    /// voice matches a saved identity (taught by a previous rename).
+    private func applyVoiceIdentities(to fileURL: URL) {
+        let snaps = speakerProfiler.snapshot()
+        guard !snaps.isEmpty else { return }
+        VoiceIdentityStore.shared.cacheSnapshot(snaps, forFile: fileURL.path)
+        for s in snaps {
+            guard let name = VoiceIdentityStore.shared.match(pitch: s.pitch, zcr: s.zcr),
+                  name != s.label else { continue }
+            MeetingNotesWriter.renameSpeaker(from: s.label, to: name, in: fileURL)
+        }
     }
 
     /// Opens today's QuickNotes file, or the most recent one, or the folder.

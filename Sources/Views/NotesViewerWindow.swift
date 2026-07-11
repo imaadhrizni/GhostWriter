@@ -18,7 +18,7 @@ final class NotesViewerWindowController: NSWindowController {
         open.removeAll { $0.window?.isVisible == false }
         let controller = NotesViewerWindowController(fileURL: fileURL)
         open.append(controller)
-        controller.showAndActivate()
+        controller.bringToFront()
     }
 
     /// Present generated draft text in a viewer. `regenerate`, when given, adds a
@@ -29,7 +29,7 @@ final class NotesViewerWindowController: NSWindowController {
         open.removeAll { $0.window?.isVisible == false }
         let controller = NotesViewerWindowController(draftTitle: draftTitle, text: text, regenerate: regenerate)
         open.append(controller)
-        controller.showAndActivate()
+        controller.bringToFront()
     }
 
     /// Open an existing notes file for viewing/editing.
@@ -61,11 +61,6 @@ final class NotesViewerWindowController: NSWindowController {
         window.contentView = NSHostingView(rootView: NotesViewerView(fileURL: fileURL, initialText: initialText, regenerate: regenerate))
     }
 
-    func showAndActivate() {
-        NSApp.activate(ignoringOtherApps: true)
-        showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
-    }
 }
 
 /// An NSTextView-backed editor with the native find bar (⌘F) — SwiftUI's

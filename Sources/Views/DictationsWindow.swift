@@ -23,11 +23,6 @@ final class DictationsWindowController: NSWindowController {
         window.contentView = NSHostingView(rootView: DictationsView())
     }
 
-    func showAndActivate() {
-        NSApp.activate(ignoringOtherApps: true)
-        showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
-    }
 }
 
 // MARK: - Model

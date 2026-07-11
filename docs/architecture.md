@@ -33,17 +33,22 @@
 | `Sources/Services/KeychainService.swift` | Groq API-key storage in the macOS Keychain |
 | `Sources/Meetings/MeetingNotesWriter.swift` | Markdown transcript writer (front-matter, summaries, dated subfolders) |
 | `Sources/Audio/SpeakerProfiler.swift` | Voice-fingerprint clustering for speaker diarization |
+| `Sources/Audio/VoiceIdentityStore.swift` | Persistent named voice identities — matches diarized voices to saved names across meetings; learns from renames |
 | `Sources/Meetings/MeetingDetector.swift` | Per-process mic inspection — call start/end detection |
 | `Sources/Views/RenameSpeakersWindow.swift` | Per-meeting speaker renaming |
 | `Sources/Transcription/OfflineTranscriber.swift` | On-device speech fallback (Apple Speech) |
 | `Sources/Services/NotificationManager.swift` | Post-meeting, quick-note, and error notifications |
 | `Sources/Meetings/NotesAssistant.swift` | `NotesLibrary` — shared notes data layer (file listing, text/semantic search, cross-meeting excerpts, action-item parsing) |
+| `Sources/Meetings/DigestService.swift` | Builds the proactive daily/weekly digest model + archived note (meetings, open/overdue action items, quiet relationships) |
+| `Sources/Views/DigestWindow.swift` | Interactive digest window — tickable action items, overdue highlighting, click-to-open |
+| `Sources/Views/AskWindow.swift` | Multi-turn "Ask your notes" chat with a scope selector (all / chosen meetings / org / opportunity) and cited sources |
 | `Sources/Transcription/SemanticIndex.swift` | On-device semantic search over notes (Apple `NLEmbedding`, cached) |
 | `Sources/Meetings/LiveMeetingAssistant.swift` | Floating in-meeting brief + grounded Ask (rolling TL;DR / actions) |
 | `Sources/Views/NotesViewerWindow.swift` | In-app Markdown viewer/editor (find bar, read-only/unlock-to-edit, Summarize brief + Regenerate, follow-up, rename, PDF export, open externally) |
 | `Sources/Models/Catalog.swift` | Catalog model + `CatalogStore` (Codable `Catalog.json` store: orgs/projects/opportunities plus per-note people/tags, org hierarchy, project→org inheritance, import, missing-file reconcile, purge) |
 | `Sources/Catalog/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, per-entity relationship timeline, search (Text/Meaning/Ask) + consolidated Filter menu with removable chips, row actions, Quick add, catalog export/import |
 | `Sources/Utils/MarkdownPDF.swift` | Paginated Markdown → PDF renderer (CoreText) |
+| `Sources/Utils/WindowHelpers.swift` | Shared `NSWindowController.bringToFront()` present helper |
 | `Sources/Services/RemindersExporter.swift` | Export action items to Apple Reminders (EventKit) |
 | `Sources/Services/BackupService.swift` | Full backup/restore — zips notes, quick notes, dictations & Catalog |
 | `Sources/Views/DictationsWindow.swift` | Searchable, day-grouped browser for archived dictations |

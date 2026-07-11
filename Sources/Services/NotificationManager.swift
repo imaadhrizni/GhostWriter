@@ -61,6 +61,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
              sound: nil)
     }
 
+    /// "Your digest is ready" — clicking opens the interactive Digest window.
+    func notifyDigestReady(period: DigestService.Period) {
+        post(title: "\(period.label) digest ready",
+             body: "Meetings, open action items, and quiet relationships — click to open.",
+             fileURL: nil,
+             userInfo: ["openDigest": true],
+             sound: .default)
+    }
+
     /// "You've passed your monthly budget" — a soft, one-per-month heads-up.
     func notifyBudgetExceeded(spent: String, budget: String) {
         post(title: "Monthly Groq budget reached",
@@ -76,7 +85,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// Shared plumbing: authorization, content, optional click-to-open payload.
-    private func post(title: String, body: String, fileURL: URL?, sound: UNNotificationSound?) {
+    private func post(title: String, body: String, fileURL: URL?,
+                      userInfo: [String: Any] = [:], sound: UNNotificationSound?) {
         Task {
             guard await ensureAuthorization() else { return }
 
@@ -84,7 +94,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             content.title = title
             content.body = body
             content.sound = sound
-            if let fileURL { content.userInfo = ["notesPath": fileURL.path] }
+            var info = userInfo
+            if let fileURL { info["notesPath"] = fileURL.path }
+            content.userInfo = info
 
             let request = UNNotificationRequest(
                 identifier: UUID().uuidString,
@@ -105,7 +117,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     /// Open the notes file when the notification is clicked.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
-        if let path = response.notification.request.content.userInfo["notesPath"] as? String {
+        let info = response.notification.request.content.userInfo
+        if info["openDigest"] as? Bool == true {
+            NotificationCenter.default.post(name: .openDigest, object: nil)
+        } else if let path = info["notesPath"] as? String {
             NSWorkspace.shared.open(URL(fileURLWithPath: path))
         }
     }

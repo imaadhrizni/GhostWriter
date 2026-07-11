@@ -43,6 +43,12 @@ final class AppSettings: ObservableObject {
         static let diarizationEnabled     = "meeting.diarizationEnabled"
         static let offlineFallback        = "transcription.offlineFallback"
         static let preferOnDeviceAI       = "ai.preferOnDevice"
+        static let digestEnabled          = "digest.enabled"
+        static let digestFrequency        = "digest.frequency"   // "daily" | "weekly" | "monthly" | "yearly"
+        static let digestHour             = "digest.hour"        // 0–23
+        static let digestWeekday          = "digest.weekday"     // 1=Sun … 7=Sat
+        static let staleRelationshipDays  = "digest.staleDays"
+        static let lastDigestDay          = "digest.lastDay"     // "yyyy-MM-dd" of last run
         static let transcriptionLanguage  = "transcription.language"
         static let vocabulary             = "transcription.vocabulary"
         static let replacements           = "transcription.replacements"
@@ -143,6 +149,11 @@ final class AppSettings: ObservableObject {
         static let diarizationEnabled              = true
         static let offlineFallback                 = true
         static let preferOnDeviceAI                = false
+        static let digestEnabled                   = false
+        static let digestFrequency                 = "daily"
+        static let digestHour                      = 9
+        static let digestWeekday                   = 2       // Monday
+        static let staleRelationshipDays           = 30
         static let transcriptionLanguage           = "en"
         static let dictationHistoryOn              = true
         static let dictationHistoryLimit           = 20
@@ -895,6 +906,34 @@ final class AppSettings: ObservableObject {
     var preferOnDeviceAI: Bool {
         get { bool(Key.preferOnDeviceAI, Default.preferOnDeviceAI) }
         set { set(newValue, Key.preferOnDeviceAI) }
+    }
+
+    /// Proactive digest — a scheduled rollup of meetings, open action items, and
+    /// quiet relationships.
+    var digestEnabled: Bool {
+        get { bool(Key.digestEnabled, Default.digestEnabled) }
+        set { set(newValue, Key.digestEnabled) }
+    }
+    var digestFrequency: String {
+        get { string(Key.digestFrequency, Default.digestFrequency) }
+        set { set(newValue, Key.digestFrequency) }
+    }
+    var digestHour: Int {
+        get { int(Key.digestHour, Default.digestHour) }
+        set { set(newValue, Key.digestHour) }
+    }
+    var digestWeekday: Int {
+        get { int(Key.digestWeekday, Default.digestWeekday) }
+        set { set(newValue, Key.digestWeekday) }
+    }
+    var staleRelationshipDays: Int {
+        get { int(Key.staleRelationshipDays, Default.staleRelationshipDays) }
+        set { set(newValue, Key.staleRelationshipDays) }
+    }
+    /// "yyyy-MM-dd" of the last generated digest (empty = never). Not user-facing.
+    var lastDigestDay: String {
+        get { string(Key.lastDigestDay, "") }
+        set { set(newValue, Key.lastDigestDay) }
     }
 
     /// Have the summarizer extract topic tags into the notes front-matter.

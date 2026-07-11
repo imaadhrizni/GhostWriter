@@ -25,10 +25,8 @@ final class SettingsWindowController: NSWindowController {
     }
 
     func showAndActivate() {
-        NSApp.activate(ignoringOtherApps: true)
-        showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
         window?.center()
+        bringToFront()
     }
 }
 
@@ -41,6 +39,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case quickNotes  = "Quick Notes"
     case meeting     = "Recording"
     case notes       = "Notes & Summaries"
+    case digest      = "Digest"
     case privacy     = "Privacy"
     case permissions = "Permissions"
     case shortcuts   = "Shortcuts"
@@ -55,7 +54,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
         (nil,                  [.general]),
         ("Capture",            [.dictation, .styles, .quickNotes]),
-        ("Meetings",           [.meeting, .notes]),
+        ("Meetings",           [.meeting, .notes, .digest]),
         ("Privacy & Security", [.privacy, .permissions]),
         ("App",                [.shortcuts, .stats, .diagnostics, .about]),
     ]
@@ -68,6 +67,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return "square.and.pencil"
         case .meeting:     return "person.2.wave.2.fill"
         case .notes:       return "doc.text.fill"
+        case .digest:      return "newspaper.fill"
         case .privacy:     return "hand.raised.fill"
         case .permissions: return "lock.shield.fill"
         case .shortcuts:   return "command"
@@ -85,6 +85,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return .yellow
         case .meeting:     return .purple
         case .notes:       return .indigo
+        case .digest:      return .brown
         case .privacy:     return .pink
         case .permissions: return .green
         case .shortcuts:   return .orange
@@ -149,6 +150,7 @@ struct SettingsView: View {
                     case .quickNotes:  QuickNotesPane()
                     case .meeting:     MeetingPane()
                     case .notes:       MeetingNotesPane()
+                    case .digest:      DigestPane()
                     case .privacy:     PrivacyPane()
                     case .permissions: PermissionsPane()
                     case .shortcuts:   ShortcutsPane()
@@ -1144,6 +1146,87 @@ private struct MeetingNotesPane: View {
     }
 }
 
+/// Proactive digest — its own pane (it spans meetings, Catalog relationships,
+/// and scheduling, so it doesn't belong under notes formatting). The schedule
+/// controls stay visible but disabled until the digest is turned on, so users
+/// can see what it does before committing.
+private struct DigestPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    private static let weekdayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    private static func hourLabel(_ h: Int) -> String {
+        let period = h < 12 ? "AM" : "PM"
+        let hour12 = h % 12 == 0 ? 12 : h % 12
+        return "\(hour12) \(period)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Proactive Digest") {
+                Toggle("Enable digest", isOn: $settings.digestEnabled)
+                Text("A scheduled rollup — grouped by relationship — of your recent meetings, open (and overdue) action items, and Catalog relationships that have gone quiet. Opens in an interactive window and is archived as a Digests note. Generated on-device, no API cost. Build one anytime from the menu → Today's Digest.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Schedule") {
+                HStack {
+                    Text("Frequency")
+                    Spacer()
+                    Picker("", selection: $settings.digestFrequency) {
+                        Text("Daily").tag("daily")
+                        Text("Weekly").tag("weekly")
+                        Text("Monthly").tag("monthly")
+                        Text("Yearly").tag("yearly")
+                    }
+                    .labelsHidden().frame(width: 120)
+                }
+                if settings.digestFrequency == "weekly" {
+                    HStack {
+                        Text("Day")
+                        Spacer()
+                        Picker("", selection: $settings.digestWeekday) {
+                            ForEach(Array(Self.weekdayNames.enumerated()), id: \.offset) { i, name in
+                                Text(name).tag(i + 1)   // 1 = Sunday
+                            }
+                        }
+                        .labelsHidden().frame(width: 140)
+                    }
+                }
+                HStack {
+                    Text("At")
+                    Spacer()
+                    Picker("", selection: $settings.digestHour) {
+                        ForEach(0..<24, id: \.self) { h in Text(Self.hourLabel(h)).tag(h) }
+                    }
+                    .labelsHidden().frame(width: 100)
+                }
+                if settings.digestFrequency == "monthly" {
+                    Text("Monthly digests run on the 1st.")
+                        .font(.caption).foregroundColor(.secondary)
+                } else if settings.digestFrequency == "yearly" {
+                    Text("Yearly digests run on 1 January.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+            .disabled(!settings.digestEnabled)
+
+            SettingsGroup("Relationships") {
+                HStack {
+                    Text("Flag relationships quiet after")
+                    Spacer()
+                    Picker("", selection: $settings.staleRelationshipDays) {
+                        ForEach([14, 30, 60, 90], id: \.self) { Text("\($0) days").tag($0) }
+                    }
+                    .labelsHidden().frame(width: 110)
+                }
+                Text("An open opportunity with no note in this window is surfaced under \u{201C}Quiet Relationships\u{201D} in the digest.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            .disabled(!settings.digestEnabled)
+        }
+    }
+}
+
 /// Manages meeting templates: pick the default, add/rename/delete your own,
 /// and edit the section list of whichever is selected. Built-in templates are
 /// curated starting points (their sections are editable, resettable); user
@@ -1774,6 +1857,7 @@ extension Notification.Name {
     static let resetAllPermissions = Notification.Name("ResetAllPermissions")
     static let dictationHistoryDisabled = Notification.Name("DictationHistoryDisabled")
     static let renameSpeakersForFile = Notification.Name("RenameSpeakersForFile")
+    static let openDigest = Notification.Name("OpenDigest")
 }
 
 // MARK: - About

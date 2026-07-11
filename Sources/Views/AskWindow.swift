@@ -46,7 +46,7 @@ private struct AskMessage: Identifiable {
     let id = UUID()
     let role: Role
     var text: String
-    var sources: [NotesLibrary.MeetingFile] = []
+    var citations: [NotesLibrary.ExcerptResult.Citation] = []
     var source: String? = nil   // "Groq" / "Apple Intelligence", for assistant turns
 }
 
@@ -238,29 +238,25 @@ private struct AskView: View {
             defer { asking = false }
             let result = await Self.answer(question: q, history: history, files: files)
             messages.append(AskMessage(role: .assistant, text: result.text,
-                                       sources: result.sources, source: result.engine))
+                                       citations: result.citations, source: result.engine))
         }
     }
 
-    private struct Answer { let text: String; let sources: [NotesLibrary.MeetingFile]; let engine: String? }
+    private struct Answer { let text: String; let citations: [NotesLibrary.ExcerptResult.Citation]; let engine: String? }
 
     /// Retrieve excerpts across the archive and answer, with an on-device
-    /// fallback when Groq is unavailable or fails.
+    /// fallback when Groq is unavailable or fails. Retrieval is hybrid
+    /// (meaning + keyword), so it works even without an embedding model.
     private static func answer(question: String, history: String,
                                files: [NotesLibrary.MeetingFile]?) async -> Answer {
         if let files, files.isEmpty {
-            return Answer(text: "That scope has no meetings to search. Pick a different scope.", sources: [], engine: nil)
+            return Answer(text: "That scope has no meetings to search. Pick a different scope.", citations: [], engine: nil)
         }
-        let retrieved: NotesLibrary.ExcerptResult
-        if NotesLibrary.semanticAvailable {
-            retrieved = files == nil
-                ? await NotesLibrary.semanticExcerpts(for: question)
-                : await NotesLibrary.semanticExcerpts(for: question, files: files!)
-        } else {
-            retrieved = NotesLibrary.ExcerptResult(text: "", sources: [])
-        }
+        let retrieved = files == nil
+            ? await NotesLibrary.semanticExcerpts(for: question)
+            : await NotesLibrary.semanticExcerpts(for: question, files: files!)
         guard !retrieved.text.isEmpty else {
-            return Answer(text: "I couldn't find anything relevant in this scope. Try rewording, widening the scope, or check that you have meetings recorded.", sources: [], engine: nil)
+            return Answer(text: "I couldn't find anything relevant in this scope. Try rewording, widening the scope, or check that you have meetings recorded.", citations: [], engine: nil)
         }
 
         let framed = history.isEmpty
@@ -272,7 +268,7 @@ private struct AskView: View {
         if !localFirst {
             do {
                 let text = try await TextPolisher().answerAcrossMeetings(question: framed, excerpts: retrieved.text)
-                return Answer(text: text, sources: retrieved.sources, engine: "Groq")
+                return Answer(text: text, citations: retrieved.citations, engine: "Groq")
             } catch {
                 // fall through to on-device
             }
@@ -283,14 +279,50 @@ private struct AskView: View {
             Cite which meeting each point comes from. Be concise. If the excerpts don't contain the answer, say so — never guess.
             """,
             prompt: "Excerpts:\n\(retrieved.text)\n\n\(framed)") {
-            return Answer(text: local, sources: retrieved.sources, engine: "Apple Intelligence")
+            return Answer(text: local, citations: retrieved.citations, engine: "Apple Intelligence")
         }
-        return Answer(text: "Couldn't reach an AI model to answer. Check your Groq key, or enable Apple Intelligence for on-device answers.", sources: [], engine: nil)
+        return Answer(text: "Couldn't reach an AI model to answer. Check your Groq key, or enable Apple Intelligence for on-device answers.", citations: [], engine: nil)
     }
 }
 
 private struct MessageRow: View {
     let message: AskMessage
+
+    /// A short preview of the cited chunk with matched query terms bolded and
+    /// tinted. Trims to a window around the first matched term when the chunk
+    /// is long, so the relevant phrase is what's shown.
+    static func highlighted(_ text: String, terms: [String]) -> AttributedString {
+        let lower = text.lowercased()
+        // Center the preview on the earliest matched term (offset-based so the
+        // lowercased search maps cleanly back onto the original string).
+        var startOffset = 0
+        let firstOffsets = terms.compactMap { term -> Int? in
+            guard let r = lower.range(of: term) else { return nil }
+            return lower.distance(from: lower.startIndex, to: r.lowerBound)
+        }
+        if let earliest = firstOffsets.min() {
+            startOffset = max(0, earliest - 40)
+        }
+        let start = text.index(text.startIndex, offsetBy: startOffset, limitedBy: text.endIndex) ?? text.startIndex
+        var preview = String(text[start...].prefix(220))
+        if startOffset > 0 { preview = "…" + preview }
+
+        var attr = AttributedString(preview)
+        let previewLower = preview.lowercased()
+        for term in Set(terms.map { $0.lowercased() }) {
+            var searchStart = previewLower.startIndex
+            while let r = previewLower.range(of: term, range: searchStart..<previewLower.endIndex) {
+                let lo = previewLower.distance(from: previewLower.startIndex, to: r.lowerBound)
+                let hi = previewLower.distance(from: previewLower.startIndex, to: r.upperBound)
+                let aLo = attr.index(attr.startIndex, offsetByCharacters: lo)
+                let aHi = attr.index(attr.startIndex, offsetByCharacters: hi)
+                attr[aLo..<aHi].inlinePresentationIntent = .stronglyEmphasized
+                attr[aLo..<aHi].foregroundColor = .primary
+                searchStart = r.upperBound
+            }
+        }
+        return attr
+    }
 
     var body: some View {
         HStack {
@@ -303,14 +335,22 @@ private struct MessageRow: View {
                         .fill(message.role == .user
                               ? Color.accentColor.opacity(0.18)
                               : Color(nsColor: .quaternaryLabelColor).opacity(0.4)))
-                if !message.sources.isEmpty {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(message.sources) { src in
+                if !message.citations.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(message.citations) { cite in
                             Button {
-                                NotesViewerWindowController.present(fileURL: src.url)
+                                NotesViewerWindowController.present(fileURL: cite.file.url)
                             } label: {
-                                Label(src.displayName, systemImage: "doc.text")
-                                    .font(.caption)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Label(cite.file.displayName, systemImage: "doc.text")
+                                        .font(.caption)
+                                    if !cite.snippet.isEmpty {
+                                        Text(MessageRow.highlighted(cite.snippet, terms: cite.terms))
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                }
                             }
                             .buttonStyle(.plain).foregroundStyle(.secondary)
                         }

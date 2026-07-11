@@ -420,6 +420,58 @@ final class MeetingNotesWriter {
         Log.meeting.info("🏷 Front-matter entities added")
     }
 
+    /// Insert `gw_<key>: value` fields into the front-matter, after the tags
+    /// line (or after `title:` when there's no tags line). Skips keys already
+    /// present. Values with YAML-significant characters are quoted. No-op
+    /// without front-matter.
+    static func addFrontMatterFields(_ pairs: [(key: String, value: String)], to fileURL: URL) {
+        let clean = pairs.filter { !$0.value.isEmpty }
+        guard !clean.isEmpty,
+              var content = try? String(contentsOf: fileURL, encoding: .utf8),
+              content.hasPrefix("---") else { return }
+        var lines = content.components(separatedBy: "\n")
+        // Anchor after tags:, else after title:, else right under the opening ---.
+        let anchor = lines.firstIndex { $0.hasPrefix("tags:") }
+            ?? lines.firstIndex { $0.hasPrefix("title:") }
+            ?? 0
+
+        func yaml(_ s: String) -> String {
+            let needsQuote = s.contains(where: { ":#[]{}".contains($0) }) || s.hasPrefix(" ")
+            return needsQuote ? "\"\(s.replacingOccurrences(of: "\"", with: "'"))\"" : s
+        }
+        var inserts: [String] = []
+        for p in clean {
+            let key = "gw_\(p.key)"
+            guard !lines.contains(where: { $0.hasPrefix("\(key):") }) else { continue }
+            inserts.append("\(key): \(yaml(p.value))")
+        }
+        guard !inserts.isEmpty else { return }
+        lines.insert(contentsOf: inserts, at: anchor + 1)
+        content = lines.joined(separator: "\n")
+        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
+        Log.meeting.info("🏷 Front-matter key fields added")
+    }
+
+    /// Append a "## Key Details" section rendering the extracted fields as a
+    /// readable bullet list. No-op when there's nothing to show.
+    func appendKeyDetails(_ pairs: [(label: String, value: String)], to fileURL: URL) {
+        let rows = pairs.filter { !$0.value.isEmpty }
+        guard !rows.isEmpty else { return }
+        let body = rows.map { "- **\($0.label):** \($0.value)" }.joined(separator: "\n")
+        append("\n## Key Details\n\n\(body)\n", to: fileURL)
+        Log.meeting.info("🔑 Key Details appended")
+    }
+
+    /// Mirror categorical key fields into `tags:` as `<key>-<value>` tokens so
+    /// they're filterable with the Catalog's existing tag filter.
+    static func mirrorFieldsToTags(_ pairs: [(key: String, value: String)], to fileURL: URL) {
+        let tokens = pairs
+            .filter { !$0.value.isEmpty }
+            .map { slug("\($0.key)-\($0.value)") }
+            .filter { !$0.isEmpty }
+        addFrontMatterTags(tokens, to: fileURL)
+    }
+
     /// Full text of a notes file (for summarization).
     func transcriptText(of fileURL: URL) -> String? {
         try? String(contentsOf: fileURL, encoding: .utf8)

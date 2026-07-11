@@ -40,12 +40,14 @@ enum NotesLibrary {
         let line: String
     }
 
-    /// Whether on-device semantic search is available (an OS embedding model exists).
+    /// Whether the meaning (embedding) half of retrieval is available. Lexical
+    /// retrieval runs regardless, so callers no longer gate on this — it's only
+    /// used to label the UI ("Meaning" search) honestly.
     static var semanticAvailable: Bool { SemanticIndex.shared.isAvailable }
 
-    /// Meaning-based search: rank note chunks by semantic similarity to the
-    /// query, one hit per meeting (its best-matching chunk), newest-first among
-    /// ties. Returns [] if embeddings are unavailable (caller falls back to text).
+    /// Hybrid search: rank note chunks by blended meaning + keyword relevance,
+    /// one hit per meeting (its best-matching chunk). Works even without an
+    /// embedding model (lexical only).
     static func semanticSearch(_ query: String, maxHits: Int = 40,
                                maxFiles: Int = AppSettings.shared.searchDepth) async -> [SearchHit] {
         let files = meetingFiles(limit: maxFiles)
@@ -54,7 +56,7 @@ enum NotesLibrary {
 
         var seen = Set<URL>()
         var hits: [SearchHit] = []
-        for r in results where r.score > 0.15 {   // drop weak matches
+        for r in results where r.score > 0.1 {   // drop weak matches
             guard let file = byURL[r.url], !seen.contains(r.url) else { continue }
             seen.insert(r.url)
             hits.append(SearchHit(file: file, line: r.text))
@@ -77,18 +79,21 @@ enum NotesLibrary {
                                  maxChars: Int = 20_000, topK: Int = 24) async -> ExcerptResult {
         let byURL = Dictionary(files.map { ($0.url, $0) }, uniquingKeysWith: { a, _ in a })
         let results = await SemanticIndex.shared.query(query, files: files.map(\.url), topK: topK)
-        guard !results.isEmpty else { return ExcerptResult(text: "", sources: []) }
+        guard !results.isEmpty else { return ExcerptResult(text: "", sources: [], citations: []) }
 
-        // Group chunks by meeting, preserving descending relevance.
+        // Group chunks by meeting, preserving descending relevance. Keep the
+        // top-scoring chunk + matched terms per meeting for a cited snippet.
         var order: [URL] = []
         var byFile: [URL: [String]] = [:]
-        for r in results where r.score > 0.12 {
-            if byFile[r.url] == nil { order.append(r.url) }
+        var best: [URL: (snippet: String, terms: [String])] = [:]
+        for r in results where r.score > 0.08 {
+            if byFile[r.url] == nil { order.append(r.url); best[r.url] = (r.text, r.matched) }
             byFile[r.url, default: []].append(r.text)
         }
 
         var out = ""
         var sources: [MeetingFile] = []
+        var citations: [ExcerptResult.Citation] = []
         for url in order {
             guard let file = byURL[url] else { continue }
             var block = "\n=== Meeting \(file.displayName) ===\n"
@@ -96,14 +101,24 @@ enum NotesLibrary {
             if out.count + block.count > maxChars { break }
             out += block
             sources.append(file)
+            let b = best[url] ?? (byFile[url]?.first ?? "", [])
+            citations.append(ExcerptResult.Citation(file: file, snippet: b.snippet, terms: b.terms))
         }
-        return ExcerptResult(text: out, sources: sources)
+        return ExcerptResult(text: out, sources: sources, citations: citations)
     }
 
     /// Excerpts retrieved for Ask, plus the meetings they came from.
     struct ExcerptResult {
         let text: String
         let sources: [MeetingFile]   // meetings the excerpts came from, newest first
+        /// Per-source best snippet + matched query terms, for a cited preview.
+        var citations: [Citation] = []
+        struct Citation: Identifiable {
+            let id = UUID()
+            let file: MeetingFile
+            let snippet: String
+            let terms: [String]
+        }
     }
 
     struct ActionItem: Identifiable {

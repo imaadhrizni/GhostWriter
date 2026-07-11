@@ -552,6 +552,59 @@ final class TextPolisher {
         return m
     }
 
+    // MARK: - Key-field extraction (per meeting type)
+
+    /// One extracted field: the schema entry plus the value the model returned.
+    struct ExtractedValue {
+        let field: ExtractionField
+        let value: String   // non-empty, trimmed
+    }
+
+    /// Extract the meeting-type's key fields as short values. Uses the fast
+    /// model (this is a metadata footer, not a quality-sensitive draft) and
+    /// returns only the fields the transcript actually supports. Best-effort:
+    /// returns [] on any failure or when the schema is empty.
+    func extractKeyFields(transcript: String, fields: [ExtractionField]) async -> [ExtractedValue] {
+        guard !apiKey.isEmpty, !fields.isEmpty else { return [] }
+        let clipped = String(transcript.suffix(16_000))
+        let spec = fields.map { "\"\($0.key)\": \($0.hint)" }.joined(separator: ",\n")
+        let body = ChatRequest(
+            model: fastModel,
+            messages: [
+                .init(role: "system", content: """
+                Extract these fields from the meeting transcript. Respond with ONLY a JSON object, no prose, with exactly these keys:
+                \(spec)
+                Rules: keep each value short (a few words, no sentences). Use "" (empty string) for anything the transcript does not clearly state — never guess. For fields listing allowed values, return exactly one of those values (lowercase, hyphenated) or "".
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0,
+            max_tokens: 300
+        )
+        guard let content = try? await send(body, timeout: 15) else { return [] }
+        return Self.parseKeyFields(content, fields: fields)
+    }
+
+    /// Parse the model's JSON leniently into the schema's fields, dropping
+    /// empties. Category values are slugged; text values are trimmed.
+    static func parseKeyFields(_ content: String, fields: [ExtractionField]) -> [ExtractedValue] {
+        guard let start = content.firstIndex(of: "{"),
+              let end = content.lastIndex(of: "}"),
+              let data = String(content[start...end]).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [] }
+
+        return fields.compactMap { field -> ExtractedValue? in
+            guard let raw = obj[field.key] as? String else { return nil }
+            var v = raw.trimmingCharacters(in: .whitespaces)
+            guard !v.isEmpty, v.lowercased() != "null" else { return nil }
+            if field.kind == .category {
+                v = v.lowercased().replacingOccurrences(of: " ", with: "-")
+            }
+            return ExtractedValue(field: field, value: v)
+        }
+    }
+
     /// Shared chat request: sends, records usage, returns the message content.
     private func send(_ body: ChatRequest, timeout: TimeInterval) async throws -> String {
         var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)

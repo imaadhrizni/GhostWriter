@@ -912,6 +912,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             customer: meta.customer, project: meta.project, to: fileURL)
                     }
                 }
+
+                // Per-meeting-type key fields (deal stage, recommendation, …):
+                // a readable Key Details section, plus machine-readable
+                // front-matter fields; category fields are mirrored into tags
+                // so they're filterable in the Catalog.
+                if self.settings.extractKeyFields {
+                    let schema = self.settings.selectedTemplate.keyFields
+                    let extracted = await self.textPolisher.extractKeyFields(
+                        transcript: transcript, fields: schema)
+                    if !extracted.isEmpty {
+                        self.meetingNotes.appendKeyDetails(
+                            extracted.map { ($0.field.label, $0.value) }, to: fileURL)
+                        if self.settings.frontMatterEnabled {
+                            let pairs = extracted.map { ($0.field.key, $0.value) }
+                            MeetingNotesWriter.addFrontMatterFields(pairs, to: fileURL)
+                            let categories = extracted
+                                .filter { $0.field.kind == .category }
+                                .map { ($0.field.key, $0.value) }
+                            MeetingNotesWriter.mirrorFieldsToTags(categories, to: fileURL)
+                        }
+                    }
+                }
             }   // end cloud path
             }   // end "enough speech"
 

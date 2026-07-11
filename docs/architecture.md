@@ -42,7 +42,7 @@
 | `Sources/Meetings/DigestService.swift` | Builds the proactive daily/weekly digest model + archived note (meetings, open/overdue action items, quiet relationships) |
 | `Sources/Views/DigestWindow.swift` | Interactive digest window — tickable action items, overdue highlighting, click-to-open |
 | `Sources/Views/AskWindow.swift` | Multi-turn "Ask your notes" chat with a scope selector (all / chosen meetings / org / opportunity) and cited sources |
-| `Sources/Transcription/SemanticIndex.swift` | On-device semantic search over notes (Apple `NLEmbedding`, cached) |
+| `Sources/Transcription/SemanticIndex.swift` | On-device hybrid search over notes — blends `NLEmbedding` cosine similarity (meaning) with a BM25 lexical score (exact words/names), reranked with an exact-phrase bonus + recency boost; cached on disk. Lexical half runs even when no embedding model exists |
 | `Sources/Meetings/LiveMeetingAssistant.swift` | Floating in-meeting brief + grounded Ask (rolling TL;DR / actions) |
 | `Sources/Views/NotesViewerWindow.swift` | In-app Markdown viewer/editor (find bar, read-only/unlock-to-edit, Summarize brief + Regenerate, follow-up, rename, PDF export, open externally) |
 | `Sources/Models/Catalog.swift` | Catalog model + `CatalogStore` (Codable `Catalog.json` store: orgs/projects/opportunities plus per-note people/tags, org hierarchy, project→org inheritance, import, missing-file reconcile, purge) |

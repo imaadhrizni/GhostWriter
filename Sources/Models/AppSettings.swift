@@ -35,6 +35,7 @@ final class AppSettings: ObservableObject {
         static let summariesEnabled       = "meeting.summariesEnabled"
         static let actionItemsEnabled     = "meeting.actionItemsEnabled"
         static let structuredExtraction   = "meeting.structuredExtraction"
+        static let extractKeyFields       = "meeting.extractKeyFields"
         static let topicChapters          = "meeting.topicChapters"
         static let liveAssistantEnabled   = "meeting.liveAssistantEnabled"
         static let meetingPrepCard        = "meeting.prepCard"
@@ -100,7 +101,7 @@ final class AppSettings: ObservableObject {
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
-                          structuredExtraction, topicChapters, liveAssistantEnabled, meetingPrepCard,
+                          structuredExtraction, extractKeyFields, topicChapters, liveAssistantEnabled, meetingPrepCard,
                           notifyOnMeetingEnd, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, transcriptionLanguage,
                           vocabulary, replacements, appProfiles,
@@ -141,6 +142,7 @@ final class AppSettings: ObservableObject {
         static let summariesEnabled                = true
         static let actionItemsEnabled              = true
         static let structuredExtraction            = true
+        static let extractKeyFields                = true
         static let topicChapters                   = true
         static let liveAssistantEnabled            = true
         static let meetingPrepCard                 = true
@@ -350,6 +352,13 @@ final class AppSettings: ObservableObject {
     var structuredExtraction: Bool {
         get { bool(Key.structuredExtraction, Default.structuredExtraction) }
         set { set(newValue, Key.structuredExtraction) }
+    }
+
+    /// Extract meeting-type-specific key fields (deal stage, recommendation,
+    /// budget, …) into the front-matter and a Key Details section.
+    var extractKeyFields: Bool {
+        get { bool(Key.extractKeyFields, Default.extractKeyFields) }
+        set { set(newValue, Key.extractKeyFields) }
     }
 
     /// Append a topic-chapter jump-list (timestamped) to finished meeting notes.
@@ -1084,11 +1093,63 @@ final class AppSettings: ObservableObject {
 
 /// Shapes what the end-of-meeting summary extracts. Each template defines its
 /// own Markdown sections; Action Items is appended separately when enabled.
+/// One machine-readable field a meeting type is worth extracting — captured
+/// into the note's YAML front-matter (queryable by Obsidian/Dataview) and, for
+/// `.category` fields, mirrored into `tags:` so they're filterable in the
+/// Catalog with the existing tag filter.
+struct ExtractionField: Hashable {
+    enum Kind { case text, category }
+    let key: String       // front-matter key suffix, e.g. "deal_stage" → gw_deal_stage
+    let label: String     // human label for the Key Details section, e.g. "Deal stage"
+    let hint: String      // guidance to the model (allowed values for categories)
+    let kind: Kind
+}
+
 enum MeetingTemplate: String, CaseIterable, Identifiable {
     case general, standup, oneOnOne, customerCall, interview,
          planning, retrospective, lecture, brainstorm
 
     var id: String { rawValue }
+
+    /// The high-signal fields this meeting type is worth extracting into the
+    /// front-matter. Empty for types where the prose summary already says it
+    /// all. `.category` fields are also mirrored into tags for Catalog filtering.
+    var keyFields: [ExtractionField] {
+        switch self {
+        case .customerCall: return [
+            .init(key: "deal_stage", label: "Deal stage",
+                  hint: "one of: prospecting, discovery, proposal, negotiation, closed-won, closed-lost",
+                  kind: .category),
+            .init(key: "budget", label: "Budget", hint: "budget or deal size if stated (e.g. $50k)", kind: .text),
+            .init(key: "timeline", label: "Timeline", hint: "target date or timeframe if stated (e.g. Q3, by March)", kind: .text),
+            .init(key: "decision_maker", label: "Decision maker", hint: "the person who decides, if named", kind: .text),
+            .init(key: "next_step", label: "Next step", hint: "the single most important next action", kind: .text),
+        ]
+        case .oneOnOne: return [
+            .init(key: "sentiment", label: "Sentiment",
+                  hint: "the report's overall mood: positive, neutral, or concerned", kind: .category),
+            .init(key: "focus", label: "Focus next time", hint: "the main topic to revisit next 1:1", kind: .text),
+        ]
+        case .interview: return [
+            .init(key: "recommendation", label: "Recommendation",
+                  hint: "one of: strong-yes, yes, no, strong-no", kind: .category),
+            .init(key: "key_strength", label: "Key strength", hint: "the strongest point in the candidate's favor", kind: .text),
+            .init(key: "key_concern", label: "Key concern", hint: "the biggest reservation, if any", kind: .text),
+        ]
+        case .planning: return [
+            .init(key: "target_date", label: "Target date", hint: "the agreed delivery date or milestone, if stated", kind: .text),
+            .init(key: "top_risk", label: "Top risk", hint: "the single biggest risk or dependency", kind: .text),
+        ]
+        case .retrospective: return [
+            .init(key: "top_improvement", label: "Top improvement", hint: "the most important process change agreed", kind: .text),
+        ]
+        case .brainstorm: return [
+            .init(key: "top_idea", label: "Most promising idea", hint: "the idea that got the most traction", kind: .text),
+        ]
+        case .general, .standup, .lecture:
+            return []
+        }
+    }
 
     var displayName: String {
         switch self {
@@ -1292,6 +1353,15 @@ enum SummaryTemplate: Identifiable, Hashable {
         switch self {
         case .builtIn(let t): return t.summarySections
         case .user(let t):    return MeetingTemplate.parseSections(t.sections)
+        }
+    }
+
+    /// The machine-readable fields to extract for this meeting type. User
+    /// templates have no schema yet, so they extract nothing.
+    var keyFields: [ExtractionField] {
+        switch self {
+        case .builtIn(let t): return t.keyFields
+        case .user:           return []
         }
     }
 

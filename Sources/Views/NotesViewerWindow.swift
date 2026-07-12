@@ -307,8 +307,19 @@ private struct NotesViewerView: View {
                     .help("Open a short AI summary of this note in a new window")
             }
             if canDraftFollowUp {
-                Button { draftFollowUp() } label: { Label("Draft Follow-up", systemImage: "envelope") }
-                    .disabled(drafting)
+                Menu {
+                    ForEach(FollowUpKind.allCases) { kind in
+                        Button { draftDocument(kind: kind) } label: {
+                            Label(kind.displayName, systemImage: kind.icon)
+                        }
+                    }
+                    Divider()
+                    Button("Auto — match meeting type") { draftAutoFollowUp() }
+                } label: {
+                    Label("Draft…", systemImage: "doc.badge.plus")
+                }
+                .disabled(drafting)
+                .help("Draft a document from this meeting — minutes, follow-up email, status update, and more")
             }
 
             Spacer()
@@ -374,12 +385,36 @@ private struct NotesViewerView: View {
         }
     }
 
-    private func draftFollowUp() {
+    /// Draft a specific output-document type (MoM, follow-up email, status
+    /// update, …). Each kind caches independently, so drafting one never
+    /// clobbers another for the same meeting.
+    private func draftDocument(kind: FollowUpKind) {
         guard let fileURL, let transcript = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+        let base = fileURL.deletingPathExtension().lastPathComponent
         drafting = true
         status = "Drafting…"
-        // Infer the meeting type from the note's headings so the draft matches
-        // (customer email vs internal debrief etc.); fall back to the default.
+        Task { @MainActor in
+            defer { drafting = false }
+            do {
+                let draft = try await TextPolisher().draftDocument(transcript: transcript, kind: kind)
+                status = ""
+                NotesViewerWindowController.present(
+                    draftTitle: "\(kind.displayName) — \(base)",
+                    text: draft,
+                    regenerate: { try await TextPolisher().draftDocument(transcript: transcript, kind: kind, forceRefresh: true) })
+            } catch {
+                status = "Draft failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Auto follow-up: shape the draft to the meeting type inferred from the
+    /// note's headings (falling back to the default template).
+    private func draftAutoFollowUp() {
+        guard let fileURL, let transcript = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+        let base = fileURL.deletingPathExtension().lastPathComponent
+        drafting = true
+        status = "Drafting…"
         let template = MeetingTemplate.inferred(fromNotes: transcript).map { SummaryTemplate.builtIn($0) }
             ?? AppSettings.shared.selectedTemplate
         Task { @MainActor in
@@ -388,7 +423,7 @@ private struct NotesViewerView: View {
                 let draft = try await TextPolisher().draftFollowUp(transcript: transcript, template: template)
                 status = ""
                 NotesViewerWindowController.present(
-                    draftTitle: "Follow-up — \(fileURL.deletingPathExtension().lastPathComponent)",
+                    draftTitle: "Follow-up (\(template.displayName)) — \(base)",
                     text: draft,
                     regenerate: { try await TextPolisher().draftFollowUp(transcript: transcript, template: template, forceRefresh: true) })
             } catch {

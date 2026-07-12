@@ -1,5 +1,80 @@
 import Foundation
 
+// MARK: - Output document types
+//
+// The KIND of document you draft from a meeting is a separate axis from the
+// meeting's template: one meeting can yield minutes, a follow-up email, a
+// status update, and more. Each kind carries its own drafting guidance and
+// caches independently.
+
+enum FollowUpKind: String, CaseIterable, Identifiable {
+    case minutes, followUpEmail, statusUpdate, executiveSummary, actionItemList, thankYou
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .minutes:          return "Minutes of Meeting"
+        case .followUpEmail:    return "Follow-up Email"
+        case .statusUpdate:     return "Status Update"
+        case .executiveSummary: return "Executive Summary"
+        case .actionItemList:   return "Action-Item List"
+        case .thankYou:         return "Thank-You Note"
+        }
+    }
+
+    /// Short menu icon.
+    var icon: String {
+        switch self {
+        case .minutes:          return "list.bullet.rectangle"
+        case .followUpEmail:    return "envelope"
+        case .statusUpdate:     return "chart.bar.doc.horizontal"
+        case .executiveSummary: return "text.alignleft"
+        case .actionItemList:   return "checklist"
+        case .thankYou:         return "hand.thumbsup"
+        }
+    }
+
+    /// The drafting instruction fed to the model for this document type.
+    var guidance: String {
+        switch self {
+        case .minutes:
+            return """
+            Write formal MINUTES OF MEETING in Markdown. Include, as sections with "## " headings: Attendees (if identifiable), Agenda / Topics Discussed, Decisions, and Action Items (a "- [ ] <action> — @<owner> (due: <date>)" checklist). Neutral, factual, third-person. Omit a section only if there is genuinely nothing for it.
+            """
+        case .followUpEmail:
+            return """
+            Write a follow-up EMAIL to the participants. Format exactly as:
+            **Subject:** <a concise, specific subject line>
+
+            Hi <name>,
+
+            <1–2 short paragraphs recapping key outcomes and confirming commitments, then next steps with owners and timing>
+
+            Best regards,
+            <signature>
+            Leave "<name>" / "<signature>" as placeholders if unclear. Professional and warm.
+            """
+        case .statusUpdate:
+            return """
+            Write a short STATUS UPDATE for a manager or team channel, bullet-led under bold labels: **Done**, **In progress**, **Blocked**, **Next**. Terse and skimmable. Omit a label with nothing under it.
+            """
+        case .executiveSummary:
+            return """
+            Write a 3–5 sentence EXECUTIVE SUMMARY for a leader who wasn't present: the purpose, the key outcome or decision, and the single most important next step. Prose, no bullets, no heading.
+            """
+        case .actionItemList:
+            return """
+            Output ONLY the action items as a Markdown checklist, one per line: "- [ ] <action> — @<owner> (due: <date>)". Append "@<owner>" and "(due: <date>)" only when the notes make them clear. No other sections, headings, or prose. If there are none, output "_No action items._".
+            """
+        case .thankYou:
+            return """
+            Write a brief, warm THANK-YOU NOTE to the participants for their time, referencing one or two specifics from the discussion. A short paragraph; no action items unless essential.
+            """
+        }
+    }
+}
+
 // MARK: - Text Polisher
 
 /// Stage 2 of the Brain pipeline.
@@ -514,26 +589,39 @@ final class TextPolisher {
 
     // MARK: - Follow-up & Tags
 
-    /// Draft a follow-up message recapping a meeting, shaped by its template
-    /// (recipient, tone, and sections vary by meeting type). The notes may
-    /// already contain a summary and action items — the draft builds on them.
+    /// Draft an output document (MoM, follow-up email, status update, …) from a
+    /// meeting's notes, shaped by `kind`. The output document type is separate
+    /// from the meeting type. Each kind caches independently (its guidance is
+    /// part of the key), so one meeting can produce several documents cheaply.
+    func draftDocument(transcript: String, kind: FollowUpKind, forceRefresh: Bool = false) async throws -> String {
+        try await draft(transcript: transcript, guidance: kind.guidance, forceRefresh: forceRefresh)
+    }
+
+    /// Draft a follow-up shaped by the *meeting* template (recipient/tone vary
+    /// by meeting type). Used for "Auto — match meeting type".
     func draftFollowUp(transcript: String, template: SummaryTemplate = .builtIn(.general), forceRefresh: Bool = false) async throws -> String {
+        try await draft(transcript: transcript,
+                        guidance: template.followUpGuidance + "\n\n" + Self.followUpFormat,
+                        forceRefresh: forceRefresh)
+    }
+
+    /// Shared drafting core: build on the notes, obey `guidance`, cache by
+    /// guidance + content so each document type has its own entry.
+    private func draft(transcript: String, guidance: String, forceRefresh: Bool) async throws -> String {
         let clipped = String(Self.summarizableBody(transcript).suffix(24_000))
-        let guidance = template.followUpGuidance + "\n\n" + Self.followUpFormat
-        // Output depends on the template's guidance too, so it's part of the key.
         let cacheSource = guidance + "\u{0}" + clipped
         let body = ChatRequest(
             model: model,
             messages: [
                 .init(role: "system", content: """
-                You draft a follow-up from a meeting's notes. Use ONLY what is in the
+                You draft a document from a meeting's notes. Use ONLY what is in the
                 notes below — which may already include a summary and action items;
                 build on them and never contradict or invent facts.
 
                 \(guidance)
 
                 Keep it tight and skimmable. Attribute owners where identifiable.
-                Output the follow-up text only — no preamble or meta-commentary.
+                Output the document text only — no preamble or meta-commentary.
                 """),
                 .init(role: "user", content: "Notes:\n\n\(clipped)")
             ],

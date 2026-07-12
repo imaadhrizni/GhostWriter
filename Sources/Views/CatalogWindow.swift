@@ -37,20 +37,20 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     case notes         = "Notes"
     case map           = "Map"
     case organisations = "Organisations"
-    case people        = "People"
     case projects      = "Projects"
     case opportunities = "Opportunities"
+    case people        = "People"
     case tags          = "Tags"
     var id: String { rawValue }
 
     /// Sidebar layout: the two ways to look at the catalog on top (Notes is the
-    /// primary document list; Map is the graph explorer), then the underlying
-    /// records grouped in containment order (org → project → opportunity).
+    /// primary document list; Map is the graph explorer), then the records with
+    /// the deal-flow chain kept contiguous (org → project → opportunity) to
+    /// match the Map tree, with People — a cross-cutting per-note entity like
+    /// Tags — sitting last.
     static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
         ("Browse",   [.notes, .map]),
-        // Lead with the entities you search by most (who), then the deal-flow
-        // pair (what). Tags are a cross-cutting label, not a peer record.
-        ("Records",  [.organisations, .people, .projects, .opportunities]),
+        ("Records",  [.organisations, .projects, .opportunities, .people]),
         ("Labels",   [.tags]),
     ]
 

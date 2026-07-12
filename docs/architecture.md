@@ -46,7 +46,7 @@
 | `Sources/Meetings/LiveMeetingAssistant.swift` | Floating in-meeting brief + grounded Ask (rolling TL;DR / actions) |
 | `Sources/Views/NotesViewerWindow.swift` | In-app Markdown viewer/editor — **rendered Markdown when reading** (headings, bullets, task lists, quotes, code, rules, inline styling, front-matter Properties box), raw monospaced editor with find bar when unlocked to edit; Summarize brief + Regenerate, follow-up, rename, PDF export. Honors the "open notes in external editor" setting, which routes every note-open to the OS default `.md` app instead |
 | `Sources/Models/Catalog.swift` | Catalog model + `CatalogStore` (Codable `Catalog.json` store: orgs/projects/opportunities plus per-note people/tags, org hierarchy, project→org inheritance, import, missing-file reconcile, purge) |
-| `Sources/Catalog/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, per-entity relationship timeline, search (Text/Meaning/Ask) + consolidated Filter menu with removable chips, row actions, Quick add, catalog export/import |
+| `Sources/Views/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, per-entity relationship timeline, search (Text/Meaning/Ask) + consolidated Filter menu with removable chips, row actions, Quick add, catalog export/import |
 | `Sources/Utils/MarkdownPDF.swift` | Paginated Markdown → PDF renderer (CoreText) |
 | `Sources/Utils/WindowHelpers.swift` | Shared `NSWindowController.bringToFront()` present helper |
 | `Sources/Utils/FrontMatter.swift` | Shared YAML front-matter split/strip helper (one implementation for all note-body extraction) |
@@ -63,7 +63,7 @@
 | `Sources/Views/APIKeyView.swift` | API-key onboarding UI (SwiftUI) |
 | `Sources/Views/GlowOverlayView.swift` | Floating recording indicator / live-caption overlay |
 | `Sources/Views/MeetingPrepWindow.swift` | Non-modal meeting-prep panel — recent notes for the linked org/opp |
-| `Sources/Utils/DateDisplay.swift` | Date formatting for the menu & Notes Assistant |
+| `Sources/Utils/DateDisplay.swift` | Date formatting for the menu, Catalog, and note lists |
 | `Sources/App/GhostWriterApp.swift` | Menu-bar app, meeting mode, permission flow |
 | `Sources/App/main.swift` | Executable entry point |
 | `ship.sh` | Build, bundle, sign, and install to `/Applications` |
@@ -77,6 +77,6 @@
 | **System Audio Recording** | Capture the other participants' audio in Meeting Mode (via process taps). |
 | **Accessibility** | Detect the Right Option hotkey globally and inject text at your cursor. |
 | **Automation** (optional) | Read the active browser tab's address for per-site dictation styling (Safari + Chromium browsers). Prompted only on first use, per browser; decline and browser dictation just uses the generic Browser style. |
-| **Reminders** (optional) | Export meeting action items to the Reminders app (Notes Assistant → Action Items). Prompted only on first export; decline and the rest of the app is unaffected. |
+| **Reminders** (optional) | Export meeting action items to the Reminders app (from the Catalog and Today's Digest). Prompted only on first export; decline and the rest of the app is unaffected. |
 
 macOS keys each grant to the app's code signature, so re-signing with a different identity resets them. If a permission gets stuck, use **Reset All Permissions…** from the menu (it also clears the Automation and Reminders grants).

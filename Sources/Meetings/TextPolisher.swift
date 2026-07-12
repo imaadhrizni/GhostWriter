@@ -9,7 +9,7 @@ import Foundation
 
 enum FollowUpKind: String, CaseIterable, Identifiable {
     case minutes, followUpEmail, statusUpdate, executiveSummary, actionItemList, thankYou
-    case recap, decisionLog, talkingPoints, retrospective, interviewDebrief, faq, proposal, pocPlan
+    case recap, decisionLog, talkingPoints, retrospective, faq, proposal, pocPlan
 
     var id: String { rawValue }
 
@@ -25,7 +25,6 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .decisionLog:      return "Decision Log"
         case .talkingPoints:    return "Talking Points"
         case .retrospective:    return "Retrospective"
-        case .interviewDebrief: return "Interview Debrief"
         case .faq:              return "FAQ"
         case .proposal:         return "Proposal / Next Steps"
         case .pocPlan:          return "POC Plan"
@@ -45,7 +44,6 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .decisionLog:      return "checkmark.seal"
         case .talkingPoints:    return "bubble.left.and.bubble.right"
         case .retrospective:    return "arrow.triangle.2.circlepath"
-        case .interviewDebrief: return "person.text.rectangle"
         case .faq:              return "questionmark.circle"
         case .proposal:         return "doc.badge.gearshape"
         case .pocPlan:          return "flask"
@@ -54,14 +52,14 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
 
     /// Category used to group the draft-document pickers and menus.
     enum Category: String, CaseIterable {
-        case emailRecap, records, sales, reports, hiringRetro
+        case emailRecap, records, sales, reports, retro
         var title: String {
             switch self {
             case .emailRecap:  return "Email & Recap"
             case .records:     return "Records"
             case .sales:       return "Sales"
             case .reports:     return "Reports"
-            case .hiringRetro: return "Hiring & Retro"
+            case .retro:       return "Retro"
             }
         }
     }
@@ -72,7 +70,7 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .minutes, .decisionLog, .actionItemList:  return .records
         case .proposal, .pocPlan, .talkingPoints:      return .sales
         case .statusUpdate, .executiveSummary, .faq:   return .reports
-        case .interviewDebrief, .retrospective:        return .hiringRetro
+        case .retrospective:                           return .retro
         }
     }
 
@@ -89,7 +87,6 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .decisionLog:      return "A table of decisions with rationale, owner, and date."
         case .talkingPoints:    return "Key messages to say when briefing someone on the meeting."
         case .retrospective:    return "What went well / didn't, plus improvement action items."
-        case .interviewDebrief: return "A hiring-panel debrief with a clear recommendation."
         case .faq:              return "The meeting's questions and answers as Q&A pairs."
         case .proposal:         return "A short proposal memo — context, recommendation, next steps."
         case .pocPlan:          return "A proof-of-concept plan — objective, success criteria, scope, timeline."
@@ -148,13 +145,9 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
             return """
             Write a RETROSPECTIVE in Markdown with three "## " sections: What Went Well, What Didn't, and Action Items (a "- [ ] <action> — @<owner>" checklist). Draw only on the discussion; keep each bullet specific and blameless.
             """
-        case .interviewDebrief:
-            return """
-            Write an INTERVIEW DEBRIEF for a hiring panel, in Markdown: "## Summary" (2–3 sentences), "## Strengths" and "## Concerns" (bullets), and "## Recommendation" (one of Strong Hire / Hire / No Hire / Strong No Hire with a one-line justification). Evidence-based and specific to what was said.
-            """
         case .faq:
             return """
-            Turn the discussion into an FAQ — the questions raised and the answers given, as "**Q:** …" / "**A:** …" pairs, one blank line between pairs. Only include questions actually answered in the notes. No intro or outro.
+            Turn the discussion into an FAQ — the questions raised and the answers given, as "**Q:** …" / "**A:** …" pairs, one blank line between pairs. Only include questions actually answered in the notes. No intro or outro. If the notes contain no clear questions and answers, output only "_No Q&A captured._".
             """
         case .proposal:
             return """

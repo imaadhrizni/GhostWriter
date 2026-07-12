@@ -69,6 +69,9 @@ final class AppSettings: ObservableObject {
         static let streamingDictation     = "dictation.streaming"
         static let streamChunkSeconds     = "dictation.streamChunkSeconds"
         static let maxSpeakers            = "meeting.maxSpeakers"
+        static let speakerSensitivity     = "meeting.speakerSensitivity"
+        static let liveBriefInterval      = "meeting.liveBriefInterval"
+        static let aiCacheLimit           = "ai.cacheLimit"
         static let searchDepth            = "assistant.searchDepth"
         static let meetingTemplate        = "meeting.template"
         static let customTemplateSections = "meeting.customTemplateSections"
@@ -112,7 +115,8 @@ final class AppSettings: ObservableObject {
                           captionLingerSeconds, retryMaxAttempts, retryIntervalSeconds,
                           notesOrganization, meetingAutoDetect,
                           voiceCommandsEnabled, voiceCommandRules, streamingDictation,
-                          streamChunkSeconds, maxSpeakers,
+                          streamChunkSeconds, maxSpeakers, speakerSensitivity,
+                          liveBriefInterval, aiCacheLimit,
                           searchDepth, meetingTemplate,
                           customTemplateSections, customTemplateFollowUp, userTemplates,
                           dictationStyleOverrides, userDictationStyles, defaultDictationStyle,
@@ -180,6 +184,9 @@ final class AppSettings: ObservableObject {
         static let streamingDictation              = true
         static let streamChunkSeconds: Double      = 10.0
         static let maxSpeakers                     = 4
+        static let speakerSensitivity: Double      = 1.0
+        static let liveBriefInterval               = 25
+        static let aiCacheLimit                    = 500
         static let searchDepth                     = 200
         static let meetingTemplate                 = MeetingTemplate.customerCall
         static let quickNoteNotify                 = true
@@ -501,6 +508,28 @@ final class AppSettings: ObservableObject {
     }
 
     /// Maximum distinct remote speakers the diarizer will label.
+    /// Voice-separation sensitivity for diarization — the distance threshold
+    /// above which a voice is treated as a new speaker. Lower = splits more
+    /// eagerly (risks over-splitting one voice); higher = merges similar voices.
+    var speakerSensitivity: Double {
+        get { double(Key.speakerSensitivity, Default.speakerSensitivity) }
+        set { set(newValue, Key.speakerSensitivity) }
+    }
+
+    /// How often (seconds) the live brief refreshes during a meeting — the
+    /// main lever on its running cost.
+    var liveBriefInterval: Int {
+        get { max(10, int(Key.liveBriefInterval, Default.liveBriefInterval)) }
+        set { set(newValue, Key.liveBriefInterval) }
+    }
+
+    /// Maximum entries kept in the AI summary/draft cache before the oldest are
+    /// evicted.
+    var aiCacheLimit: Int {
+        get { max(50, int(Key.aiCacheLimit, Default.aiCacheLimit)) }
+        set { set(newValue, Key.aiCacheLimit) }
+    }
+
     var maxSpeakers: Int {
         get { int(Key.maxSpeakers, Default.maxSpeakers) }
         set { set(newValue, Key.maxSpeakers) }
@@ -1230,22 +1259,23 @@ struct ExtractionField: Hashable {
 }
 
 enum MeetingTemplate: String, CaseIterable, Identifiable {
-    case general, standup, oneOnOne, customerCall, interview,
-         planning, retrospective, lecture, brainstorm,
-         kickoff, discovery, allHands, solutionDemo, solutionScoping
+    // Sales-engineering-focused defaults, plus common team meeting types.
+    // (Interview and Retrospective are intentionally not built in — add them
+    // as a custom template if needed.)
+    case general, customerCall, discovery, solutionDemo, solutionScoping,
+         kickoff, planning, standup, oneOnOne, allHands, brainstorm, lecture
 
     var id: String { rawValue }
 
     /// Broad category used to group the meeting-type pickers so the list reads
     /// as a few short labeled sections rather than one long wall.
     enum Category: String, CaseIterable {
-        case sales, delivery, team, hiring, other
+        case sales, delivery, team, other
         var title: String {
             switch self {
             case .sales:    return "Sales & Customer"
             case .delivery: return "Delivery & Project"
             case .team:     return "Team & Internal"
-            case .hiring:   return "Hiring"
             case .other:    return "Other"
             }
         }
@@ -1254,9 +1284,8 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
     var category: Category {
         switch self {
         case .customerCall, .discovery, .solutionDemo, .solutionScoping: return .sales
-        case .kickoff, .planning, .retrospective:                        return .delivery
+        case .kickoff, .planning:                                        return .delivery
         case .standup, .oneOnOne, .allHands, .brainstorm:                return .team
-        case .interview:                                                 return .hiring
         case .lecture, .general:                                         return .other
         }
     }
@@ -1266,19 +1295,17 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
     var blurb: String {
         switch self {
         case .general:       return "A neutral catch-all: a short TL;DR plus any decisions."
-        case .standup:       return "Daily team sync — per-person updates and blockers."
-        case .oneOnOne:      return "A private 1:1 — topics, feedback, and growth notes."
         case .customerCall:  return "An account call — needs, objections, and commitments, with deal fields."
-        case .interview:     return "A candidate interview — strengths, concerns, and a hire recommendation."
-        case .planning:      return "Sprint/effort planning — scope, estimates, and risks."
-        case .retrospective: return "A retro — what went well, what didn't, and improvements."
-        case .lecture:       return "A talk or webinar — key concepts, takeaways, and follow-ups."
-        case .brainstorm:    return "An ideation session — every idea plus the promising directions."
+        case .planning:      return "Scoping/planning — scope, estimates, and risks."
         case .kickoff:       return "A project kickoff — goals, scope, roles, milestones, and risks."
         case .discovery:     return "A discovery call — current state, desired outcomes, and requirements."
-        case .allHands:      return "A team- or company-wide update — announcements, highlights, and Q&A."
         case .solutionDemo:  return "A technical demo — use cases shown, technical fit, and objections."
         case .solutionScoping: return "A solutioning session — requirements, approach, scope, and dependencies."
+        case .standup:       return "Daily team sync — per-person updates and blockers."
+        case .oneOnOne:      return "A private 1:1 — topics, feedback, and growth notes."
+        case .allHands:      return "A team- or company-wide update — announcements, highlights, and Q&A."
+        case .brainstorm:    return "An ideation session — every idea plus the promising directions."
+        case .lecture:       return "A talk or webinar — key concepts, takeaways, and follow-ups."
         }
     }
 
@@ -1292,12 +1319,10 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
         case .solutionScoping: return [.pocPlan, .proposal, .actionItemList]
         case .kickoff:         return [.minutes, .actionItemList, .statusUpdate]
         case .planning:        return [.actionItemList, .statusUpdate, .minutes]
-        case .retrospective:   return [.retrospective, .actionItemList, .recap]
         case .standup:         return [.statusUpdate, .actionItemList, .recap]
         case .oneOnOne:        return [.recap, .actionItemList, .thankYou]
         case .allHands:        return [.recap, .faq, .minutes]
         case .brainstorm:      return [.recap, .talkingPoints, .actionItemList]
-        case .interview:       return [.interviewDebrief, .actionItemList]
         case .lecture:         return [.recap, .faq, .actionItemList]
         case .general:         return [.recap, .followUpEmail, .actionItemList]
         }
@@ -1317,23 +1342,14 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
             .init(key: "decision_maker", label: "Decision maker", hint: "the person who decides, if named", kind: .text),
             .init(key: "next_step", label: "Next step", hint: "the single most important next action", kind: .text),
         ]
-        case .oneOnOne: return [
-            .init(key: "sentiment", label: "Sentiment",
-                  hint: "the report's overall mood: positive, neutral, or concerned", kind: .category),
-            .init(key: "focus", label: "Focus next time", hint: "the main topic to revisit next 1:1", kind: .text),
-        ]
-        case .interview: return [
-            .init(key: "recommendation", label: "Recommendation",
-                  hint: "one of: strong-yes, yes, no, strong-no", kind: .category),
-            .init(key: "key_strength", label: "Key strength", hint: "the strongest point in the candidate's favor", kind: .text),
-            .init(key: "key_concern", label: "Key concern", hint: "the biggest reservation, if any", kind: .text),
-        ]
         case .planning: return [
             .init(key: "target_date", label: "Target date", hint: "the agreed delivery date or milestone, if stated", kind: .text),
             .init(key: "top_risk", label: "Top risk", hint: "the single biggest risk or dependency", kind: .text),
         ]
-        case .retrospective: return [
-            .init(key: "top_improvement", label: "Top improvement", hint: "the most important process change agreed", kind: .text),
+        case .oneOnOne: return [
+            .init(key: "sentiment", label: "Sentiment",
+                  hint: "the report's overall mood: positive, neutral, or concerned", kind: .category),
+            .init(key: "focus", label: "Focus next time", hint: "the main topic to revisit next 1:1", kind: .text),
         ]
         case .brainstorm: return [
             .init(key: "top_idea", label: "Most promising idea", hint: "the idea that got the most traction", kind: .text),
@@ -1367,19 +1383,17 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .general:       return "General"
-        case .standup:       return "Standup"
-        case .oneOnOne:      return "1:1"
         case .customerCall:  return "Customer Call"
-        case .interview:     return "Interview"
         case .planning:      return "Planning"
-        case .retrospective: return "Retrospective"
-        case .lecture:       return "Lecture / Webinar"
-        case .brainstorm:    return "Brainstorm"
         case .kickoff:       return "Project Kickoff"
         case .discovery:     return "Discovery Call"
-        case .allHands:      return "All-Hands"
         case .solutionDemo:  return "Solution Demo"
         case .solutionScoping: return "Solution Scoping"
+        case .standup:       return "Standup"
+        case .oneOnOne:      return "1:1"
+        case .allHands:      return "All-Hands"
+        case .brainstorm:    return "Brainstorm"
+        case .lecture:       return "Lecture / Webinar"
         }
     }
 
@@ -1405,29 +1419,10 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
             ("Objections & Concerns", "hesitations or objections raised (omit if none)."),
             ("Commitments", "what was promised to the customer, by whom (omit if none)."),
         ]
-        case .interview: return [
-            ("Background", "candidate's relevant background as discussed."),
-            ("Strengths", "strengths demonstrated, with supporting evidence from answers."),
-            ("Concerns", "gaps or concerns observed (omit if none)."),
-        ]
         case .planning: return [
             ("Scope", "what was agreed to be in and out of scope."),
             ("Estimates & Commitments", "sizes, dates, owners agreed (omit if none)."),
             ("Risks", "risks and dependencies raised (omit if none)."),
-        ]
-        case .retrospective: return [
-            ("Went Well", "bullet list."),
-            ("Didn't Go Well", "bullet list."),
-            ("Improvements", "concrete process changes agreed (omit if none)."),
-        ]
-        case .lecture: return [
-            ("Key Concepts", "the main ideas presented, briefly explained."),
-            ("Takeaways", "practical takeaways."),
-            ("Follow-ups", "questions or topics to research afterward (omit if none)."),
-        ]
-        case .brainstorm: return [
-            ("Ideas", "every distinct idea raised, one bullet each."),
-            ("Promising Directions", "the ideas that got traction and why."),
         ]
         case .kickoff: return [
             ("Goals & Success Criteria", "what this project/effort is trying to achieve and how success is measured."),
@@ -1442,11 +1437,6 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
             ("Requirements", "explicit needs, must-haves, and evaluation criteria (omit if none)."),
             ("Constraints", "budget, timeline, or other constraints mentioned (omit if none)."),
         ]
-        case .allHands: return [
-            ("Announcements", "the key announcements or news shared."),
-            ("Highlights", "notable updates, wins, or metrics presented."),
-            ("Q&A", "questions raised and the answers given (omit if none)."),
-        ]
         case .solutionDemo: return [
             ("Use Cases Shown", "the capabilities or workflows demonstrated, and the prospect's reaction to each."),
             ("Technical Fit", "how well the solution matched the stated requirements — what landed well."),
@@ -1459,6 +1449,20 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
             ("In / Out of Scope", "what was agreed to be in scope and explicitly out of scope."),
             ("Dependencies & Prerequisites", "integrations, access, data, or environment needed from either side (omit if none)."),
             ("Open Questions", "unresolved questions or decisions to follow up on (omit if none)."),
+        ]
+        case .allHands: return [
+            ("Announcements", "the key announcements or news shared."),
+            ("Highlights", "notable updates, wins, or metrics presented."),
+            ("Q&A", "questions raised and the answers given (omit if none)."),
+        ]
+        case .brainstorm: return [
+            ("Ideas", "every distinct idea raised, one bullet each."),
+            ("Promising Directions", "the ideas that got traction and why."),
+        ]
+        case .lecture: return [
+            ("Key Concepts", "the main ideas presented, briefly explained."),
+            ("Takeaways", "practical takeaways."),
+            ("Follow-ups", "questions or topics to research afterward (omit if none)."),
         ]
         }
     }
@@ -1516,24 +1520,20 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
             return "Write a short INTERNAL status update (not a formal email): what's done, what's next, and blockers with owners. Terse and skimmable."
         case .oneOnOne:
             return "Write a brief, warm private recap for the two participants: topics discussed, agreements reached, and any growth/career follow-ups."
-        case .customerCall:
-            return "Write a polished, client-facing follow-up EMAIL to the customer. Thank them, restate the needs they raised, confirm the commitments made, and lay out next steps with owners and timing. Professional and warm."
-        case .interview:
-            return "Write an INTERNAL interview debrief for the hiring team — NOT a message to the candidate. Cover the candidate's relevant background, strengths with evidence, concerns, and a clear recommendation on next steps."
-        case .planning:
-            return "Write an internal follow-up: agreed scope (in/out), estimates and dates, owners, and open risks or dependencies."
-        case .retrospective:
-            return "Write an internal recap: what went well, what didn't, and the concrete improvements the team committed to (with owners)."
-        case .lecture:
-            return "Write a learner-oriented recap: key concepts, practical takeaways, and follow-up resources or questions to explore."
+        case .allHands:
+            return "Write a team-wide recap: the key announcements, highlights, and concise answers to the main questions raised, plus any action items with owners."
         case .brainstorm:
             return "Write a recap: the ideas raised, the most promising directions, and agreed next steps to explore them."
+        case .lecture:
+            return "Write a learner-oriented recap: key concepts, practical takeaways, and follow-up resources or questions to explore."
+        case .customerCall:
+            return "Write a polished, client-facing follow-up EMAIL to the customer. Thank them, restate the needs they raised, confirm the commitments made, and lay out next steps with owners and timing. Professional and warm."
+        case .planning:
+            return "Write an internal follow-up: agreed scope (in/out), estimates and dates, owners, and open risks or dependencies."
         case .kickoff:
             return "Write an internal kickoff recap for the team: the goals and success criteria, agreed scope, who owns what, key milestones and timeline, and open risks or dependencies."
         case .discovery:
             return "Write a follow-up summarizing what you learned: the prospect's current situation and pain points, their desired outcomes, key requirements and constraints, and the proposed next steps. Client-appropriate but grounded strictly in what was said."
-        case .allHands:
-            return "Write a team-wide recap: the key announcements, highlights, and concise answers to the main questions raised, plus any action items with owners."
         case .solutionDemo:
             return "Write a client-facing follow-up EMAIL after a solution demo: thank them, recap the use cases shown and how they map to the requirements, address any open objections or gaps with clear next steps (POC, technical/security review, further demos) and owners. Professional and confident, grounded strictly in what was demonstrated and discussed."
         case .solutionScoping:
@@ -1554,8 +1554,6 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
         if has("Desired Outcomes") || has("Current State") { return .discovery }
         if has("Roles & Responsibilities") || (has("Goals & Success Criteria")) { return .kickoff }
         if has("Announcements") { return .allHands }
-        if has("Went Well") || has("Didn't Go Well") { return .retrospective }
-        if has("Background") && has("Strengths") { return .interview }
         if has("Updates") && has("Blockers") { return .standup }
         if has("Scope") && has("Risks") { return .planning }
         if has("Key Concepts") || has("Takeaways") { return .lecture }

@@ -261,10 +261,14 @@ final class MeetingNotesWriter {
             if AppSettings.shared.frontMatterEnabled {
                 // Obsidian/Notion-friendly YAML front-matter
                 let isoFormatter = ISO8601DateFormatter()
+                // Record the meeting type so the note viewer can suggest the
+                // right draft documents without guessing from headings.
+                let meetingType = AppSettings.shared.selectedTemplateID
                 header += """
                 ---
                 title: Meeting \(timestamp)
                 date: \(isoFormatter.string(from: Date()))
+                gw_meeting_type: \(meetingType)
                 tags: [meeting, ghostwriter]
                 ---
 
@@ -363,12 +367,7 @@ final class MeetingNotesWriter {
         guard let i = lines.firstIndex(where: { $0.hasPrefix("tags:") }) else { return }
 
         // Parse existing "tags: [a, b]" and append any that are new.
-        let existing = lines[i]
-            .drop(while: { $0 != "[" }).dropFirst().prefix(while: { $0 != "]" })
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        var merged = existing
+        var merged = FrontMatter.tags(in: content)
         for tag in newTags where !merged.contains(tag) { merged.append(tag) }
         lines[i] = "tags: [\(merged.joined(separator: ", "))]"
         content = lines.joined(separator: "\n")

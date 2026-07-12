@@ -58,7 +58,7 @@ final class SpeakerProfiler {
         // Distance threshold: below it, same voice; above it, a new speaker.
         // Pitch dominates the metric (see distance(from:to:)) — ~2.5 semitones
         // of sustained pitch difference is enough to split.
-        let threshold: Float = 1.0
+        let threshold = Float(AppSettings.shared.speakerSensitivity)
 
         if bestIndex >= 0 && (bestDistance < threshold || profiles.count >= maxSpeakers) {
             update(profileAt: bestIndex, with: features)

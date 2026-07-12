@@ -308,7 +308,7 @@ private struct NotesViewerView: View {
             }
             if canDraftFollowUp {
                 Menu {
-                    let suggested = MeetingTemplate.inferred(fromNotes: text)?.suggestedDrafts ?? []
+                    let suggested = suggestedDrafts(for: text)
                     if !suggested.isEmpty {
                         Section("Suggested") {
                             ForEach(suggested) { kind in
@@ -399,6 +399,21 @@ private struct NotesViewerView: View {
         }
     }
 
+    /// The `gw_meeting_type` recorded in the note's front-matter, if present —
+    /// the ground truth for what kind of meeting this was.
+    private func recordedMeetingTypeID(_ content: String) -> String? {
+        FrontMatter.field("gw_meeting_type", in: content)
+    }
+
+    /// The drafts to feature for this note — from the recorded meeting type
+    /// when available (exact), otherwise inferred from the headings (best-guess).
+    private func suggestedDrafts(for content: String) -> [FollowUpKind] {
+        if let id = recordedMeetingTypeID(content), let t = MeetingTemplate(rawValue: id) {
+            return t.suggestedDrafts
+        }
+        return MeetingTemplate.inferred(fromNotes: content)?.suggestedDrafts ?? []
+    }
+
     /// Draft a specific output-document type (MoM, follow-up email, status
     /// update, …). Each kind caches independently, so drafting one never
     /// clobbers another for the same meeting.
@@ -424,14 +439,15 @@ private struct NotesViewerView: View {
         }
     }
 
-    /// Auto follow-up: shape the draft to the meeting type inferred from the
-    /// note's headings (falling back to the default template).
+    /// Auto follow-up: shape the draft to the note's recorded meeting type when
+    /// present, else the type inferred from its headings, else the default.
     private func draftAutoFollowUp() {
         guard let fileURL, let transcript = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
         let base = fileURL.deletingPathExtension().lastPathComponent
         drafting = true
         status = "Drafting…"
-        let template = MeetingTemplate.inferred(fromNotes: transcript).map { SummaryTemplate.builtIn($0) }
+        let template = recordedMeetingTypeID(transcript).flatMap { AppSettings.shared.template(withID: $0) }
+            ?? MeetingTemplate.inferred(fromNotes: transcript).map { SummaryTemplate.builtIn($0) }
             ?? AppSettings.shared.selectedTemplate
         Task { @MainActor in
             defer { drafting = false }
@@ -681,6 +697,35 @@ private struct MarkdownReadView: View {
 
         case .frontMatter(let body):
             FrontMatterView(raw: body)
+
+        case .table(let headers, let rows):
+            let cols = max(1, headers.count)
+            ScrollView(.horizontal, showsIndicators: false) {
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 7) {
+                    GridRow {
+                        ForEach(Array(headers.enumerated()), id: \.offset) { _, h in
+                            Text(MarkdownParse.inline(h))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                    Divider().gridCellColumns(cols)
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        GridRow {
+                            ForEach(0..<cols, id: \.self) { c in
+                                Text(MarkdownParse.inline(c < row.count ? row[c] : ""))
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.primary.opacity(0.9))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                }
+                .padding(11)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.03)))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.12)))
         }
     }
 
@@ -836,6 +881,7 @@ private enum MarkdownParse {
         case code(String)
         case rule
         case frontMatter(String)
+        case table(headers: [String], rows: [[String]])
     }
 
     /// Inline styling (bold/italic/code/links) via AttributedString, falling
@@ -915,10 +961,42 @@ private enum MarkdownParse {
             if let ord = matchOrdered(line) {
                 flushPara(); out.append(.bullet(text: ord.text, marker: ord.marker, depth: depth)); i += 1; continue
             }
+            // GFM pipe table: a header row followed by a --- | --- separator.
+            if line.contains("|"), i + 1 < lines.count, isTableSeparator(lines[i + 1]) {
+                flushPara()
+                let headers = splitRow(line)
+                var rows: [[String]] = []
+                i += 2   // consume header + separator
+                while i < lines.count {
+                    let l = lines[i].trimmingCharacters(in: .whitespaces)
+                    if l.isEmpty || !l.contains("|") { break }
+                    rows.append(splitRow(l)); i += 1
+                }
+                out.append(.table(headers: headers, rows: rows)); continue
+            }
             para.append(line); i += 1
         }
         flushPara()
         return out
+    }
+
+    /// A GFM table separator row, e.g. "| --- | :--: |" — only pipes, dashes,
+    /// colons, and spaces, with at least one dash and one pipe.
+    static func isTableSeparator(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        guard t.contains("-"), t.contains("|") else { return false }
+        return t.allSatisfy { $0 == "|" || $0 == "-" || $0 == ":" || $0 == " " }
+    }
+
+    /// Split a table row on "|", trimming cells and dropping the empty edges
+    /// produced by leading/trailing pipes.
+    static func splitRow(_ s: String) -> [String] {
+        var cells = s.trimmingCharacters(in: .whitespaces)
+            .split(separator: "|", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        if cells.first == "" { cells.removeFirst() }
+        if cells.last == "" { cells.removeLast() }
+        return cells
     }
 
     /// True when a line is entirely one bold span (optionally trailing ":"),

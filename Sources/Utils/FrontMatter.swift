@@ -29,4 +29,29 @@ enum FrontMatter {
 
     /// The note body with any leading front-matter removed.
     static func body(_ text: String) -> String { split(text).body }
+
+    /// The value of a scalar front-matter field (e.g. `gw_meeting_type`), or nil
+    /// when the field is absent. Only scans the front-matter block.
+    static func field(_ key: String, in text: String) -> String? {
+        guard let fm = split(text).frontMatter else { return nil }
+        for line in fm.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("\(key):") {
+                return String(trimmed.dropFirst(key.count + 1)).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+
+    /// Parse a YAML `tags: [a, b, c]` line from the front-matter into trimmed,
+    /// non-empty values. Empty when there's no front-matter or no tags line.
+    static func tags(in text: String) -> [String] {
+        guard let value = field("tags", in: text) else { return [] }
+        return value
+            .drop(while: { $0 != "[" }).dropFirst()
+            .prefix(while: { $0 != "]" })
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 }

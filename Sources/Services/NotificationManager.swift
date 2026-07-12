@@ -121,7 +121,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         if info["openDigest"] as? Bool == true {
             NotificationCenter.default.post(name: .openDigest, object: nil)
         } else if let path = info["notesPath"] as? String {
-            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            // Route through the app so it opens in the in-app viewer (or the
+            // external editor only when that setting is on) — never bypass it.
+            NotificationCenter.default.post(name: .openNoteFile, object: URL(fileURLWithPath: path))
         }
     }
 }

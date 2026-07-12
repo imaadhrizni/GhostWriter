@@ -40,9 +40,10 @@ final class AICache {
     private let queue = DispatchQueue(label: "com.ghostwriter.aicache")
     private var entries: [String: Entry] = [:]
     private let url: URL
-    /// Soft cap; oldest entries evict first once exceeded. Generous — the store
-    /// is tiny (a few KB per entry) and at real note counts this rarely trips.
-    private let maxEntries = 500
+    /// Soft cap; oldest entries evict first once exceeded. User-configurable in
+    /// Settings → Usage & Cost → Maintenance. The store is tiny (a few KB per
+    /// entry), so the default rarely trips.
+    private var maxEntries: Int { AppSettings.shared.aiCacheLimit }
 
     private init() {
         let base = FileManager.default

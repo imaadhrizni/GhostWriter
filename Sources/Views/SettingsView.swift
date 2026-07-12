@@ -1001,6 +1001,17 @@ private struct MeetingPane: View {
                             settings.maxSpeakers = AppSettings.Default.maxSpeakers
                         }
                     }
+                    HStack {
+                        Text("Separation sensitivity")
+                        Spacer()
+                        Slider(value: $settings.speakerSensitivity, in: 0.6...1.6, step: 0.1)
+                            .frame(width: 130)
+                        DefaultResetButton(isDefault: settings.speakerSensitivity == AppSettings.Default.speakerSensitivity) {
+                            settings.speakerSensitivity = AppSettings.Default.speakerSensitivity
+                        }
+                    }
+                    Text("Lower separates voices more eagerly (may over-split one speaker); higher merges similar-sounding voices into one. Adjust if speakers are being split or merged incorrectly.")
+                        .font(.caption).foregroundColor(.secondary)
                 }
             }
 
@@ -1142,6 +1153,22 @@ private struct MeetingNotesPane: View {
                 Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
                 Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
                     .font(.caption).foregroundColor(.secondary)
+                if settings.liveAssistantEnabled {
+                    HStack {
+                        Text("Refresh every")
+                        Spacer()
+                        Picker("", selection: $settings.liveBriefInterval) {
+                            ForEach([15, 25, 45, 60, 90], id: \.self) { Text("\($0)s").tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 90)
+                        DefaultResetButton(isDefault: settings.liveBriefInterval == AppSettings.Default.liveBriefInterval) {
+                            settings.liveBriefInterval = AppSettings.Default.liveBriefInterval
+                        }
+                    }
+                    Text("How often the brief updates. Longer intervals mean fewer AI calls — lower cost, less frequent refreshes.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
                 Divider()
                 Toggle("Show prep card on start", isOn: $settings.meetingPrepCard)
                 Text("When a meeting is linked to an organisation or opportunity, a floating panel of that entity's recent notes appears as the meeting starts. This is the default for the per-meeting switch in the start dialog.")
@@ -1641,6 +1668,18 @@ private struct StatsPane: View {
                     }
                     .disabled(aiCacheCount == 0)
                 }
+                HStack {
+                    Text("Cache limit (entries)")
+                    Spacer()
+                    Picker("", selection: $settings.aiCacheLimit) {
+                        ForEach([100, 250, 500, 1000, 2000], id: \.self) { Text("\($0)").tag($0) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 100)
+                    DefaultResetButton(isDefault: settings.aiCacheLimit == AppSettings.Default.aiCacheLimit) {
+                        settings.aiCacheLimit = AppSettings.Default.aiCacheLimit
+                    }
+                }
             }
             .onAppear { aiCacheCount = AICache.shared.count }
         }
@@ -2012,6 +2051,7 @@ extension Notification.Name {
     static let dictationHistoryDisabled = Notification.Name("DictationHistoryDisabled")
     static let renameSpeakersForFile = Notification.Name("RenameSpeakersForFile")
     static let openDigest = Notification.Name("OpenDigest")
+    static let openNoteFile = Notification.Name("OpenNoteFile")
 }
 
 // MARK: - About

@@ -122,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private var pauseMenuItem: NSMenuItem?
     private var liveBriefMenuItem: NSMenuItem?
+    private var liveBriefEndMenuItem: NSMenuItem?
     private var statsMenuItem: NSMenuItem?
     private var errorMenuItem: NSMenuItem?
 
@@ -143,6 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(clearDictationHistory), name: .dictationHistoryDisabled, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(renameSpeakersForFile(_:)), name: .renameSpeakersForFile, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(showDigestWindow), name: .openDigest, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(openNoteFromNotification(_:)), name: .openNoteFile, object: nil)
 
         if KeychainService.groqAPIKey() == nil {
             Log.app.info("🔑 API Key missing — showing setup window")
@@ -396,6 +398,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         liveBriefItem.target = self
         menu.addItem(liveBriefItem)
         self.liveBriefMenuItem = liveBriefItem
+
+        // Fully turn the brief off for this meeting (stops AI updates); shown
+        // only while it's still running, since "Show/Resume" covers the rest.
+        let liveBriefEndItem = NSMenuItem(title: "Turn Off Live Brief", action: #selector(endLiveBrief), keyEquivalent: "")
+        liveBriefEndItem.image = NSImage(systemSymbolName: "stop.circle", accessibilityDescription: nil)
+        liveBriefEndItem.target = self
+        menu.addItem(liveBriefEndItem)
+        self.liveBriefEndMenuItem = liveBriefEndItem
 
         menu.addItem(NSMenuItem.separator())
 
@@ -823,6 +833,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                       date: start)
                 if target.kind == "opp" { store.setOpportunity(target.id, on: note.id, true) }
                 else if target.kind == "org" { store.setOrg(target.id, on: note.id, true) }
+
+                // Mirror the link into the note's front-matter so the file
+                // itself carries who it's about (visible in Obsidian, and it
+                // survives independently of the Catalog database).
+                if AppSettings.shared.frontMatterEnabled {
+                    var fields: [(key: String, value: String)] = []
+                    if target.kind == "opp", let opp = store.opportunity(target.id) {
+                        fields.append(("opportunity", opp.name))
+                        // Org sits above the opportunity via its project.
+                        if let pid = opp.projectID, let oid = store.project(pid)?.orgID,
+                           let org = store.org(oid) {
+                            fields.append(("org", org.name))
+                        }
+                    } else if target.kind == "org", let org = store.org(target.id) {
+                        fields.append(("org", org.name))
+                    }
+                    if !fields.isEmpty {
+                        MeetingNotesWriter.addFrontMatterFields(fields, to: fileURL)
+                        MeetingNotesWriter.mirrorFieldsToTags(fields, to: fileURL)
+                    }
+                }
             }
 
             // Bookmarks jump-list (timestamps dropped via ⌃⌥B during the meeting).
@@ -987,6 +1018,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Notes & Pause Hotkeys
 
     /// ⌃⌥N: reveal the live meeting notes file, or the notes folder when idle.
+    /// A meeting-saved (or other) notification was clicked — open that note in
+    /// the in-app viewer, honoring the "open externally" setting like every
+    /// other note-open path.
+    @objc private func openNoteFromNotification(_ note: Notification) {
+        guard let url = note.object as? URL else { return }
+        // Notification-center callbacks arrive off the main thread; UI must be
+        // presented on main, and the accessory app needs activating to front it.
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            NotesViewerWindowController.present(fileURL: url)
+        }
+    }
+
     @objc private func openNotes() {
         if let file = meetingNotes.currentFilePath
             ?? meetingNotes.lastCompletedFilePath
@@ -1006,8 +1050,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleLiveBrief() {
         MainActor.assumeIsolated {
             let assistant = LiveMeetingAssistant.shared
-            guard assistant.isActive else { return }
-            if assistant.visible { assistant.hide() } else { assistant.show() }
+            if assistant.isActive {
+                if assistant.visible { assistant.hide() } else { assistant.show() }
+            } else if assistant.ended {
+                assistant.resume()
+            } else {
+                startLiveBrief()   // never started this meeting — begin now
+            }
+        }
+    }
+
+    @objc private func endLiveBrief() {
+        MainActor.assumeIsolated { LiveMeetingAssistant.shared.endForMeeting() }
+    }
+
+    /// Begin the live brief in the middle of a meeting that started without it.
+    /// Force-enables regardless of the per-meeting/global default; the assistant
+    /// still self-guards against local-only mode / missing API key.
+    private func startLiveBrief() {
+        MainActor.assumeIsolated {
+            guard appState.isMeetingMode, !LiveMeetingAssistant.shared.isActive else { return }
+            LiveMeetingAssistant.shared.start(
+                transcriptProvider: { [weak self] in
+                    guard let url = self?.meetingNotes.currentFilePath else { return nil }
+                    return self?.meetingNotes.transcriptText(of: url)
+                },
+                template: settings.selectedTemplate,
+                agenda: meetingAgenda,
+                enabled: true)
         }
     }
 
@@ -1434,11 +1504,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// popup (shapes the summary), an optional agenda field, and a live-brief switch.
     private final class StartAccessory: NSView {
         let catalog = NSPopUpButton(frame: .zero, pullsDown: false)
+        let search = NSSearchField(frame: .zero)
         let picker = NSPopUpButton(frame: .zero, pullsDown: false)
         let agendaField = NSTextField(frame: .zero)
         let liveBrief = NSSwitch(frame: .zero)
         let prepCard = NSSwitch(frame: .zero)
         let prepLabel = NSTextField(labelWithString: "Show prep card")
+
+        /// Full link options (No link, org/opp rows, quick-add). The popup is
+        /// rebuilt from this, filtered by the search field, so the list stays
+        /// usable as the Catalog grows.
+        var allOptions: [(title: String, repr: String)] = []
+
+        /// Repopulate the link popup, keeping "No link" and the quick-add rows
+        /// while narrowing the org/opportunity rows to those matching `filter`.
+        func rebuildCatalogMenu(filter: String) {
+            let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
+            let prevRepr = catalog.selectedItem?.representedObject as? String
+
+            // Keep an entity row only when it matches; leave fixed rows alone.
+            var shown = allOptions.filter { opt in
+                let isEntity = opt.repr.hasPrefix("opp:") || opt.repr.hasPrefix("org:")
+                return !isEntity || q.isEmpty || opt.title.lowercased().contains(q)
+            }
+            // Collapse separators left dangling by filtering.
+            var cleaned: [(title: String, repr: String)] = []
+            for opt in shown where !(opt.repr == "__sep__" && (cleaned.isEmpty || cleaned.last?.repr == "__sep__")) {
+                cleaned.append(opt)
+            }
+            if cleaned.last?.repr == "__sep__" { cleaned.removeLast() }
+            shown = cleaned
+
+            catalog.removeAllItems()
+            catalog.menu?.autoenablesItems = false
+            for opt in shown {
+                if opt.repr == "__sep__" { catalog.menu?.addItem(.separator()); continue }
+                let item = NSMenuItem(title: opt.title, action: nil, keyEquivalent: "")
+                item.representedObject = opt.repr
+                catalog.menu?.addItem(item)
+            }
+            if let prevRepr, let item = catalog.menu?.items.first(where: { ($0.representedObject as? String) == prevRepr }) {
+                catalog.select(item)
+            }
+            catalogChanged()
+        }
+
+        @objc func searchChanged() { rebuildCatalogMenu(filter: search.stringValue) }
 
         /// The prep card only makes sense with a catalog link — enable the
         /// switch (and un-dim its label) only when an org/opportunity is chosen.
@@ -1464,7 +1575,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // with a cursor so the spacing stays even and easy to retune.
         let capH: CGFloat = 15, popH: CGFloat = 26, fieldH: CGFloat = 44, rowH: CGFloat = 22
         let capGap: CGFloat = 3, groupGap: CGFloat = 14, rowGap: CGFloat = 6
-        let height = capH + capGap + popH + groupGap
+        let height = capH + capGap + popH + rowGap + popH + groupGap   // link: caption + search + popup
                    + capH + capGap + popH + groupGap
                    + capH + capGap + fieldH + groupGap
                    + rowH + rowGap + rowH
@@ -1487,17 +1598,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             top += capGap
         }
 
-        // Catalog link (top) — file this meeting's note under an opportunity or org.
+        // Catalog link (top) — file this meeting's note under an opportunity or
+        // org. A search field narrows the list as the Catalog grows.
         caption("Link to (optional)")
+        let search = container.search
+        search.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
+        search.placeholderString = "Search organisations & opportunities…"
+        search.sendsWholeSearchString = false
+        search.target = container
+        search.action = #selector(StartAccessory.searchChanged)
+        container.addSubview(search)
+        top += rowGap
+
         let catalog = container.catalog
         catalog.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
-        for opt in catalogOptions {
-            if opt.repr == "__sep__" { catalog.menu?.addItem(.separator()); continue }
-            catalog.addItem(withTitle: opt.title)
-            catalog.lastItem?.representedObject = opt.repr
-        }
         catalog.target = container
         catalog.action = #selector(StartAccessory.catalogChanged)
+        container.allOptions = catalogOptions
+        container.rebuildCatalogMenu(filter: "")
         container.addSubview(catalog)
         top += groupGap
 
@@ -1506,19 +1624,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let picker = container.picker
         picker.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
         // Grouped: a disabled section header per category, then its templates.
+        // autoenablesItems must be off or the menu re-enables the headers,
+        // making them look pickable (and one can show as the selection).
+        picker.menu?.autoenablesItems = false
         for group in AppSettings.shared.groupedTemplates {
             let header = NSMenuItem(title: group.title, action: nil, keyEquivalent: "")
             header.isEnabled = false
             picker.menu?.addItem(header)
             for template in group.templates {
-                let item = NSMenuItem(title: "    \(template.displayName)", action: nil, keyEquivalent: "")
+                let item = NSMenuItem(title: template.displayName, action: nil, keyEquivalent: "")
+                item.indentationLevel = 1
                 item.representedObject = template.id
                 picker.menu?.addItem(item)
             }
         }
-        if let item = picker.menu?.items.first(where: { ($0.representedObject as? String) == selectedID }) {
-            picker.select(item)
-        }
+        // Select the stored template, else fall back to the first real item so
+        // the popup never rests on a header.
+        let match = picker.menu?.items.first { ($0.representedObject as? String) == selectedID }
+            ?? picker.menu?.items.first { $0.representedObject != nil }
+        if let match { picker.select(match) }
         container.addSubview(picker)
         top += groupGap
 
@@ -2222,9 +2346,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Pause only makes sense mid-meeting — hide it otherwise.
             pauseMenuItem?.isHidden = !appState.isMeetingMode
             // Live Brief show/hide — only while its panel is running.
-            let liveActive = LiveMeetingAssistant.shared.isActive
-            liveBriefMenuItem?.isHidden = !liveActive
-            liveBriefMenuItem?.title = LiveMeetingAssistant.shared.visible ? "Hide Live Brief" : "Show Live Brief"
+            let live = LiveMeetingAssistant.shared
+            // Available whenever a meeting is running and the brief could run —
+            // so it can be started mid-meeting even if it began switched off.
+            let canRunLive = !settings.localOnlyMode && KeychainService.groqAPIKey() != nil
+            liveBriefMenuItem?.isHidden = !(appState.isMeetingMode && canRunLive)
+            liveBriefMenuItem?.title = live.isActive
+                ? (live.visible ? "Hide Live Brief" : "Show Live Brief")
+                : (live.ended ? "Resume Live Brief" : "Start Live Brief")
+            // "Turn Off" only makes sense while it's actively running.
+            liveBriefEndMenuItem?.isHidden = !live.isActive
             // Error banner — visible only when there's a recent failure.
             if let message = appState.lastError {
                 errorMenuItem?.isHidden = false

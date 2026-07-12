@@ -9,6 +9,7 @@ import Foundation
 
 enum FollowUpKind: String, CaseIterable, Identifiable {
     case minutes, followUpEmail, statusUpdate, executiveSummary, actionItemList, thankYou
+    case recap, decisionLog, talkingPoints, retrospective, interviewDebrief, faq, proposal, pocPlan
 
     var id: String { rawValue }
 
@@ -20,6 +21,14 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .executiveSummary: return "Executive Summary"
         case .actionItemList:   return "Action-Item List"
         case .thankYou:         return "Thank-You Note"
+        case .recap:            return "Quick Recap"
+        case .decisionLog:      return "Decision Log"
+        case .talkingPoints:    return "Talking Points"
+        case .retrospective:    return "Retrospective"
+        case .interviewDebrief: return "Interview Debrief"
+        case .faq:              return "FAQ"
+        case .proposal:         return "Proposal / Next Steps"
+        case .pocPlan:          return "POC Plan"
         }
     }
 
@@ -32,6 +41,58 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .executiveSummary: return "text.alignleft"
         case .actionItemList:   return "checklist"
         case .thankYou:         return "hand.thumbsup"
+        case .recap:            return "text.bubble"
+        case .decisionLog:      return "checkmark.seal"
+        case .talkingPoints:    return "bubble.left.and.bubble.right"
+        case .retrospective:    return "arrow.triangle.2.circlepath"
+        case .interviewDebrief: return "person.text.rectangle"
+        case .faq:              return "questionmark.circle"
+        case .proposal:         return "doc.badge.gearshape"
+        case .pocPlan:          return "flask"
+        }
+    }
+
+    /// Category used to group the draft-document pickers and menus.
+    enum Category: String, CaseIterable {
+        case emailRecap, records, sales, reports, hiringRetro
+        var title: String {
+            switch self {
+            case .emailRecap:  return "Email & Recap"
+            case .records:     return "Records"
+            case .sales:       return "Sales"
+            case .reports:     return "Reports"
+            case .hiringRetro: return "Hiring & Retro"
+            }
+        }
+    }
+
+    var category: Category {
+        switch self {
+        case .followUpEmail, .recap, .thankYou:        return .emailRecap
+        case .minutes, .decisionLog, .actionItemList:  return .records
+        case .proposal, .pocPlan, .talkingPoints:      return .sales
+        case .statusUpdate, .executiveSummary, .faq:   return .reports
+        case .interviewDebrief, .retrospective:        return .hiringRetro
+        }
+    }
+
+    /// One-line description of what this document is, shown under the picker.
+    var blurb: String {
+        switch self {
+        case .minutes:          return "Formal minutes — attendees, agenda, decisions, and action items."
+        case .followUpEmail:    return "A ready-to-send recap email to the participants."
+        case .statusUpdate:     return "A skimmable Done / In progress / Blocked / Next update."
+        case .executiveSummary: return "A 3–5 sentence brief for a leader who wasn't there."
+        case .actionItemList:   return "Just the action items, as an owner-tagged checklist."
+        case .thankYou:         return "A short, warm thank-you note to the participants."
+        case .recap:            return "A ten-second bullet recap for people who missed it."
+        case .decisionLog:      return "A table of decisions with rationale, owner, and date."
+        case .talkingPoints:    return "Key messages to say when briefing someone on the meeting."
+        case .retrospective:    return "What went well / didn't, plus improvement action items."
+        case .interviewDebrief: return "A hiring-panel debrief with a clear recommendation."
+        case .faq:              return "The meeting's questions and answers as Q&A pairs."
+        case .proposal:         return "A short proposal memo — context, recommendation, next steps."
+        case .pocPlan:          return "A proof-of-concept plan — objective, success criteria, scope, timeline."
         }
     }
 
@@ -71,6 +132,86 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
             return """
             Write a brief, warm THANK-YOU NOTE to the participants for their time, referencing one or two specifics from the discussion. A short paragraph; no action items unless essential.
             """
+        case .recap:
+            return """
+            Write a QUICK RECAP for people who missed the meeting — 3–6 tight bullets covering what was discussed, what was decided, and what happens next. No headings, no preamble. Skimmable in ten seconds.
+            """
+        case .decisionLog:
+            return """
+            Output a DECISION LOG — only the decisions made, as a Markdown table with columns: Decision | Rationale | Owner | Date. One row per decision; leave a cell blank if the notes don't say. If no decisions were made, output "_No decisions recorded._". No other prose.
+            """
+        case .talkingPoints:
+            return """
+            Write TALKING POINTS for someone briefing another person or group on this meeting — a bullet list of the key messages, framed as things to say, each one sentence. Group under bold labels if there are natural themes. Confident and concise; no filler.
+            """
+        case .retrospective:
+            return """
+            Write a RETROSPECTIVE in Markdown with three "## " sections: What Went Well, What Didn't, and Action Items (a "- [ ] <action> — @<owner>" checklist). Draw only on the discussion; keep each bullet specific and blameless.
+            """
+        case .interviewDebrief:
+            return """
+            Write an INTERVIEW DEBRIEF for a hiring panel, in Markdown: "## Summary" (2–3 sentences), "## Strengths" and "## Concerns" (bullets), and "## Recommendation" (one of Strong Hire / Hire / No Hire / Strong No Hire with a one-line justification). Evidence-based and specific to what was said.
+            """
+        case .faq:
+            return """
+            Turn the discussion into an FAQ — the questions raised and the answers given, as "**Q:** …" / "**A:** …" pairs, one blank line between pairs. Only include questions actually answered in the notes. No intro or outro.
+            """
+        case .proposal:
+            return """
+            Write a short PROPOSAL / NEXT-STEPS memo in Markdown: "## Context" (1–2 sentences on the situation), "## Proposal" (what's being recommended), and "## Next Steps" (a "- [ ] <step> — @<owner> (due: <date>)" checklist). Persuasive but grounded strictly in the notes.
+            """
+        case .pocPlan:
+            return """
+            Write a PROOF-OF-CONCEPT (POC) PLAN in Markdown for a technical evaluation, with "## " sections: Objective (what the POC must prove), Success Criteria (specific, measurable pass/fail items as a bullet list), Scope & Use Cases (what will and won't be tested), Environment & Prerequisites (access, data, accounts needed — from either side), Timeline & Milestones (phases with target dates), Roles (who owns what, on the vendor and customer side), and Risks / Open Questions. Draw strictly on the notes; where a detail wasn't discussed, add it as a bracketed placeholder like "[TBD: …]" rather than inventing it.
+            """
+        }
+    }
+}
+
+/// A user-defined output document type — a name plus free-form drafting
+/// guidance. Sits alongside the built-in `FollowUpKind` set.
+struct UserDraftTemplate: Codable, Identifiable, Equatable {
+    var id: String          // "draft:UUID"
+    var name: String
+    var guidance: String
+}
+
+/// A draft document type offered by the Draft… menu and Draft Templates pane —
+/// either a built-in `FollowUpKind` (whose guidance may be overridden in
+/// Settings) or a user-defined template.
+enum DraftDoc: Identifiable, Equatable {
+    case builtIn(FollowUpKind)
+    case user(UserDraftTemplate)
+
+    var id: String {
+        switch self {
+        case .builtIn(let k): return k.rawValue
+        case .user(let t):    return t.id
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .builtIn(let k): return k.displayName
+        case .user(let t):    return t.name
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .builtIn(let k): return k.icon
+        case .user:           return "doc.text"
+        }
+    }
+
+    var isCustom: Bool { if case .user = self { return true }; return false }
+
+    /// The resolved drafting guidance — the built-in's (possibly overridden)
+    /// guidance, or the user template's own.
+    var guidance: String {
+        switch self {
+        case .builtIn(let k): return AppSettings.shared.draftGuidance(for: k)
+        case .user(let t):    return t.guidance
         }
     }
 }
@@ -593,10 +734,12 @@ final class TextPolisher {
     /// meeting's notes, shaped by `kind`. The output document type is separate
     /// from the meeting type. Each kind caches independently (its guidance is
     /// part of the key), so one meeting can produce several documents cheaply.
-    func draftDocument(transcript: String, kind: FollowUpKind, forceRefresh: Bool = false) async throws -> String {
-        try await draft(transcript: transcript,
-                        guidance: AppSettings.shared.draftGuidance(for: kind),
-                        forceRefresh: forceRefresh)
+    /// Draft an output document from resolved guidance. Built-in `FollowUpKind`
+    /// types and user-defined draft templates both flow through here via
+    /// `DraftDoc.guidance`. Caches by guidance + content, so one meeting can
+    /// produce several documents cheaply and each type stays independent.
+    func draftDocument(transcript: String, guidance: String, forceRefresh: Bool = false) async throws -> String {
+        try await draft(transcript: transcript, guidance: guidance, forceRefresh: forceRefresh)
     }
 
     /// Draft a follow-up shaped by the *meeting* template (recipient/tone vary

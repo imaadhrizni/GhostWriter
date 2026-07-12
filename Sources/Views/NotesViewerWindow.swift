@@ -308,9 +308,23 @@ private struct NotesViewerView: View {
             }
             if canDraftFollowUp {
                 Menu {
-                    ForEach(FollowUpKind.allCases) { kind in
-                        Button { draftDocument(kind: kind) } label: {
-                            Label(kind.displayName, systemImage: kind.icon)
+                    let suggested = MeetingTemplate.inferred(fromNotes: text)?.suggestedDrafts ?? []
+                    if !suggested.isEmpty {
+                        Section("Suggested") {
+                            ForEach(suggested) { kind in
+                                Button { draftDoc(.builtIn(kind)) } label: {
+                                    Label(kind.displayName, systemImage: kind.icon)
+                                }
+                            }
+                        }
+                    }
+                    ForEach(AppSettings.shared.groupedDraftDocs, id: \.title) { group in
+                        Section(group.title) {
+                            ForEach(group.docs) { doc in
+                                Button { draftDoc(doc) } label: {
+                                    Label(doc.displayName, systemImage: doc.icon)
+                                }
+                            }
                         }
                     }
                     Divider()
@@ -388,20 +402,22 @@ private struct NotesViewerView: View {
     /// Draft a specific output-document type (MoM, follow-up email, status
     /// update, …). Each kind caches independently, so drafting one never
     /// clobbers another for the same meeting.
-    private func draftDocument(kind: FollowUpKind) {
+    private func draftDoc(_ doc: DraftDoc) {
         guard let fileURL, let transcript = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
         let base = fileURL.deletingPathExtension().lastPathComponent
+        let guidance = doc.guidance
+        let title = doc.displayName
         drafting = true
         status = "Drafting…"
         Task { @MainActor in
             defer { drafting = false }
             do {
-                let draft = try await TextPolisher().draftDocument(transcript: transcript, kind: kind)
+                let draft = try await TextPolisher().draftDocument(transcript: transcript, guidance: guidance)
                 status = ""
                 NotesViewerWindowController.present(
-                    draftTitle: "\(kind.displayName) — \(base)",
+                    draftTitle: "\(title) — \(base)",
                     text: draft,
-                    regenerate: { try await TextPolisher().draftDocument(transcript: transcript, kind: kind, forceRefresh: true) })
+                    regenerate: { try await TextPolisher().draftDocument(transcript: transcript, guidance: guidance, forceRefresh: true) })
             } catch {
                 status = "Draft failed: \(error.localizedDescription)"
             }

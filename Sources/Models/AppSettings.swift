@@ -37,6 +37,7 @@ final class AppSettings: ObservableObject {
         static let structuredExtraction   = "meeting.structuredExtraction"
         static let extractKeyFields       = "meeting.extractKeyFields"
         static let draftGuidance          = "meeting.draftGuidance"
+        static let userDraftTemplates     = "meeting.userDraftTemplates"
         static let openNotesExternally    = "notes.openExternally"
         static let topicChapters          = "meeting.topicChapters"
         static let liveAssistantEnabled   = "meeting.liveAssistantEnabled"
@@ -103,7 +104,7 @@ final class AppSettings: ObservableObject {
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
-                          structuredExtraction, extractKeyFields, draftGuidance, openNotesExternally, topicChapters, liveAssistantEnabled, meetingPrepCard,
+                          structuredExtraction, extractKeyFields, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, liveAssistantEnabled, meetingPrepCard,
                           notifyOnMeetingEnd, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, transcriptionLanguage,
                           vocabulary, replacements, appProfiles,
@@ -575,6 +576,19 @@ final class AppSettings: ObservableObject {
         MeetingTemplate.allCases.map { .builtIn($0) } + userTemplates.map { .user($0) }
     }
 
+    /// Templates arranged into labeled sections for the pickers — built-ins by
+    /// category (in `MeetingTemplate.Category` order), then the user's own
+    /// under "Custom" when any exist.
+    var groupedTemplates: [(title: String, templates: [SummaryTemplate])] {
+        var groups: [(String, [SummaryTemplate])] = MeetingTemplate.Category.allCases.compactMap { cat in
+            let items = MeetingTemplate.allCases.filter { $0.category == cat }.map { SummaryTemplate.builtIn($0) }
+            return items.isEmpty ? nil : (cat.title, items)
+        }
+        let custom = userTemplates.map { SummaryTemplate.user($0) }
+        if !custom.isEmpty { groups.append(("Custom", custom)) }
+        return groups
+    }
+
     /// Resolve a template by id.
     func template(withID id: String) -> SummaryTemplate? {
         allTemplates.first { $0.id == id }
@@ -688,6 +702,68 @@ final class AppSettings: ObservableObject {
             dict[kind.rawValue] = text
         }
         draftGuidanceOverrides = dict
+    }
+
+    // MARK: User draft templates (custom output document types)
+
+    /// The user's own draft document types, persisted as JSON in creation order.
+    /// Each is just a name + guidance; drafting caches by guidance like the
+    /// built-in `FollowUpKind` types.
+    private(set) var userDraftTemplates: [UserDraftTemplate] {
+        get {
+            guard let data = defaults.data(forKey: Key.userDraftTemplates),
+                  let list = try? JSONDecoder().decode([UserDraftTemplate].self, from: data)
+            else { return [] }
+            return list
+        }
+        set { set((try? JSONEncoder().encode(newValue)) as Any, Key.userDraftTemplates) }
+    }
+
+    /// Create a new custom draft template with starter guidance; returns its id.
+    @discardableResult
+    func addUserDraftTemplate(name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        let template = UserDraftTemplate(
+            id: "draft:\(UUID().uuidString)",
+            name: trimmed.isEmpty ? "Untitled Document" : trimmed,
+            guidance: "Describe the document to produce from the meeting notes — recipient, tone, sections, and format.")
+        userDraftTemplates.append(template)
+        return template.id
+    }
+
+    /// Update a custom draft template's name and/or guidance.
+    func updateUserDraftTemplate(id: String, name: String? = nil, guidance: String? = nil) {
+        var list = userDraftTemplates
+        guard let i = list.firstIndex(where: { $0.id == id }) else { return }
+        if let name = name {
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            list[i].name = trimmed.isEmpty ? "Untitled Document" : trimmed
+        }
+        if let guidance = guidance { list[i].guidance = guidance }
+        userDraftTemplates = list
+    }
+
+    /// Delete a custom draft template.
+    func deleteUserDraftTemplate(id: String) {
+        userDraftTemplates = userDraftTemplates.filter { $0.id != id }
+    }
+
+    /// Every draft document type — the built-in `FollowUpKind` set followed by
+    /// the user's own — for the Draft… menu and the Draft Templates pane.
+    var allDraftDocs: [DraftDoc] {
+        FollowUpKind.allCases.map { .builtIn($0) } + userDraftTemplates.map { .user($0) }
+    }
+
+    /// Draft documents in labeled sections for the pickers/menus — built-ins by
+    /// category, then the user's own under "Custom" when any exist.
+    var groupedDraftDocs: [(title: String, docs: [DraftDoc])] {
+        var groups: [(String, [DraftDoc])] = FollowUpKind.Category.allCases.compactMap { cat in
+            let items = FollowUpKind.allCases.filter { $0.category == cat }.map { DraftDoc.builtIn($0) }
+            return items.isEmpty ? nil : (cat.title, items)
+        }
+        let custom = userDraftTemplates.map { DraftDoc.user($0) }
+        if !custom.isEmpty { groups.append(("Custom", custom)) }
+        return groups
     }
 
     // MARK: User templates
@@ -1155,9 +1231,77 @@ struct ExtractionField: Hashable {
 
 enum MeetingTemplate: String, CaseIterable, Identifiable {
     case general, standup, oneOnOne, customerCall, interview,
-         planning, retrospective, lecture, brainstorm
+         planning, retrospective, lecture, brainstorm,
+         kickoff, discovery, allHands, solutionDemo, solutionScoping
 
     var id: String { rawValue }
+
+    /// Broad category used to group the meeting-type pickers so the list reads
+    /// as a few short labeled sections rather than one long wall.
+    enum Category: String, CaseIterable {
+        case sales, delivery, team, hiring, other
+        var title: String {
+            switch self {
+            case .sales:    return "Sales & Customer"
+            case .delivery: return "Delivery & Project"
+            case .team:     return "Team & Internal"
+            case .hiring:   return "Hiring"
+            case .other:    return "Other"
+            }
+        }
+    }
+
+    var category: Category {
+        switch self {
+        case .customerCall, .discovery, .solutionDemo, .solutionScoping: return .sales
+        case .kickoff, .planning, .retrospective:                        return .delivery
+        case .standup, .oneOnOne, .allHands, .brainstorm:                return .team
+        case .interview:                                                 return .hiring
+        case .lecture, .general:                                         return .other
+        }
+    }
+
+    /// One-line description shown under the picker to explain what this type
+    /// captures and when to reach for it.
+    var blurb: String {
+        switch self {
+        case .general:       return "A neutral catch-all: a short TL;DR plus any decisions."
+        case .standup:       return "Daily team sync — per-person updates and blockers."
+        case .oneOnOne:      return "A private 1:1 — topics, feedback, and growth notes."
+        case .customerCall:  return "An account call — needs, objections, and commitments, with deal fields."
+        case .interview:     return "A candidate interview — strengths, concerns, and a hire recommendation."
+        case .planning:      return "Sprint/effort planning — scope, estimates, and risks."
+        case .retrospective: return "A retro — what went well, what didn't, and improvements."
+        case .lecture:       return "A talk or webinar — key concepts, takeaways, and follow-ups."
+        case .brainstorm:    return "An ideation session — every idea plus the promising directions."
+        case .kickoff:       return "A project kickoff — goals, scope, roles, milestones, and risks."
+        case .discovery:     return "A discovery call — current state, desired outcomes, and requirements."
+        case .allHands:      return "A team- or company-wide update — announcements, highlights, and Q&A."
+        case .solutionDemo:  return "A technical demo — use cases shown, technical fit, and objections."
+        case .solutionScoping: return "A solutioning session — requirements, approach, scope, and dependencies."
+        }
+    }
+
+    /// The draft documents most useful to produce from this meeting type —
+    /// surfaced first in the note viewer's Draft… menu.
+    var suggestedDrafts: [FollowUpKind] {
+        switch self {
+        case .customerCall:    return [.followUpEmail, .proposal, .actionItemList]
+        case .discovery:       return [.followUpEmail, .proposal, .pocPlan]
+        case .solutionDemo:    return [.followUpEmail, .pocPlan, .proposal]
+        case .solutionScoping: return [.pocPlan, .proposal, .actionItemList]
+        case .kickoff:         return [.minutes, .actionItemList, .statusUpdate]
+        case .planning:        return [.actionItemList, .statusUpdate, .minutes]
+        case .retrospective:   return [.retrospective, .actionItemList, .recap]
+        case .standup:         return [.statusUpdate, .actionItemList, .recap]
+        case .oneOnOne:        return [.recap, .actionItemList, .thankYou]
+        case .allHands:        return [.recap, .faq, .minutes]
+        case .brainstorm:      return [.recap, .talkingPoints, .actionItemList]
+        case .interview:       return [.interviewDebrief, .actionItemList]
+        case .lecture:         return [.recap, .faq, .actionItemList]
+        case .general:         return [.recap, .followUpEmail, .actionItemList]
+        }
+    }
 
     /// The high-signal fields this meeting type is worth extracting into the
     /// front-matter. Empty for types where the prose summary already says it
@@ -1194,7 +1338,28 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
         case .brainstorm: return [
             .init(key: "top_idea", label: "Most promising idea", hint: "the idea that got the most traction", kind: .text),
         ]
-        case .general, .standup, .lecture:
+        case .kickoff: return [
+            .init(key: "target_date", label: "Target date", hint: "the agreed launch/delivery date or first milestone, if stated", kind: .text),
+            .init(key: "top_risk", label: "Top risk", hint: "the single biggest risk or dependency raised", kind: .text),
+        ]
+        case .discovery: return [
+            .init(key: "primary_need", label: "Primary need", hint: "the most important problem the prospect wants solved", kind: .text),
+            .init(key: "timeline", label: "Timeline", hint: "target date or timeframe if stated (e.g. Q3, by March)", kind: .text),
+            .init(key: "next_step", label: "Next step", hint: "the single most important next action", kind: .text),
+        ]
+        case .solutionDemo: return [
+            .init(key: "technical_fit", label: "Technical fit",
+                  hint: "how well the solution matched the requirements: strong, partial, or gaps", kind: .category),
+            .init(key: "top_blocker", label: "Top blocker", hint: "the biggest technical objection, gap, or missing capability", kind: .text),
+            .init(key: "next_step", label: "Next step", hint: "the single most important next action (e.g. POC, security review)", kind: .text),
+        ]
+        case .solutionScoping: return [
+            .init(key: "scope_clarity", label: "Scope clarity",
+                  hint: "how well-defined the scope is: clear, partial, or unclear", kind: .category),
+            .init(key: "top_dependency", label: "Top dependency", hint: "the biggest dependency or prerequisite that could block progress", kind: .text),
+            .init(key: "next_step", label: "Next step", hint: "the single most important next action", kind: .text),
+        ]
+        case .general, .standup, .lecture, .allHands:
             return []
         }
     }
@@ -1210,6 +1375,11 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
         case .retrospective: return "Retrospective"
         case .lecture:       return "Lecture / Webinar"
         case .brainstorm:    return "Brainstorm"
+        case .kickoff:       return "Project Kickoff"
+        case .discovery:     return "Discovery Call"
+        case .allHands:      return "All-Hands"
+        case .solutionDemo:  return "Solution Demo"
+        case .solutionScoping: return "Solution Scoping"
         }
     }
 
@@ -1258,6 +1428,37 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
         case .brainstorm: return [
             ("Ideas", "every distinct idea raised, one bullet each."),
             ("Promising Directions", "the ideas that got traction and why."),
+        ]
+        case .kickoff: return [
+            ("Goals & Success Criteria", "what this project/effort is trying to achieve and how success is measured."),
+            ("Scope", "what was agreed to be in and out of scope (omit if not discussed)."),
+            ("Roles & Responsibilities", "who owns what — people or teams and their remit."),
+            ("Milestones & Timeline", "key dates and milestones agreed (omit if none)."),
+            ("Risks & Dependencies", "risks, unknowns, and dependencies raised (omit if none)."),
+        ]
+        case .discovery: return [
+            ("Current State", "the prospect's situation today — how they handle this now, and the pain points."),
+            ("Desired Outcomes", "what they want to achieve or change."),
+            ("Requirements", "explicit needs, must-haves, and evaluation criteria (omit if none)."),
+            ("Constraints", "budget, timeline, or other constraints mentioned (omit if none)."),
+        ]
+        case .allHands: return [
+            ("Announcements", "the key announcements or news shared."),
+            ("Highlights", "notable updates, wins, or metrics presented."),
+            ("Q&A", "questions raised and the answers given (omit if none)."),
+        ]
+        case .solutionDemo: return [
+            ("Use Cases Shown", "the capabilities or workflows demonstrated, and the prospect's reaction to each."),
+            ("Technical Fit", "how well the solution matched the stated requirements — what landed well."),
+            ("Objections & Gaps", "technical objections, missing capabilities, or concerns raised (omit if none)."),
+            ("Next Steps", "agreed follow-ups — POC, security/technical review, further demos — with owners (omit if none)."),
+        ]
+        case .solutionScoping: return [
+            ("Requirements", "the functional and technical requirements the solution must meet."),
+            ("Proposed Approach", "the solution or architecture proposed, and how it addresses the requirements."),
+            ("In / Out of Scope", "what was agreed to be in scope and explicitly out of scope."),
+            ("Dependencies & Prerequisites", "integrations, access, data, or environment needed from either side (omit if none)."),
+            ("Open Questions", "unresolved questions or decisions to follow up on (omit if none)."),
         ]
         }
     }
@@ -1327,6 +1528,16 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
             return "Write a learner-oriented recap: key concepts, practical takeaways, and follow-up resources or questions to explore."
         case .brainstorm:
             return "Write a recap: the ideas raised, the most promising directions, and agreed next steps to explore them."
+        case .kickoff:
+            return "Write an internal kickoff recap for the team: the goals and success criteria, agreed scope, who owns what, key milestones and timeline, and open risks or dependencies."
+        case .discovery:
+            return "Write a follow-up summarizing what you learned: the prospect's current situation and pain points, their desired outcomes, key requirements and constraints, and the proposed next steps. Client-appropriate but grounded strictly in what was said."
+        case .allHands:
+            return "Write a team-wide recap: the key announcements, highlights, and concise answers to the main questions raised, plus any action items with owners."
+        case .solutionDemo:
+            return "Write a client-facing follow-up EMAIL after a solution demo: thank them, recap the use cases shown and how they map to the requirements, address any open objections or gaps with clear next steps (POC, technical/security review, further demos) and owners. Professional and confident, grounded strictly in what was demonstrated and discussed."
+        case .solutionScoping:
+            return "Write a follow-up summarizing the scoping outcome: the agreed requirements, the proposed approach, what's in and out of scope, key dependencies/prerequisites, and open questions with owners. Precise and grounded strictly in what was discussed."
         }
     }
 
@@ -1338,6 +1549,11 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
         func has(_ heading: String) -> Bool { lc.contains("## \(heading.lowercased())") }
 
         if has("Customer Needs") || has("Objections & Concerns") { return .customerCall }
+        if has("Use Cases Shown") || has("Technical Fit") { return .solutionDemo }
+        if has("Proposed Approach") || has("In / Out of Scope") { return .solutionScoping }
+        if has("Desired Outcomes") || has("Current State") { return .discovery }
+        if has("Roles & Responsibilities") || (has("Goals & Success Criteria")) { return .kickoff }
+        if has("Announcements") { return .allHands }
         if has("Went Well") || has("Didn't Go Well") { return .retrospective }
         if has("Background") && has("Strengths") { return .interview }
         if has("Updates") && has("Blockers") { return .standup }

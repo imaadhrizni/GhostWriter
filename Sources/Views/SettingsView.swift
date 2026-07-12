@@ -1181,51 +1181,113 @@ private struct MeetingNotesPane: View {
 /// instruction with a per-item reset to the built-in default.
 private struct DraftTemplatesPane: View {
     @ObservedObject private var settings = AppSettings.shared
-    @State private var selected: FollowUpKind = .minutes
+    @State private var selectedID: String = FollowUpKind.minutes.rawValue
     @State private var text: String = ""
+    @State private var name: String = ""
 
-    private var isCustom: Bool { settings.hasCustomDraftGuidance(for: selected) }
+    /// The currently-selected document type, self-healing to the first built-in
+    /// if the selected custom template was deleted.
+    private var current: DraftDoc {
+        settings.allDraftDocs.first { $0.id == selectedID } ?? .builtIn(.minutes)
+    }
+
+    private var builtInIsCustomized: Bool {
+        if case .builtIn(let k) = current { return settings.hasCustomDraftGuidance(for: k) }
+        return false
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Document Type") {
-                Picker("Type", selection: $selected) {
-                    ForEach(FollowUpKind.allCases) { kind in
-                        Label(kind.displayName, systemImage: kind.icon).tag(kind)
+                HStack {
+                    Picker("Type", selection: $selectedID) {
+                        ForEach(settings.groupedDraftDocs, id: \.title) { group in
+                            Section(group.title) {
+                                ForEach(group.docs) { doc in
+                                    Label(doc.displayName, systemImage: doc.icon).tag(doc.id)
+                                }
+                            }
+                        }
+                    }
+                    .labelsHidden()
+                    .onChange(of: selectedID) { _, _ in load() }
+
+                    Button {
+                        let id = settings.addUserDraftTemplate(name: "New Document")
+                        selectedID = id
+                        load()
+                    } label: { Image(systemName: "plus") }
+                        .help("Add a custom document type")
+
+                    if current.isCustom {
+                        Button(role: .destructive) {
+                            if case .user(let t) = current {
+                                settings.deleteUserDraftTemplate(id: t.id)
+                                selectedID = FollowUpKind.minutes.rawValue
+                                load()
+                            }
+                        } label: { Image(systemName: "trash") }
+                            .help("Delete this custom document type")
                     }
                 }
-                .labelsHidden()
-                .onChange(of: selected) { _, _ in load() }
-                Text("Pick a document type to edit how it's drafted from a meeting. These are the same types offered by the note viewer's Draft… menu.")
-                    .font(.caption).foregroundColor(.secondary)
+                if case .builtIn(let k) = current {
+                    Text(k.blurb).font(.caption).foregroundColor(.secondary)
+                } else {
+                    Text("Pick a document type to edit how it's drafted, or add your own. These are the types offered by the note viewer's Draft… menu.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
             }
 
-            SettingsGroup("\(selected.displayName) guidance") {
+            if current.isCustom {
+                SettingsGroup("Name") {
+                    TextField("Document name", text: $name)
+                        .onChange(of: name) { _, newValue in
+                            if case .user(let t) = current {
+                                settings.updateUserDraftTemplate(id: t.id, name: newValue)
+                            }
+                        }
+                }
+            }
+
+            SettingsGroup("\(current.displayName) guidance") {
                 TextEditor(text: $text)
                     .font(.system(size: 12, design: .monospaced))
                     .frame(minHeight: 200)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
                     .onChange(of: text) { _, newValue in
-                        settings.setDraftGuidance(newValue, for: selected)
+                        switch current {
+                        case .builtIn(let k): settings.setDraftGuidance(newValue, for: k)
+                        case .user(let t):    settings.updateUserDraftTemplate(id: t.id, guidance: newValue)
+                        }
                     }
-                HStack {
-                    Text(isCustom ? "Customized" : "Using the built-in default")
-                        .font(.caption).foregroundColor(.secondary)
-                    Spacer()
-                    Button("Reset to Default") {
-                        settings.setDraftGuidance("", for: selected)
-                        text = selected.guidance
+                if !current.isCustom {
+                    HStack {
+                        Text(builtInIsCustomized ? "Customized" : "Using the built-in default")
+                            .font(.caption).foregroundColor(.secondary)
+                        Spacer()
+                        Button("Reset to Default") {
+                            if case .builtIn(let k) = current {
+                                settings.setDraftGuidance("", for: k)
+                                text = k.guidance
+                            }
+                        }
+                        .disabled(!builtInIsCustomized)
                     }
-                    .disabled(!isCustom)
                 }
                 Text("The instruction the AI follows for this document — recipient, tone, sections, and format. Draw only from the meeting's notes. Changing it regenerates the document the next time you draft it (each type caches separately).")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Text("Looking for a follow-up that adapts to the meeting type (including your custom meeting templates)? That's the note viewer's “Auto — match meeting type” draft, edited under Notes & Summaries → Templates → follow-up guidance.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }
         .onAppear { load() }
     }
 
-    private func load() { text = settings.draftGuidance(for: selected) }
+    private func load() {
+        text = current.guidance
+        if case .user(let t) = current { name = t.name }
+    }
 }
 
 /// Proactive digest — its own pane (it spans meetings, Catalog relationships,
@@ -1325,8 +1387,12 @@ private struct TemplateManager: View {
                 Text("Meeting template")
                 Spacer()
                 Picker("", selection: $settings.selectedTemplateID) {
-                    ForEach(settings.allTemplates) { template in
-                        Text(template.displayName).tag(template.id)
+                    ForEach(settings.groupedTemplates, id: \.title) { group in
+                        Section(group.title) {
+                            ForEach(group.templates) { template in
+                                Text(template.displayName).tag(template.id)
+                            }
+                        }
                     }
                 }
                 .labelsHidden()
@@ -1346,8 +1412,12 @@ private struct TemplateManager: View {
                     .help("Delete this template")
                 }
             }
-            Text("Shapes what the summary extracts — Standup gets Updates/Blockers, Customer Call gets Needs/Objections/Commitments, and so on. Also switchable per meeting from the menu bar.")
-                .font(.caption).foregroundColor(.secondary)
+            if case .builtIn(let t) = selected {
+                Text(t.blurb).font(.caption).foregroundColor(.secondary)
+            } else {
+                Text("Shapes what the summary extracts. Also switchable per meeting from the menu bar.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
 
             // Name field for user templates (built-in names are fixed).
             if !selected.isBuiltIn {
@@ -1458,7 +1528,7 @@ private struct TemplateFollowUpEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Follow-up guidance — how the “Draft Follow-up” action shapes the message (recipient, tone, what to include).")
+                Text("Auto follow-up shape — how the note viewer's “Auto — match meeting type” draft is written for *this* meeting type (recipient, tone, what to include).")
                     .font(.caption).foregroundColor(.secondary)
                 Spacer()
                 if case .builtIn(let t) = template {
@@ -1473,6 +1543,8 @@ private struct TemplateFollowUpEditor: View {
                 .frame(height: 70)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
                 .onChange(of: text) { _, newValue in save(newValue) }
+            Text("For explicit document types (Minutes, Follow-up Email, Status Update, …), see Meetings → Draft Templates.")
+                .font(.caption).foregroundColor(.secondary)
         }
         .onAppear { text = template.followUpText }
         // Switching the picker re-points this editor at another template.

@@ -1505,13 +1505,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         caption("Meeting type")
         let picker = container.picker
         picker.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
-        let templates = AppSettings.shared.allTemplates
-        for template in templates {
-            picker.addItem(withTitle: template.displayName)
-            picker.lastItem?.representedObject = template.id
+        // Grouped: a disabled section header per category, then its templates.
+        for group in AppSettings.shared.groupedTemplates {
+            let header = NSMenuItem(title: group.title, action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            picker.menu?.addItem(header)
+            for template in group.templates {
+                let item = NSMenuItem(title: "    \(template.displayName)", action: nil, keyEquivalent: "")
+                item.representedObject = template.id
+                picker.menu?.addItem(item)
+            }
         }
-        if let index = templates.firstIndex(where: { $0.id == selectedID }) {
-            picker.selectItem(at: index)
+        if let item = picker.menu?.items.first(where: { ($0.representedObject as? String) == selectedID }) {
+            picker.select(item)
         }
         container.addSubview(picker)
         top += groupGap

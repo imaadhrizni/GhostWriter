@@ -664,10 +664,10 @@ final class CatalogStore: ObservableObject {
     /// ghostwriter markers). Purely a suggestion source — never auto-applied.
     func suggestedTags(for note: CatalogNote) -> [String] {
         let url = AppSettings.shared.notesFolder.appendingPathComponent(note.filePath)
-        guard let content = try? String(contentsOf: url, encoding: .utf8), content.hasPrefix("---") else { return [] }
-        let lines = content.components(separatedBy: .newlines)
-        guard let end = lines.dropFirst().firstIndex(where: { $0 == "---" }),
-              let tagLine = lines[1..<end].first(where: { $0.hasPrefix("tags:") }) else { return [] }
+        guard let content = try? String(contentsOf: url, encoding: .utf8),
+              let frontMatter = FrontMatter.split(content).frontMatter,
+              let tagLine = frontMatter.components(separatedBy: .newlines).first(where: { $0.hasPrefix("tags:") })
+        else { return [] }
         let inside = tagLine.drop(while: { $0 != "[" }).dropFirst().prefix(while: { $0 != "]" })
         let boilerplate: Set<String> = ["meeting", "ghostwriter", "dictation"]
         let applied = Set((note.tagIDs.compactMap { tag($0)?.name.lowercased() }))

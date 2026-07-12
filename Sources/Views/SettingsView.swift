@@ -57,8 +57,8 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         ("Capture",            [.dictation, .styles, .quickNotes]),
         ("Meetings",           [.meeting, .notes, .digest]),
         ("Privacy & Security", [.privacy, .permissions]),
-        ("System",             [.shortcuts, .stats]),
-        ("About",              [.diagnostics, .about]),
+        ("System",             [.shortcuts, .stats, .diagnostics]),
+        ("About",              [.about]),
     ]
 
     var icon: String {
@@ -529,7 +529,7 @@ private struct DictationPane: View {
                         defaultValue: AppSettings.Default.streamChunkSeconds
                     )
                 }
-                Text("Transcription language lives in General → Groq API, since it applies to meetings too.")
+                Text("Transcription language lives in AI & Models → Models, since it applies to meetings too.")
                     .font(.caption).foregroundColor(.secondary)
             }
 
@@ -1104,7 +1104,7 @@ private struct MeetingNotesPane: View {
                 TemplateManager()
             }
 
-            SettingsGroup("Summaries & Action Items") {
+            SettingsGroup("Summary Content") {
                 Toggle("Append AI summary when a meeting ends", isOn: $settings.summariesEnabled)
                 Text("Adds the template's sections to the notes file.")
                     .font(.caption).foregroundColor(.secondary)
@@ -1124,7 +1124,9 @@ private struct MeetingNotesPane: View {
                 Toggle("Add topic chapters", isOn: $settings.topicChapters)
                 Text("Appends a timestamped jump-list segmenting the meeting into topics. One extra AI call per meeting; disabled in Local-only mode.")
                     .font(.caption).foregroundColor(.secondary)
-                Divider()
+            }
+
+            SettingsGroup("Metadata & Notifications") {
                 Toggle("Auto-tag topics & entities into front-matter", isOn: $settings.autoTagging)
                 Text("After summarizing, extract topic tags plus the people, customer, and project a meeting is about — mirrored into tags and written as structured attendees/customer/project fields (great for Obsidian/Notion graphs and Dataview). Names are skipped when redaction is on. Requires front-matter enabled and network access.")
                     .font(.caption).foregroundColor(.secondary)
@@ -1632,7 +1634,7 @@ private struct DiagnosticsPane: View {
             }
 
             SettingsGroup("Reliability") {
-                Text("When a Groq request fails, GhostWriter automatically retries meeting segments and — if offline fallback is on (General) — transcribes on-device so you don't lose audio. Detailed logs are in Console.app under the “GhostWriter” subsystem.")
+                Text("When a Groq request fails, GhostWriter automatically retries meeting segments and — if offline fallback is on (AI & Models → On-Device & Fallback) — transcribes on-device so you don't lose audio. Detailed logs are in Console.app under the “GhostWriter” subsystem.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }

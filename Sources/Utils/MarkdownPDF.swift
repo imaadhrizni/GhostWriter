@@ -75,20 +75,10 @@ enum MarkdownPDF {
 
     private static func attributed(from markdown: String) -> NSAttributedString {
         let out = NSMutableAttributedString()
-        var inFrontMatter = false
 
-        for (i, rawLine) in markdown.components(separatedBy: "\n").enumerated() {
+        // Drop the leading YAML front-matter, then render the body.
+        for rawLine in FrontMatter.body(markdown).components(separatedBy: "\n") {
             let line = rawLine
-
-            // Skip a leading YAML front-matter block.
-            if i == 0, line.trimmingCharacters(in: .whitespaces) == "---" {
-                inFrontMatter = true; continue
-            }
-            if inFrontMatter {
-                if line.trimmingCharacters(in: .whitespaces) == "---" { inFrontMatter = false }
-                continue
-            }
-
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty {
                 out.append(NSAttributedString(string: "\n", attributes: [.font: gap]))

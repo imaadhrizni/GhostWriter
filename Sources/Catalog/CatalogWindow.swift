@@ -37,9 +37,9 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     case notes         = "Notes"
     case map           = "Map"
     case organisations = "Organisations"
+    case people        = "People"
     case projects      = "Projects"
     case opportunities = "Opportunities"
-    case people        = "People"
     case tags          = "Tags"
     var id: String { rawValue }
 
@@ -823,7 +823,7 @@ private struct EntityList: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            EntitySearchBar(text: $search, placeholder: "Filter \(section.rawValue.lowercased())")
+            EntitySearchBar(text: $search, placeholder: "Search \(section.rawValue.lowercased())")
                 .padding(.horizontal, 8).padding(.vertical, 6)
             Divider()
             Group {

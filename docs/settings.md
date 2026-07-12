@@ -18,7 +18,7 @@ A System Settings-style sidebar, grouped into **AI & Models**, **Capture**, **Me
 | Privacy & Security · **Permissions** | Live status of Microphone, System Audio Recording, Accessibility, Automation (default browser, optional), and Reminders (action-item export, optional) with shortcuts to the relevant Settings panes, plus Reset All Permissions |
 | System · **Shortcuts** | Reference card of all global shortcuts (push-to-talk, Esc, ⌃⌥V, ⌃⌥J, ⌃⌥M / ⌃⌥P / ⌃⌥B / ⌃⌥N) |
 | System · **Usage & Cost** | Local usage counters — dictations, words, meetings, time — plus an editable-price Groq **cost estimate** (month-to-date and all-time, audio transcribed, LLM tokens), an optional **monthly budget** (0 = off) with a spend bar and over-budget warning, all with their own reset; **Maintenance** — clear the **AI summary cache** (note briefs + follow-up drafts; shows the cached entry count) |
-| About · **Diagnostics** | Error notifications toggle (**on**) and a list of recent failures with a clear button |
+| System · **Diagnostics** | Error notifications toggle (**on**) and a list of recent failures with a clear button |
 | About · **About** | Version and build, description, privacy note |
 
 All values are stored in `UserDefaults` (start-at-login lives in macOS Login Items) and take effect immediately — model and hotkey changes apply to the very next request/keypress, no restart needed. Every control has a per-item reset, plus a global "Reset All Settings".

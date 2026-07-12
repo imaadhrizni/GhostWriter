@@ -594,7 +594,9 @@ final class TextPolisher {
     /// from the meeting type. Each kind caches independently (its guidance is
     /// part of the key), so one meeting can produce several documents cheaply.
     func draftDocument(transcript: String, kind: FollowUpKind, forceRefresh: Bool = false) async throws -> String {
-        try await draft(transcript: transcript, guidance: kind.guidance, forceRefresh: forceRefresh)
+        try await draft(transcript: transcript,
+                        guidance: AppSettings.shared.draftGuidance(for: kind),
+                        forceRefresh: forceRefresh)
     }
 
     /// Draft a follow-up shaped by the *meeting* template (recipient/tone vary

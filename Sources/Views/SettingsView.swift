@@ -40,6 +40,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case quickNotes  = "Quick Notes"
     case meeting     = "Recording"
     case notes       = "Notes & Summaries"
+    case draftTemplates = "Draft Templates"
     case digest      = "Digest"
     case privacy     = "Privacy"
     case permissions = "Permissions"
@@ -55,7 +56,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
         (nil,                  [.general, .ai]),
         ("Capture",            [.dictation, .styles, .quickNotes]),
-        ("Meetings",           [.meeting, .notes, .digest]),
+        ("Meetings",           [.meeting, .notes, .draftTemplates, .digest]),
         ("Privacy & Security", [.privacy, .permissions]),
         ("System",             [.shortcuts, .stats, .diagnostics]),
         ("About",              [.about]),
@@ -70,6 +71,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return "square.and.pencil"
         case .meeting:     return "person.2.wave.2.fill"
         case .notes:       return "doc.text.fill"
+        case .draftTemplates: return "doc.badge.gearshape"
         case .digest:      return "newspaper.fill"
         case .privacy:     return "hand.raised.fill"
         case .permissions: return "lock.shield.fill"
@@ -89,6 +91,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return .yellow
         case .meeting:     return .purple
         case .notes:       return .indigo
+        case .draftTemplates: return .teal
         case .digest:      return .brown
         case .privacy:     return .pink
         case .permissions: return .green
@@ -155,6 +158,7 @@ struct SettingsView: View {
                     case .quickNotes:  QuickNotesPane()
                     case .meeting:     MeetingPane()
                     case .notes:       MeetingNotesPane()
+                    case .draftTemplates: DraftTemplatesPane()
                     case .digest:      DigestPane()
                     case .privacy:     PrivacyPane()
                     case .permissions: PermissionsPane()
@@ -1170,6 +1174,58 @@ private struct MeetingNotesPane: View {
             CatalogStore.shared.notesFolderDidChange(from: oldFolder)
         }
     }
+}
+
+/// Draft Templates — edit the drafting guidance behind each output document
+/// type (the Draft… menu in the note viewer). Each type has an editable
+/// instruction with a per-item reset to the built-in default.
+private struct DraftTemplatesPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var selected: FollowUpKind = .minutes
+    @State private var text: String = ""
+
+    private var isCustom: Bool { settings.hasCustomDraftGuidance(for: selected) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Document Type") {
+                Picker("Type", selection: $selected) {
+                    ForEach(FollowUpKind.allCases) { kind in
+                        Label(kind.displayName, systemImage: kind.icon).tag(kind)
+                    }
+                }
+                .labelsHidden()
+                .onChange(of: selected) { _, _ in load() }
+                Text("Pick a document type to edit how it's drafted from a meeting. These are the same types offered by the note viewer's Draft… menu.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("\(selected.displayName) guidance") {
+                TextEditor(text: $text)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 200)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+                    .onChange(of: text) { _, newValue in
+                        settings.setDraftGuidance(newValue, for: selected)
+                    }
+                HStack {
+                    Text(isCustom ? "Customized" : "Using the built-in default")
+                        .font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                    Button("Reset to Default") {
+                        settings.setDraftGuidance("", for: selected)
+                        text = selected.guidance
+                    }
+                    .disabled(!isCustom)
+                }
+                Text("The instruction the AI follows for this document — recipient, tone, sections, and format. Draw only from the meeting's notes. Changing it regenerates the document the next time you draft it (each type caches separately).")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .onAppear { load() }
+    }
+
+    private func load() { text = settings.draftGuidance(for: selected) }
 }
 
 /// Proactive digest — its own pane (it spans meetings, Catalog relationships,

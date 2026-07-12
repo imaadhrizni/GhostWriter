@@ -36,6 +36,7 @@ final class AppSettings: ObservableObject {
         static let actionItemsEnabled     = "meeting.actionItemsEnabled"
         static let structuredExtraction   = "meeting.structuredExtraction"
         static let extractKeyFields       = "meeting.extractKeyFields"
+        static let draftGuidance          = "meeting.draftGuidance"
         static let openNotesExternally    = "notes.openExternally"
         static let topicChapters          = "meeting.topicChapters"
         static let liveAssistantEnabled   = "meeting.liveAssistantEnabled"
@@ -102,7 +103,7 @@ final class AppSettings: ObservableObject {
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
-                          structuredExtraction, extractKeyFields, openNotesExternally, topicChapters, liveAssistantEnabled, meetingPrepCard,
+                          structuredExtraction, extractKeyFields, draftGuidance, openNotesExternally, topicChapters, liveAssistantEnabled, meetingPrepCard,
                           notifyOnMeetingEnd, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, transcriptionLanguage,
                           vocabulary, replacements, appProfiles,
@@ -649,6 +650,44 @@ final class AppSettings: ObservableObject {
             dict[template.rawValue] = text
         }
         templateFollowUpOverrides = dict
+    }
+
+    // MARK: Draft document templates (FollowUpKind guidance)
+
+    /// Per-document-type drafting-guidance overrides, keyed by FollowUpKind
+    /// rawValue. Absent → the kind uses its built-in guidance.
+    private var draftGuidanceOverrides: [String: String] {
+        get {
+            guard let data = defaults.data(forKey: Key.draftGuidance),
+                  let dict = try? JSONDecoder().decode([String: String].self, from: data)
+            else { return [:] }
+            return dict
+        }
+        set { set((try? JSONEncoder().encode(newValue)) as Any, Key.draftGuidance) }
+    }
+
+    /// The drafting guidance for a document type — the user's override when set,
+    /// otherwise the built-in default.
+    func draftGuidance(for kind: FollowUpKind) -> String {
+        draftGuidanceOverrides[kind.rawValue] ?? kind.guidance
+    }
+
+    /// Whether a document type currently uses a custom (non-default) guidance.
+    func hasCustomDraftGuidance(for kind: FollowUpKind) -> Bool {
+        draftGuidanceOverrides[kind.rawValue] != nil
+    }
+
+    /// Save custom guidance for a document type. Text equal to the default (or
+    /// empty) clears the override so it tracks future default changes.
+    func setDraftGuidance(_ text: String, for kind: FollowUpKind) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var dict = draftGuidanceOverrides
+        if trimmed.isEmpty || trimmed == kind.guidance {
+            dict[kind.rawValue] = nil
+        } else {
+            dict[kind.rawValue] = text
+        }
+        draftGuidanceOverrides = dict
     }
 
     // MARK: User templates

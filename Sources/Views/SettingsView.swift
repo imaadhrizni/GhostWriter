@@ -103,6 +103,116 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Global Settings Search
+
+/// One searchable setting, mapped to the pane that hosts it. The index is
+/// curated (rather than reflected from the views) so results stay meaningful
+/// and stable: `label` is what the user reads, `keywords` widen the match to
+/// synonyms and adjacent terms the label doesn't contain.
+fileprivate struct SettingsSearchEntry: Identifiable {
+    let label: String
+    let section: SettingsSection
+    let keywords: [String]
+    var id: String { "\(section.rawValue)·\(label)" }
+
+    /// True if every whitespace-separated token of `query` appears in the
+    /// label, the section name, or any keyword (all case-insensitive).
+    func matches(_ query: String) -> Bool {
+        let haystack = ([label, section.rawValue] + keywords)
+            .joined(separator: " ").lowercased()
+        let tokens = query.lowercased().split(separator: " ")
+        return tokens.allSatisfy { haystack.contains($0) }
+    }
+}
+
+fileprivate enum SettingsSearchIndex {
+    // Cross-cutting action vocabulary. Almost every field pane carries an
+    // inline "reset to default" affordance (DefaultResetButton), so a bare
+    // "reset" / "default" / "restore" query should surface those panes rather
+    // than returning nothing. Sections listed here get a synthetic action row.
+    static let resettableSections: [SettingsSection] =
+        [.general, .ai, .dictation, .quickNotes, .meeting, .notes, .digest, .shortcuts]
+
+    static let all: [SettingsSearchEntry] = [
+        // General
+        .init(label: "Launch at login", section: .general, keywords: ["startup", "boot", "open at login", "autostart", "default", "reset"]),
+        .init(label: "Notes folder location", section: .general, keywords: ["storage", "save", "directory", "path", "choose", "change", "default", "reset"]),
+        .init(label: "Back up & restore notes", section: .general, keywords: ["backup", "restore", "export", "import", "archive", "recover"]),
+        .init(label: "Date format", section: .general, keywords: ["timestamp", "filename", "default", "reset"]),
+        .init(label: "Menu-bar icon", section: .general, keywords: ["status item", "tray", "default", "reset"]),
+        // AI & Models
+        .init(label: "Groq API key", section: .ai, keywords: ["token", "account", "authentication", "credential", "change", "clear", "remove"]),
+        .init(label: "Transcription model", section: .ai, keywords: ["whisper", "speech to text", "stt", "default", "reset"]),
+        .init(label: "Polishing model", section: .ai, keywords: ["llama", "qwen", "summaries", "llm", "chat", "default", "reset"]),
+        .init(label: "Lightweight-tasks model", section: .ai, keywords: ["fast", "cheap", "background", "live brief", "default", "reset"]),
+        .init(label: "Transcription language", section: .ai, keywords: ["iso", "locale", "tamil", "sinhala", "german", "default", "reset"]),
+        .init(label: "Offline fallback", section: .ai, keywords: ["on-device", "apple", "no network", "private"]),
+        .init(label: "Prefer on-device AI", section: .ai, keywords: ["apple intelligence", "private", "local llm"]),
+        // Dictation
+        .init(label: "Dictation hotkey", section: .dictation, keywords: ["shortcut", "push to talk", "trigger", "default", "reset"]),
+        .init(label: "Auto-paste", section: .dictation, keywords: ["insert", "clipboard", "type out"]),
+        .init(label: "Dictation sound feedback", section: .dictation, keywords: ["chime", "beep", "audio cue"]),
+        // Writing styles
+        .init(label: "Writing styles", section: .styles, keywords: ["tone", "prompt", "rewrite", "voice", "custom style"]),
+        .init(label: "Add or delete a writing style", section: .styles, keywords: ["new", "remove", "delete", "create", "edit"]),
+        // Quick notes
+        .init(label: "Quick note hotkey", section: .quickNotes, keywords: ["shortcut", "capture", "default", "reset"]),
+        // Recording
+        .init(label: "Meeting audio source", section: .meeting, keywords: ["microphone", "system audio", "input device", "default", "reset"]),
+        .init(label: "Live brief", section: .meeting, keywords: ["real-time", "assistant", "coaching", "agenda coverage"]),
+        .init(label: "Meeting templates", section: .meeting, keywords: ["agenda", "type", "prep", "add", "delete", "default"]),
+        .init(label: "Per-app recording overrides", section: .meeting, keywords: ["app", "override", "delete", "remove", "default", "unrecognized"]),
+        // Notes & summaries
+        .init(label: "Auto-title notes", section: .notes, keywords: ["heading", "name", "smart title"]),
+        .init(label: "Summary generation", section: .notes, keywords: ["recap", "overview", "abstract"]),
+        .init(label: "Unanswered questions", section: .notes, keywords: ["follow-up", "open items", "action"]),
+        .init(label: "Entity tags", section: .notes, keywords: ["people", "org", "topics", "auto-tag"]),
+        .init(label: "Chapters", section: .notes, keywords: ["sections", "timestamps", "outline"]),
+        .init(label: "Reset note prompts to default", section: .notes, keywords: ["default", "reset", "prompt", "restore"]),
+        // Draft templates
+        .init(label: "Draft templates", section: .draftTemplates, keywords: ["follow-up email", "reply", "message", "add", "delete", "reset to default"]),
+        // Digest
+        .init(label: "Relationship digest", section: .digest, keywords: ["daily", "weekly", "summary email", "rollup", "default", "reset"]),
+        // Privacy
+        .init(label: "Local-only mode", section: .privacy, keywords: ["offline", "no cloud", "private", "network"]),
+        .init(label: "Data retention", section: .privacy, keywords: ["delete", "history", "purge", "clear", "remove"]),
+        // Permissions
+        .init(label: "Microphone permission", section: .permissions, keywords: ["access", "privacy", "tcc"]),
+        .init(label: "Accessibility permission", section: .permissions, keywords: ["auto-paste", "keystroke", "tcc"]),
+        .init(label: "Screen recording permission", section: .permissions, keywords: ["system audio", "capture"]),
+        // Shortcuts
+        .init(label: "Keyboard shortcuts", section: .shortcuts, keywords: ["hotkeys", "bindings", "keys", "reset", "default", "clear"]),
+        // Usage & cost
+        .init(label: "Usage & cost", section: .stats, keywords: ["spend", "tokens", "billing", "minutes", "statistics"]),
+        .init(label: "Clear usage statistics", section: .stats, keywords: ["reset", "clear", "delete", "wipe", "history"]),
+        // Diagnostics
+        .init(label: "Diagnostics & logs", section: .diagnostics, keywords: ["debug", "troubleshoot", "console"]),
+        .init(label: "Export logs", section: .diagnostics, keywords: ["save", "share", "report", "clear logs"]),
+        // About
+        .init(label: "Version & updates", section: .about, keywords: ["build", "changelog", "credits"]),
+    ]
+
+    static func results(for query: String) -> [SettingsSearchEntry] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return [] }
+        var hits = all.filter { $0.matches(q) }
+
+        // Bare action words (reset / default / restore) apply to nearly every
+        // field pane. Add a synthetic row for each resettable pane not already
+        // surfaced, so the user can jump to the pane and use its inline reset.
+        let lower = q.lowercased()
+        let isResetQuery = ["reset", "default", "defaults", "restore"].contains { lower.contains($0) }
+        if isResetQuery {
+            let already = Set(hits.map(\.section))
+            for section in resettableSections where !already.contains(section) {
+                hits.append(.init(label: "Reset \(section.rawValue) to defaults",
+                                  section: section, keywords: []))
+            }
+        }
+        return hits
+    }
+}
+
 // MARK: - Settings Root (System Settings-style sidebar)
 
 /// A macOS switch toggle sized small. Scoping `.controlSize(.small)` inside the
@@ -123,30 +233,68 @@ private struct SmallSwitchToggleStyle: ToggleStyle {
 
 struct SettingsView: View {
     @State private var selection: SettingsSection = .general
+    @State private var searchText = ""
+
+    private func sidebarRow(_ section: SettingsSection) -> some View {
+        Label {
+            Text(section.rawValue)
+        } icon: {
+            Image(systemName: section.icon)
+                .foregroundColor(.white)
+                .frame(width: 22, height: 22)
+                .background(RoundedRectangle(cornerRadius: 5).fill(section.iconColor))
+        }
+        .tag(section)
+    }
 
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
-                ForEach(SettingsSection.sidebarGroups, id: \.sections.first!.id) { group in
-                    Section {
-                        ForEach(group.sections) { section in
-                            Label {
-                                Text(section.rawValue)
-                            } icon: {
-                                Image(systemName: section.icon)
-                                    .foregroundColor(.white)
-                                    .frame(width: 22, height: 22)
-                                    .background(RoundedRectangle(cornerRadius: 5).fill(section.iconColor))
+                if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                    ForEach(SettingsSection.sidebarGroups, id: \.sections.first!.id) { group in
+                        Section {
+                            ForEach(group.sections) { section in
+                                sidebarRow(section)
                             }
-                            .tag(section)
+                        } header: {
+                            if let title = group.title { Text(title) }
                         }
-                    } header: {
-                        if let title = group.title { Text(title) }
+                    }
+                } else {
+                    let results = SettingsSearchIndex.results(for: searchText)
+                    if results.isEmpty {
+                        Text("No settings match “\(searchText)”")
+                            .font(.callout).foregroundColor(.secondary)
+                            .padding(.vertical, 8)
+                    } else {
+                        Section("Results") {
+                            ForEach(results) { entry in
+                                Button {
+                                    selection = entry.section
+                                    searchText = ""
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: entry.section.icon)
+                                            .foregroundColor(.white)
+                                            .frame(width: 20, height: 20)
+                                            .background(RoundedRectangle(cornerRadius: 5).fill(entry.section.iconColor))
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(entry.label)
+                                            Text(entry.section.rawValue)
+                                                .font(.caption2).foregroundColor(.secondary)
+                                        }
+                                        Spacer(minLength: 0)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
                 }
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 180, ideal: 195, max: 230)
+            .searchable(text: $searchText, placement: .sidebar, prompt: "Search settings")
         } detail: {
             ScrollView {
                 Group {

@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md) · [Features](features.md) · [Usage](usage.md) · [Architecture](architecture.md)
 
-A System Settings-style sidebar, grouped into **AI & Models**, **Capture**, **Meetings**, **Privacy & Security**, **System**, and **About** (with **General** on top):
+A System Settings-style sidebar, grouped into **AI & Models**, **Capture**, **Meetings**, **Privacy & Security**, **System**, and **About** (with **General** on top). A **search field** at the top of the sidebar finds settings across every pane — matching the setting's label, its pane, and synonyms/keywords (e.g. "whisper" → transcription model, "reset"/"default" → any pane with an inline reset, "backup" → General). Results show as a flat list with each setting's icon and host pane; clicking jumps straight there.
 
 | Group / Pane | Options (defaults in bold) |
 | --- | --- |

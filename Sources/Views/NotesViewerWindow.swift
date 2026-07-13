@@ -134,6 +134,11 @@ private struct NotesViewerView: View {
     /// Locked (read-only) by default; unlock to edit. Drafts with no backing
     /// file open unlocked since editing is the whole point.
     @State private var isEditable: Bool
+    // Preview-mode find + outline navigation.
+    @State private var showFind = false
+    @State private var findQuery = ""
+    @State private var findIndex = 0
+    @State private var outlineTarget: Int?
 
     init(fileURL: URL?, initialText: String,
          regenerate: (@MainActor () async throws -> String)? = nil,
@@ -177,13 +182,82 @@ private struct NotesViewerView: View {
             if isEditable {
                 FindableTextEditor(text: $text, isEditable: true)
             } else {
-                MarkdownReadView(markdown: text, interactive: fileURL != nil, onToggleTask: toggleTask)
+                VStack(spacing: 0) {
+                    if showFind { findBar; Divider() }
+                    MarkdownReadView(markdown: text, interactive: fileURL != nil,
+                                     onToggleTask: toggleTask,
+                                     matchedBlocks: showFind ? Set(findMatches) : [],
+                                     activeBlock: showFind ? activeMatchBlock : outlineTarget)
+                }
+                .background(
+                    Button("") { if !isEditable { showFind = true } }
+                        .keyboardShortcut("f", modifiers: .command).hidden())
             }
 
             Divider()
             if isDraft { draftToolbar } else { fileToolbar }
         }
         .frame(minWidth: 460, minHeight: 380)
+    }
+
+    // MARK: Preview find + outline
+
+    private var previewBlocks: [MarkdownParse.Block] { MarkdownParse.blocks(text) }
+
+    /// Block indices whose text contains the query (case-insensitive).
+    private var findMatches: [Int] {
+        let q = findQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        guard showFind, !q.isEmpty else { return [] }
+        return previewBlocks.enumerated().compactMap {
+            MarkdownParse.plainText($1).lowercased().contains(q) ? $0 : nil
+        }
+    }
+
+    private var activeMatchBlock: Int? {
+        guard !findMatches.isEmpty else { return nil }
+        return findMatches[min(findIndex, findMatches.count - 1)]
+    }
+
+    /// Headings (≤ H3) and timestamped chapter bullets, as jump targets.
+    private var outline: [(idx: Int, title: String, indent: Int)] {
+        previewBlocks.enumerated().compactMap { i, b in
+            switch b {
+            case .heading(let level, let t) where level <= 3:
+                return (i, t, level - 1)
+            case .bullet(let t, _, _)
+                where t.range(of: #"^\[\d{1,2}:\d{2}(:\d{2})?\]"#, options: .regularExpression) != nil:
+                return (i, t, 1)
+            default:
+                return nil
+            }
+        }
+    }
+
+    private func stepMatch(_ delta: Int) {
+        guard !findMatches.isEmpty else { return }
+        findIndex = (findIndex + delta + findMatches.count) % findMatches.count
+    }
+
+    private var findBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
+            TextField("Find in note", text: $findQuery)
+                .textFieldStyle(.roundedBorder).frame(maxWidth: 240)
+                .onSubmit { stepMatch(1) }
+                .onChange(of: findQuery) { _, _ in findIndex = 0 }
+            if !findQuery.isEmpty {
+                Text(findMatches.isEmpty ? "0/0" : "\(min(findIndex, findMatches.count - 1) + 1)/\(findMatches.count)")
+                    .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            }
+            Button { stepMatch(-1) } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.plain).disabled(findMatches.isEmpty).help("Previous match")
+            Button { stepMatch(1) } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.plain).disabled(findMatches.isEmpty).help("Next match")
+            Button { showFind = false; findQuery = "" } label: { Image(systemName: "xmark") }
+                .buttonStyle(.plain).keyboardShortcut(.cancelAction).help("Close find")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(.bar)
     }
 
     // MARK: Draft (AI summary / follow-up) chrome
@@ -292,6 +366,25 @@ private struct NotesViewerView: View {
             }
             .help(isEditable ? "Switch back to the rendered preview"
                              : "Edit the raw Markdown (with find & replace)")
+
+            // Preview-only: jump-to outline and find.
+            if !isEditable {
+                if !outline.isEmpty {
+                    Menu {
+                        ForEach(outline, id: \.idx) { item in
+                            Button(String(repeating: "   ", count: item.indent) + item.title) {
+                                outlineTarget = item.idx
+                            }
+                        }
+                    } label: { Label("Outline", systemImage: "list.bullet.indent") }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .help("Jump to a chapter or section")
+                }
+                Button { showFind.toggle() } label: {
+                    Label("Find", systemImage: "magnifyingglass")
+                }
+                .help("Find in this note (⌘F)")
+            }
 
             Button { copyToPasteboard() } label: {
                 Label(isEditable ? "Copy Markdown" : "Copy", systemImage: "doc.on.doc")
@@ -573,34 +666,52 @@ private struct MarkdownReadView: View {
     /// When true, task checkboxes are tappable and toggle the backing file.
     var interactive: Bool = false
     var onToggleTask: (Int) -> Void = { _ in }
+    /// Block indices to highlight (search matches); the active match is tinted
+    /// more strongly and scrolled into view.
+    var matchedBlocks: Set<Int> = []
+    var activeBlock: Int? = nil
 
     /// Comfortable reading measure — long notes shouldn't stretch full width.
     private let maxTextWidth: CGFloat = 720
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                let blocks = MarkdownParse.blocks(markdown)
-                ForEach(Array(blocks.enumerated()), id: \.offset) { idx, block in
-                    row(block, previous: idx > 0 ? blocks[idx - 1] : nil)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    let blocks = MarkdownParse.blocks(markdown)
+                    ForEach(Array(blocks.enumerated()), id: \.offset) { idx, block in
+                        row(block, previous: idx > 0 ? blocks[idx - 1] : nil,
+                            matched: matchedBlocks.contains(idx), active: activeBlock == idx)
+                            .id(idx)
+                    }
                 }
+                .frame(maxWidth: maxTextWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .textSelection(.enabled)
+                .padding(.horizontal, 26)
+                .padding(.vertical, 22)
             }
-            .frame(maxWidth: maxTextWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .textSelection(.enabled)
-            .padding(.horizontal, 26)
-            .padding(.vertical, 22)
+            .background(Color(nsColor: .textBackgroundColor))
+            .onChange(of: activeBlock) { _, target in
+                guard let target else { return }
+                withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .center) }
+            }
         }
-        .background(Color(nsColor: .textBackgroundColor))
     }
 
     @ViewBuilder
-    private func row(_ block: MarkdownParse.Block, previous: MarkdownParse.Block?) -> some View {
+    private func row(_ block: MarkdownParse.Block, previous: MarkdownParse.Block?,
+                     matched: Bool, active: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // Rhythm: generous space above a new section heading, tight between
             // consecutive list items, comfortable otherwise.
             Spacer().frame(height: topGap(for: block, previous: previous))
             content(block)
+                .padding(.horizontal, matched ? 4 : 0)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(active ? Color.accentColor.opacity(0.28)
+                              : matched ? Color.yellow.opacity(0.28) : Color.clear))
         }
     }
 
@@ -882,6 +993,21 @@ private enum MarkdownParse {
         case rule
         case frontMatter(String)
         case table(headers: [String], rows: [[String]])
+    }
+
+    /// The searchable / outline plain text of a block.
+    static func plainText(_ b: Block) -> String {
+        switch b {
+        case .heading(_, let t): return t
+        case .paragraph(let t): return t
+        case .quote(let t): return t
+        case .bullet(let t, _, _): return t
+        case .task(_, let t, _, _): return t
+        case .code(let c): return c
+        case .frontMatter(let f): return f
+        case .table(let h, let rows): return (h + rows.flatMap { $0 }).joined(separator: " ")
+        case .rule: return ""
+        }
     }
 
     /// Inline styling (bold/italic/code/links) via AttributedString, falling

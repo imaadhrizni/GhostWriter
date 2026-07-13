@@ -1136,9 +1136,29 @@ private struct MeetingNotesPane: View {
                 Text("Pulls the fields that matter for the chosen template — a customer call's deal stage, budget, timeline, and next step; an interview's recommendation; a 1:1's sentiment — into a Key Details section and machine-readable front-matter. Categorical fields (deal stage, recommendation, sentiment) are mirrored into tags so you can filter by them in the Catalog. Requires network access.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
+                Toggle("Extract unanswered questions", isOn: $settings.extractUnanswered)
+                Text("Adds an Unanswered Questions section — questions raised in the meeting that never got a clear answer, i.e. your follow-up list. One extra AI call; disabled in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
                 Toggle("Add topic chapters", isOn: $settings.topicChapters)
                 Text("Appends a timestamped jump-list segmenting the meeting into topics. One extra AI call per meeting; disabled in Local-only mode.")
                     .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Keyword Radar") {
+                Text("A watchlist of terms to flag — competitors, product names, risk phrases. One per line. Each finished meeting is scanned locally (works offline); matches appear in a Mentions section and, with front-matter on, as tags you can filter in the Catalog.")
+                    .font(.caption).foregroundColor(.secondary)
+                TextEditor(text: $settings.watchlistKeywords)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 90)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+                if settings.watchlist().isEmpty {
+                    Text("Empty — no scanning is performed.")
+                        .font(.caption).foregroundColor(.secondary)
+                } else {
+                    Text("\(settings.watchlist().count) term\(settings.watchlist().count == 1 ? "" : "s") tracked.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
             }
 
             SettingsGroup("Metadata & Notifications") {

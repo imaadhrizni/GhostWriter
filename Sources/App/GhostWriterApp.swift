@@ -217,6 +217,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DigestWindowController.present()
     }
 
+    @MainActor @objc private func showPocTracker() {
+        PocTrackerWindowController.present()
+    }
+
     private func finishInitialization() {
         // Note: hotkeyManager.start() is deliberately NOT called here — it creates a
         // CGEventTap which itself triggers the system Accessibility prompt. We let
@@ -443,6 +447,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         askItem.image = NSImage(systemSymbolName: "sparkle.magnifyingglass", accessibilityDescription: nil)
         askItem.target = self
         menu.addItem(askItem)
+
+        let pocItem = NSMenuItem(title: "POC Tracker…", action: #selector(showPocTracker), keyEquivalent: "")
+        pocItem.image = NSImage(systemSymbolName: "flask", accessibilityDescription: nil)
+        pocItem.target = self
+        menu.addItem(pocItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -871,6 +880,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let transcript = self.meetingNotes.transcriptText(of: fileURL),
                Self.dialogueLength(of: transcript) > 200 {
 
+            // Keyword/competitor radar: a purely local scan (works offline), so
+            // it runs before the cloud/on-device branch. Matches go into a
+            // Mentions section and — with front-matter on — into tags for the
+            // Catalog to filter by.
+            let watchTerms = self.settings.watchlist()
+            if !watchTerms.isEmpty {
+                let matches = MeetingNotesWriter.mentionCounts(in: transcript, terms: watchTerms)
+                if !matches.isEmpty {
+                    self.meetingNotes.appendMentions(matches, to: fileURL)
+                    if self.settings.frontMatterEnabled {
+                        MeetingNotesWriter.addFrontMatterTags(matches.map { $0.term }, to: fileURL)
+                    }
+                }
+            }
+
             // Local-only mode never contacts the network. It used to skip all AI;
             // now it runs on-device (Apple Intelligence + NaturalLanguage) instead.
             if self.settings.localOnlyMode {
@@ -894,6 +918,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     } catch {
                         Log.meeting.error("❌ Summary failed: \(error.localizedDescription)")
                         self.reportError("Meeting summary failed: \(error.localizedDescription)")
+                    }
+                }
+
+                // A concise AI title for the note's front-matter (the on-disk
+                // filename stays Meeting_<timestamp> so Catalog links hold).
+                if self.settings.frontMatterEnabled {
+                    if let title = try? await self.textPolisher.meetingTitle(transcript: transcript) {
+                        MeetingNotesWriter.setFrontMatterTitle(title, to: fileURL)
+                    }
+                }
+
+                // Unanswered questions: raised-but-not-resolved follow-up items.
+                if self.settings.extractUnanswered {
+                    do {
+                        let qs = try await self.textPolisher.unansweredQuestions(transcript: transcript)
+                        if !qs.isEmpty { self.meetingNotes.appendUnansweredQuestions(qs, to: fileURL) }
+                    } catch {
+                        Log.meeting.error("❌ Unanswered-questions extraction failed: \(error.localizedDescription)")
                     }
                 }
 

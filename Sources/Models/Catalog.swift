@@ -78,6 +78,28 @@ struct CatalogOpportunity: Codable, Identifiable, Hashable {
     var stage: OppStage = .open
     var valueCents: Int?
     var currency = "USD"
+    /// Proof-of-concept success criteria tracked across meetings. Defaulted so
+    /// catalogs written before this field existed still decode.
+    var pocCriteria: [PocCriterion] = []
+}
+
+/// Where a POC success criterion stands. `pending` until an evaluation lands.
+enum PocStatus: String, Codable, CaseIterable {
+    case pending, pass, fail
+    var label: String {
+        switch self { case .pending: return "Pending"; case .pass: return "Passed"; case .fail: return "Failed" }
+    }
+    /// Cycle pending → pass → fail → pending for a one-tap status control.
+    var next: PocStatus {
+        switch self { case .pending: return .pass; case .pass: return .fail; case .fail: return .pending }
+    }
+}
+
+/// A single measurable success criterion for an opportunity's proof-of-concept.
+struct PocCriterion: Codable, Identifiable, Hashable {
+    var id = UUID().uuidString
+    var text: String
+    var status: PocStatus = .pending
 }
 
 /// Controlled-vocabulary tag. Aliases fold variants (renewal/renewals) into one.
@@ -243,6 +265,53 @@ final class CatalogStore: ObservableObject {
             } else {
                 indexByID[item.id] = base.count
                 base.append(item)
+            }
+        }
+    }
+
+    // MARK: POC success criteria
+
+    /// Opportunities that have at least one POC criterion, most-progressed first.
+    var opportunitiesWithPOC: [CatalogOpportunity] {
+        doc.opportunities.filter { !$0.pocCriteria.isEmpty }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    @discardableResult
+    func addPocCriterion(_ text: String, to oppID: String) -> PocCriterion? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        let c = PocCriterion(text: t)
+        mutate { doc in
+            if let i = doc.opportunities.firstIndex(where: { $0.id == oppID }) {
+                doc.opportunities[i].pocCriteria.append(c)
+            }
+        }
+        return c
+    }
+
+    func setPocStatus(_ status: PocStatus, criterionID: String, oppID: String) {
+        mutate { doc in
+            guard let oi = doc.opportunities.firstIndex(where: { $0.id == oppID }),
+                  let ci = doc.opportunities[oi].pocCriteria.firstIndex(where: { $0.id == criterionID }) else { return }
+            doc.opportunities[oi].pocCriteria[ci].status = status
+        }
+    }
+
+    func setPocText(_ text: String, criterionID: String, oppID: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        mutate { doc in
+            guard let oi = doc.opportunities.firstIndex(where: { $0.id == oppID }),
+                  let ci = doc.opportunities[oi].pocCriteria.firstIndex(where: { $0.id == criterionID }) else { return }
+            doc.opportunities[oi].pocCriteria[ci].text = t
+        }
+    }
+
+    func removePocCriterion(_ criterionID: String, from oppID: String) {
+        mutate { doc in
+            if let oi = doc.opportunities.firstIndex(where: { $0.id == oppID }) {
+                doc.opportunities[oi].pocCriteria.removeAll { $0.id == criterionID }
             }
         }
     }

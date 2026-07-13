@@ -47,6 +47,7 @@
 | `Sources/Views/NotesViewerWindow.swift` | In-app Markdown viewer/editor — **rendered Markdown when reading** (headings, bullets, task lists, quotes, code, rules, inline styling, front-matter Properties box), raw monospaced editor with find bar when unlocked to edit; Summarize brief + Regenerate, follow-up, rename, PDF export. Honors the "open notes in external editor" setting, which routes every note-open to the OS default `.md` app instead |
 | `Sources/Models/Catalog.swift` | Catalog model + `CatalogStore` (Codable `Catalog.json` store: orgs/projects/opportunities plus per-note people/tags, org hierarchy, project→org inheritance, import, missing-file reconcile, purge) |
 | `Sources/Views/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, per-entity relationship timeline, search (Text/Meaning/Ask) + consolidated Filter menu with removable chips, row actions, Quick add, catalog export/import |
+| `Sources/Views/PocTrackerWindow.swift` | POC / success-criteria tracker — per-opportunity criteria with Pending/Passed/Failed status cycling and a progress bar; state stored on the opportunity in `Catalog.json` |
 | `Sources/Utils/MarkdownPDF.swift` | Paginated Markdown → PDF renderer (CoreText) |
 | `Sources/Utils/WindowHelpers.swift` | Shared `NSWindowController.bringToFront()` present helper |
 | `Sources/Utils/FrontMatter.swift` | Shared YAML front-matter split/strip helper (one implementation for all note-body extraction) |

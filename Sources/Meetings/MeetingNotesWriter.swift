@@ -355,6 +355,58 @@ final class MeetingNotesWriter {
         Log.meeting.info("📖 Chapters appended")
     }
 
+    /// Replace the front-matter `title:` with an AI-generated meeting title.
+    /// No-op without front-matter or a title line (the on-disk filename is left
+    /// unchanged, so Catalog links stay valid).
+    static func setFrontMatterTitle(_ title: String, to fileURL: URL) {
+        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty,
+              var content = try? String(contentsOf: fileURL, encoding: .utf8),
+              content.hasPrefix("---") else { return }
+        var lines = content.components(separatedBy: "\n")
+        guard let i = lines.firstIndex(where: { $0.hasPrefix("title:") }) else { return }
+        // Escape a colon-bearing title so it stays valid YAML.
+        let safe = clean.contains(":") ? "\"\(clean.replacingOccurrences(of: "\"", with: "'"))\"" : clean
+        lines[i] = "title: \(safe)"
+        content = lines.joined(separator: "\n")
+        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
+        Log.meeting.info("🏷 Meeting title set")
+    }
+
+    /// Append an "Unanswered Questions" section (AI-extracted follow-up items).
+    func appendUnansweredQuestions(_ body: String, to fileURL: URL) {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        append("\n## Unanswered Questions\n\n\(trimmed)\n", to: fileURL)
+        Log.meeting.info("❓ Unanswered questions appended")
+    }
+
+    /// Count case-insensitive whole-word-ish occurrences of each watchlist term
+    /// in the transcript. Returns only matched terms, most-mentioned first.
+    static func mentionCounts(in transcript: String, terms: [String]) -> [(term: String, count: Int)] {
+        guard !terms.isEmpty else { return [] }
+        var out: [(String, Int)] = []
+        for term in terms {
+            let escaped = NSRegularExpression.escapedPattern(for: term)
+            // Word boundaries when the term is alphanumeric; plain match otherwise.
+            let isWord = term.allSatisfy { $0.isLetter || $0.isNumber }
+            let pattern = isWord ? "\\b\(escaped)\\b" : escaped
+            guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            let n = re.numberOfMatches(in: transcript, range: NSRange(transcript.startIndex..., in: transcript))
+            if n > 0 { out.append((term, n)) }
+        }
+        return out.sorted { $0.1 > $1.1 }
+    }
+
+    /// Append a "Mentions" section listing watchlist hits with counts.
+    func appendMentions(_ matches: [(term: String, count: Int)], to fileURL: URL) {
+        guard !matches.isEmpty else { return }
+        let lines = matches.map { "- **\($0.term)** — \($0.count) mention\($0.count == 1 ? "" : "s")" }
+            .joined(separator: "\n")
+        append("\n## Mentions\n\n\(lines)\n", to: fileURL)
+        Log.meeting.info("📡 Watchlist mentions appended")
+    }
+
     /// Merge topic tags into the YAML front-matter `tags: [...]` line. No-op if
     /// the file has no front-matter (tags require it) or no new tags.
     static func addFrontMatterTags(_ tags: [String], to fileURL: URL) {

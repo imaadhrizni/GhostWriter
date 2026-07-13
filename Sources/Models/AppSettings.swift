@@ -36,6 +36,8 @@ final class AppSettings: ObservableObject {
         static let actionItemsEnabled     = "meeting.actionItemsEnabled"
         static let structuredExtraction   = "meeting.structuredExtraction"
         static let extractKeyFields       = "meeting.extractKeyFields"
+        static let extractUnanswered      = "meeting.extractUnanswered"
+        static let watchlistKeywords      = "meeting.watchlistKeywords"
         static let draftGuidance          = "meeting.draftGuidance"
         static let userDraftTemplates     = "meeting.userDraftTemplates"
         static let openNotesExternally    = "notes.openExternally"
@@ -107,7 +109,7 @@ final class AppSettings: ObservableObject {
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
-                          structuredExtraction, extractKeyFields, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, liveAssistantEnabled, meetingPrepCard,
+                          structuredExtraction, extractKeyFields, extractUnanswered, watchlistKeywords, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, liveAssistantEnabled, meetingPrepCard,
                           notifyOnMeetingEnd, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, transcriptionLanguage,
                           vocabulary, replacements, appProfiles,
@@ -150,6 +152,7 @@ final class AppSettings: ObservableObject {
         static let actionItemsEnabled              = true
         static let structuredExtraction            = true
         static let extractKeyFields                = true
+        static let extractUnanswered               = true
         static let openNotesExternally             = false
         static let topicChapters                   = true
         static let liveAssistantEnabled            = true
@@ -370,6 +373,30 @@ final class AppSettings: ObservableObject {
     var extractKeyFields: Bool {
         get { bool(Key.extractKeyFields, Default.extractKeyFields) }
         set { set(newValue, Key.extractKeyFields) }
+    }
+
+    /// Extract a list of questions that were raised but never clearly answered.
+    var extractUnanswered: Bool {
+        get { bool(Key.extractUnanswered, Default.extractUnanswered) }
+        set { set(newValue, Key.extractUnanswered) }
+    }
+
+    /// The keyword/competitor watchlist (one term per line). Meetings are scanned
+    /// locally for these and matches are surfaced in a Mentions section + tags.
+    var watchlistKeywords: String {
+        get { string(Key.watchlistKeywords, "") }
+        set { set(newValue, Key.watchlistKeywords) }
+    }
+
+    /// Parsed watchlist terms — non-empty, de-duplicated, order preserved.
+    func watchlist() -> [String] {
+        var seen = Set<String>(), out: [String] = []
+        for raw in watchlistKeywords.components(separatedBy: CharacterSet(charactersIn: ",\n")) {
+            let t = raw.trimmingCharacters(in: .whitespaces)
+            guard !t.isEmpty, seen.insert(t.lowercased()).inserted else { continue }
+            out.append(t)
+        }
+        return out
     }
 
     /// Open notes in the OS default app (e.g. VS Code) instead of the in-app

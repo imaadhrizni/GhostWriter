@@ -49,6 +49,7 @@ Organized act → find → configure; the header shows the version and quick sta
 - **Notes & History ▸** — open the current/latest meeting notes (⌃⌥N), today's quick notes, the last 5 meetings grouped by day, **Rename Speakers…**, and the notes folder. (Full browsing and search live in the **Catalog**'s Notes section.)
 - **Today's Digest…** — a scheduled or on-demand rollup, grouped by relationship, of recent meetings, open/overdue action items (with export to Reminders), and quiet relationships.
 - **Ask Your Notes…** — a multi-turn chat grounded in your archive: pick a scope (all meetings, a chosen set, or an org/opportunity) and ask questions; answers cite the meetings each point came from.
+- **POC Tracker…** — track a proof-of-concept's success criteria against a Catalog opportunity: add the criteria, then cycle each Pending → Passed → Failed as the POC progresses; a progress bar shows how many passed. Stored per opportunity in the Catalog.
 - **Dictations…** — a searchable, day-grouped browser of your archived dictations; click any to open in the in-app editor.
 - **Catalog…** — organise notes into a graph of organisations, people, projects, opportunities and tags; browse by section or the Map tree, filter/search/Ask, and Quick-add a whole chain.
 - **Settings…** — everything else lives here, including the API key (General) and permissions (Privacy & Security).

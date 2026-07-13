@@ -496,6 +496,58 @@ final class TextPolisher {
         return trimmed == "NONE" ? "" : trimmed
     }
 
+    /// Questions raised during the meeting that never got a clear answer — the
+    /// natural follow-up list. Markdown bullets, or "" when everything was
+    /// resolved (or the meeting was too short).
+    func unansweredQuestions(transcript: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(Self.summarizableBody(transcript).suffix(20_000))
+        let requestBody = ChatRequest(
+            model: fastModel,
+            messages: [
+                .init(role: "system", content: """
+                From this meeting transcript, list ONLY the questions that were explicitly asked but \
+                left WITHOUT a clear answer by the end — genuine open items to follow up on. \
+                Output Markdown bullets, one question per line, phrased as the question. \
+                Ignore rhetorical or already-answered questions. If every question was answered \
+                (or none were asked), output exactly NONE and nothing else.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.2,
+            max_tokens: 300
+        )
+        let content = try await send(requestBody, timeout: 30)
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.uppercased() == "NONE" ? "" : trimmed
+    }
+
+    /// A short, human-readable title for a finished meeting (used as the note's
+    /// front-matter `title:` in place of the timestamp). Cheap fast-model call.
+    func meetingTitle(transcript: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(Self.summarizableBody(transcript).prefix(6_000))
+        let requestBody = ChatRequest(
+            model: fastModel,
+            messages: [
+                .init(role: "system", content: """
+                Give this meeting a concise, specific title of 3–7 words — like an email subject. \
+                Name the topic and, if clear, the party involved (e.g. "Acme SSO Migration Scoping", \
+                "Q3 Pipeline Review"). No date, no quotes, no trailing punctuation, Title Case. \
+                Output ONLY the title.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.2,
+            max_tokens: 24
+        )
+        let raw = try await send(requestBody, timeout: 15)
+        // One clean line, strip stray quotes/punctuation the model may add.
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: "\n").first?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'.")) ?? ""
+    }
+
     /// The single structured artifact for a note — key points, Next Steps, and
     /// Action Items — cached once and reused for BOTH the notes-viewer summary
     /// and the relationship digest (which renders up to 5 of these). Returns the

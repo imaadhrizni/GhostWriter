@@ -138,6 +138,7 @@ private struct NotesViewerView: View {
     @State private var showFind = false
     @State private var findQuery = ""
     @State private var findIndex = 0
+    @FocusState private var findFocused: Bool
     @State private var outlineTarget: Int?
     @State private var showOutline = false
     /// Bumped on every jump (outline click / find step) to force a re-scroll.
@@ -209,6 +210,8 @@ private struct NotesViewerView: View {
             if isDraft { draftToolbar } else { fileToolbar }
         }
         .frame(minWidth: 460, minHeight: 380)
+        // Focus the find field whenever find opens (footer icon, ⌘F, or toggle).
+        .onChange(of: showFind) { _, on in findFocused = on }
     }
 
     // MARK: Preview find + outline
@@ -333,6 +336,7 @@ private struct NotesViewerView: View {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
             TextField("Find in note", text: $findQuery)
                 .textFieldStyle(.roundedBorder).frame(maxWidth: 240)
+                .focused($findFocused)
                 .onSubmit { stepMatch(1) }
                 .onChange(of: findQuery) { _, _ in findIndex = 0; scrollNonce += 1 }
             if !findQuery.isEmpty {
@@ -1094,38 +1098,6 @@ private struct FrontMatterView: View {
     }
 }
 
-/// A minimal wrapping layout for chip rows (macOS 13+ `Layout`).
-private struct FlowLayout: Layout {
-    var spacing: CGFloat = 6
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
-            if x + size.width > maxWidth, x > 0 {
-                x = 0; y += rowHeight + spacing; rowHeight = 0
-            }
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
-        return CGSize(width: maxWidth == .infinity ? x : maxWidth, height: y + rowHeight)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
-        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
-            if x + size.width > bounds.maxX, x > bounds.minX {
-                x = bounds.minX; y += rowHeight + spacing; rowHeight = 0
-            }
-            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
-    }
-}
-
 /// Minimal block-level Markdown parser for the read-mode renderer. Not a full
 /// CommonMark implementation — just the constructs GhostWriter's notes use.
 private enum MarkdownParse {
@@ -1258,7 +1230,16 @@ private enum MarkdownParse {
                 i += 1; continue
             }
             if let task = matchTask(line) {
-                flushPara(); out.append(.task(done: task.done, text: task.text, line: i, depth: depth)); i += 1; continue
+                flushPara()
+                // A "no items" placeholder the AI sometimes emits as a checkbox
+                // (e.g. "- [ ] None") shouldn't render as a tickable pending
+                // task — show it as a plain muted bullet instead.
+                if NotesLibrary.isNonePlaceholder(task.text) {
+                    out.append(.bullet(text: task.text, marker: nil, depth: depth))
+                } else {
+                    out.append(.task(done: task.done, text: task.text, line: i, depth: depth))
+                }
+                i += 1; continue
             }
             if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
                 flushPara()

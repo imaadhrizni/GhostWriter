@@ -43,6 +43,14 @@ enum FrontMatter {
         return nil
     }
 
+    /// The note's `title:` field, stripped of surrounding quotes/whitespace, or
+    /// nil when absent/empty. Callers supply their own fallback (filename, etc.).
+    static func title(in text: String) -> String? {
+        let t = field("title", in: text)?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+        return (t?.isEmpty == false) ? t : nil
+    }
+
     /// Parse a YAML `tags: [a, b, c]` line from the front-matter into trimmed,
     /// non-empty values. Empty when there's no front-matter or no tags line.
     static func tags(in text: String) -> [String] {

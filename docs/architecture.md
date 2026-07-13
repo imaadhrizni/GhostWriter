@@ -48,8 +48,12 @@
 | `Sources/Models/Catalog.swift` | Catalog model + `CatalogStore` (Codable `Catalog.json` store: orgs/projects/opportunities plus per-note people/tags, org hierarchy, project→org inheritance, import, missing-file reconcile, purge) |
 | `Sources/Views/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, per-entity relationship timeline, search (Text/Meaning/Ask) + consolidated Filter menu with removable chips, row actions, Quick add, catalog export/import |
 | `Sources/Views/CatalogWindow.swift` (POC section) | POC / success-criteria tracker — a **Tools › POC Tracker** section inside the Catalog: opportunity list with passed/total badges, a detail pane for per-opportunity criteria with Pending/Passed/Failed status cycling and a progress bar, and **Suggest from meetings** which extracts criteria from the opportunity's linked notes (`TextPolisher.extractPocCriteria`). State stored on the opportunity in `Catalog.json` |
-| `Sources/Utils/MarkdownPDF.swift` | Paginated Markdown → PDF renderer (CoreText) |
+| `Sources/Views/CatalogDashboard.swift` | Catalog **Dashboard** (Overview section) — SE-oriented insight cards (POC command center, relationships, activity, action items, competitive/product intelligence, technical engagement coverage) + an instant catalog-only KPI column. Uses Swift Charts. Aggregation reuses `DigestService`, `NotesLibrary.actionItems`, and `RadarInsights` |
+| `Sources/Views/RadarInsights.swift` | Cross-meeting Keyword-Radar rollup — a **Tools › Keyword Radar** section inside the Catalog (term list → source meetings, shared-scan `RadarModel`); `RadarInsights.aggregate` re-scans note bodies against the current watchlist |
+| `Sources/Services/EventDispatcher.swift` | Outbound meeting-finished event hooks — local script (JSON on stdin) and HTTPS webhook; metadata-only, redaction-aware, suppressed in Local-only mode |
+| `Sources/Utils/MarkdownPDF.swift` | Paginated Markdown → PDF renderer (CoreText) — title/Properties header, clickable page-numbered TOC, POC section; navy/cyan palette matching the app icon |
 | `Sources/Utils/WindowHelpers.swift` | Shared `NSWindowController.bringToFront()` present helper |
+| `Sources/Utils/FlowLayout.swift` | Shared wrap-to-width `Layout` for chip rows (one implementation for Catalog + notes-viewer chips) |
 | `Sources/Utils/FrontMatter.swift` | Shared YAML front-matter split/strip helper (one implementation for all note-body extraction) |
 | `Sources/Services/RemindersExporter.swift` | Export action items to Apple Reminders (EventKit) |
 | `Sources/Services/BackupService.swift` | Full backup/restore — zips notes, quick notes, dictations & Catalog |
@@ -60,7 +64,7 @@
 | `Sources/Services/PermissionGuard.swift` | Mic / Accessibility / System-audio permission handling |
 | `Sources/Models/AppSettings.swift` | UserDefaults-backed settings store with defaults |
 | `Sources/Utils/Log.swift` | os.Logger categories (visible in Console.app) |
-| `Sources/Views/SettingsView.swift` | Sidebar-style settings window (SwiftUI) |
+| `Sources/Views/SettingsView.swift` | Sidebar-style settings window (SwiftUI) with a curated global **search** across panes; Meeting Templates and Integrations are their own panes |
 | `Sources/Views/APIKeyView.swift` | API-key onboarding UI (SwiftUI) |
 | `Sources/Views/GlowOverlayView.swift` | Floating recording indicator / live-caption overlay |
 | `Sources/Views/MeetingPrepWindow.swift` | Non-modal meeting-prep panel — recent notes for the linked org/opp |

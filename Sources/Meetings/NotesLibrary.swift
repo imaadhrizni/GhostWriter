@@ -215,11 +215,25 @@ enum NotesLibrary {
                         if text.lowercased().hasPrefix("[x]") { done = true }
                         text = text.dropFirst(3).trimmingCharacters(in: .whitespaces)
                     }
-                    if !text.isEmpty { items.append(ActionItem(file: file, text: text, done: done, rawLine: line)) }
+                    // Skip "none" placeholders the AI writes when there are no
+                    // action items (e.g. "- _None_", "- N/A", "- —").
+                    if !text.isEmpty, !Self.isNonePlaceholder(String(text)) {
+                        items.append(ActionItem(file: file, text: String(text), done: done, rawLine: line))
+                    }
                 }
             }
         }
         return items
+    }
+
+    /// True when a bullet is a "no items" placeholder rather than a real action
+    /// — stripped of markdown emphasis/punctuation it reads as none / n/a / etc.
+    static func isNonePlaceholder(_ s: String) -> Bool {
+        let stripped = s
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_*`~ ()—–-."))
+            .lowercased()
+        return ["", "none", "n/a", "na", "nil", "nothing",
+                "no action items", "no items", "none."].contains(stripped)
     }
 }
 

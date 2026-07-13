@@ -129,7 +129,6 @@ enum MarkdownPDF {
             let lr = CTLineGetStringRange(line)
             var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
             let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
-            let ox = textRect.minX + origins[li].x
             let oy = textRect.minY + origins[li].y
             let lineStart = lr.location, lineEnd = lr.location + lr.length
 

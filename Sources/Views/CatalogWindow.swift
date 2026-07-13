@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
 final class CatalogWindowController: NSWindowController {
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 580),
+            contentRect: NSRect(x: 0, y: 0, width: 1120, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -34,6 +34,7 @@ final class CatalogWindowController: NSWindowController {
 private enum CatalogSection: String, CaseIterable, Identifiable {
     // Declared in sidebar order so the enum and `sidebarGroups` can't drift:
     // the two ways to browse first, then records in containment order.
+    case dashboard     = "Dashboard"
     case notes         = "Notes"
     case map           = "Map"
     case organisations = "Organisations"
@@ -42,6 +43,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     case people        = "People"
     case tags          = "Tags"
     case poc           = "POC Tracker"
+    case radar         = "Keyword Radar"
     var id: String { rawValue }
 
     /// Sidebar layout: the two ways to look at the catalog on top (Notes is the
@@ -50,14 +52,16 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     /// match the Map tree, with People — a cross-cutting per-note entity like
     /// Tags — sitting last.
     static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
+        ("Overview", [.dashboard]),
         ("Browse",   [.notes, .map]),
         ("Records",  [.organisations, .projects, .opportunities, .people]),
         ("Labels",   [.tags]),
-        ("Tools",    [.poc]),
+        ("Tools",    [.poc, .radar]),
     ]
 
     var singular: String {
         switch self {
+        case .dashboard:     return "Dashboard"
         case .map:           return "Item"
         case .organisations: return "Organisation"
         case .people:        return "Person"
@@ -66,10 +70,12 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .tags:          return "Tag"
         case .notes:         return "Note"
         case .poc:           return "POC"
+        case .radar:         return "Term"
         }
     }
     var icon: String {
         switch self {
+        case .dashboard:     return "square.grid.2x2.fill"
         case .map:           return "point.3.filled.connected.trianglepath.dotted"
         case .organisations: return "building.2"
         case .people:        return "person.2"
@@ -78,10 +84,12 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .tags:          return "tag"
         case .notes:         return "doc.text"
         case .poc:           return "flask"
+        case .radar:         return "dot.radiowaves.left.and.right"
         }
     }
     var tint: Color {
         switch self {
+        case .dashboard:     return .accentColor
         case .map:           return .purple
         case .organisations: return .blue
         case .people:        return .teal
@@ -90,6 +98,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .tags:          return .pink
         case .notes:         return .indigo
         case .poc:           return .cyan
+        case .radar:         return .pink
         }
     }
 }
@@ -107,6 +116,7 @@ private struct CatalogView: View {
     @State private var pendingImportData: Data?
     @State private var mapSection: CatalogSection?
     @State private var mapID: String?
+    @StateObject private var radarModel = RadarModel()
     // Notes search + filters (in the window toolbar).
     @State private var query = ""
     @State private var fOrg = ""
@@ -146,6 +156,7 @@ private struct CatalogView: View {
 
     private func count(_ s: CatalogSection) -> Int {
         switch s {
+        case .dashboard:     return 0
         case .map:           return 0
         case .organisations: return store.doc.orgs.count
         case .people:        return store.doc.people.count
@@ -154,6 +165,7 @@ private struct CatalogView: View {
         case .tags:          return store.doc.tags.count
         case .notes:         return store.doc.notes.count
         case .poc:           return store.doc.opportunities.filter { !$0.pocCriteria.isEmpty }.count
+        case .radar:         return 0
         }
     }
 
@@ -183,10 +195,20 @@ private struct CatalogView: View {
             .safeAreaInset(edge: .bottom) { importFooter }
         } content: {
             contentColumn
-                .navigationSplitViewColumnWidth(min: 240, ideal: 285, max: 400)
+                // The Dashboard is a wide canvas (cards fill this column); every
+                // other section is a normal master list, so cap it narrower.
+                .navigationSplitViewColumnWidth(
+                    min: section == .dashboard ? 460 : 240,
+                    ideal: section == .dashboard ? 640 : 285,
+                    max: section == .dashboard ? 5000 : 400)
                 .navigationTitle(section.rawValue)
         } detail: {
-            if section == .map {
+            if section == .dashboard {
+                // The dashboard is self-contained (KPIs + cards all live in the
+                // content column), so collapse the detail column away — no blank
+                // pane on the right.
+                Color.clear.frame(width: 0).navigationSplitViewColumnWidth(0)
+            } else if section == .map {
                 if let sec = mapSection, let id = mapID {
                     EntityEditorView(store: store, section: sec, id: id) { mapID = nil }
                         .id(id)
@@ -198,12 +220,14 @@ private struct CatalogView: View {
             } else if section == .poc {
                 PocDetail(store: store, oppID: selID)
                     .frame(minWidth: 360)
+            } else if section == .radar {
+                RadarTermDetail(model: radarModel, term: selID)
             } else {
                 EntityDetail(store: store, section: section, selID: $selID)
             }
         }
         .onChange(of: section) { _, _ in selID = nil; mapSection = nil; mapID = nil }
-        .frame(minWidth: 820, minHeight: 500)
+        .frame(minWidth: 900, minHeight: 520)
         .sheet(isPresented: $showQuickAdd) { QuickAddSheet(store: store) }
         .confirmationDialog("Purge the entire catalog?", isPresented: $showPurge, titleVisibility: .visible) {
             Button("Purge catalog", role: .destructive) {
@@ -223,7 +247,11 @@ private struct CatalogView: View {
     }
 
     @ViewBuilder private var contentColumn: some View {
-        if section == .map {
+        if section == .dashboard {
+            DashboardView(store: store) { section = .poc }
+        } else if section == .radar {
+            RadarTermList(model: radarModel, selID: $selID)
+        } else if section == .map {
             MapTree(store: store) { sec, id in mapSection = sec; mapID = id }
         } else if section == .poc {
             PocOpportunityList(store: store, selID: $selID)
@@ -839,7 +867,7 @@ private struct EntityList: View {
             Divider()
             Group {
                 switch section {
-                case .map, .notes, .poc: EmptyView()   // handled by CatalogView
+                case .dashboard, .map, .notes, .poc, .radar: EmptyView()   // handled by CatalogView
                 case .organisations: orgList
                 case .people:        peopleList
                 case .projects:      projectList
@@ -952,7 +980,7 @@ private struct EntityList: View {
             var name = "New Tag", n = 2
             while existing.contains(name.lowercased()) { name = "New Tag \(n)"; n += 1 }
             selID = store.addTag(name: name).id
-        case .notes, .poc:   break
+        case .dashboard, .notes, .poc, .radar:   break
         }
     }
 }
@@ -986,7 +1014,7 @@ private struct EntityEditorView: View {
 
     var body: some View {
         switch section {
-        case .map, .poc: EmptyView()
+        case .dashboard, .map, .poc, .radar: EmptyView()
         case .organisations:
             if let o = store.org(id) { OrgEditor(store: store, org: o, onDelete: onDelete) } else { missing }
         case .people:
@@ -1617,31 +1645,6 @@ private struct Chip: View {
 private struct FlowChips<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View { FlowLayout(spacing: 6) { content } }
-}
-
-private struct FlowLayout: Layout {
-    var spacing: CGFloat = 6
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0
-        for v in subviews {
-            let s = v.sizeThatFits(.unspecified)
-            if x + s.width > maxWidth { x = 0; y += rowH + spacing; rowH = 0 }
-            x += s.width + spacing
-            rowH = max(rowH, s.height)
-        }
-        return CGSize(width: maxWidth.isFinite ? maxWidth : x, height: y + rowH)
-    }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX, y = bounds.minY, rowH: CGFloat = 0
-        for v in subviews {
-            let s = v.sizeThatFits(.unspecified)
-            if x + s.width > bounds.maxX { x = bounds.minX; y += rowH + spacing; rowH = 0 }
-            v.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(s))
-            x += s.width + spacing
-            rowH = max(rowH, s.height)
-        }
-    }
 }
 
 /// A "+ add…" button that opens a searchable picker of existing options, with a

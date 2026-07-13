@@ -40,11 +40,13 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case quickNotes  = "Quick Notes"
     case meeting     = "Recording"
     case notes       = "Notes & Summaries"
+    case meetingTemplates = "Meeting Templates"
     case draftTemplates = "Draft Templates"
     case digest      = "Digest"
     case privacy     = "Privacy"
     case permissions = "Permissions"
     case shortcuts   = "Shortcuts"
+    case integrations = "Integrations"
     case stats       = "Usage & Cost"
     case diagnostics = "Diagnostics"
     case about       = "About"
@@ -56,9 +58,9 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
         (nil,                  [.general, .ai]),
         ("Capture",            [.dictation, .styles, .quickNotes]),
-        ("Meetings",           [.meeting, .notes, .draftTemplates, .digest]),
+        ("Meetings",           [.meeting, .notes, .meetingTemplates, .draftTemplates, .digest]),
         ("Privacy & Security", [.privacy, .permissions]),
-        ("System",             [.shortcuts, .stats, .diagnostics]),
+        ("System",             [.shortcuts, .integrations, .stats, .diagnostics]),
         ("About",              [.about]),
     ]
 
@@ -71,11 +73,13 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return "square.and.pencil"
         case .meeting:     return "person.2.wave.2.fill"
         case .notes:       return "doc.text.fill"
+        case .meetingTemplates: return "doc.on.doc.fill"
         case .draftTemplates: return "doc.badge.gearshape"
         case .digest:      return "newspaper.fill"
         case .privacy:     return "hand.raised.fill"
         case .permissions: return "lock.shield.fill"
         case .shortcuts:   return "command"
+        case .integrations: return "bolt.horizontal.circle.fill"
         case .stats:       return "chart.bar.fill"
         case .diagnostics: return "stethoscope"
         case .about:       return "info.circle.fill"
@@ -91,11 +95,13 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return .yellow
         case .meeting:     return .purple
         case .notes:       return .indigo
+        case .meetingTemplates: return .teal
         case .draftTemplates: return .teal
         case .digest:      return .brown
         case .privacy:     return .pink
         case .permissions: return .green
         case .shortcuts:   return .orange
+        case .integrations: return .indigo
         case .stats:       return .teal
         case .diagnostics: return .red
         case .about:       return .secondary
@@ -160,7 +166,8 @@ fileprivate enum SettingsSearchIndex {
         // Recording
         .init(label: "Meeting audio source", section: .meeting, keywords: ["microphone", "system audio", "input device", "default", "reset"]),
         .init(label: "Live brief", section: .meeting, keywords: ["real-time", "assistant", "coaching", "agenda coverage"]),
-        .init(label: "Meeting templates", section: .meeting, keywords: ["agenda", "type", "prep", "add", "delete", "default"]),
+        .init(label: "Meeting templates", section: .meetingTemplates, keywords: ["agenda", "type", "prep", "add", "delete", "default", "sections", "follow-up"]),
+        .init(label: "Import / export templates", section: .meetingTemplates, keywords: ["backup", "share", "bundle", "json", "house style", "merge", "replace"]),
         .init(label: "Per-app recording overrides", section: .meeting, keywords: ["app", "override", "delete", "remove", "default", "unrecognized"]),
         // Notes & summaries
         .init(label: "Auto-title notes", section: .notes, keywords: ["heading", "name", "smart title"]),
@@ -185,6 +192,9 @@ fileprivate enum SettingsSearchIndex {
         // Usage & cost
         .init(label: "Usage & cost", section: .stats, keywords: ["spend", "tokens", "billing", "minutes", "statistics"]),
         .init(label: "Clear usage statistics", section: .stats, keywords: ["reset", "clear", "delete", "wipe", "history"]),
+        // Integrations
+        .init(label: "Meeting-finished webhook", section: .integrations, keywords: ["http", "post", "zapier", "slack", "notion", "event", "hook", "url"]),
+        .init(label: "Local script hook", section: .integrations, keywords: ["shell", "script", "automation", "event", "stdin", "run"]),
         // Diagnostics
         .init(label: "Diagnostics & logs", section: .diagnostics, keywords: ["debug", "troubleshoot", "console"]),
         .init(label: "Export logs", section: .diagnostics, keywords: ["save", "share", "report", "clear logs"]),
@@ -306,11 +316,13 @@ struct SettingsView: View {
                     case .quickNotes:  QuickNotesPane()
                     case .meeting:     MeetingPane()
                     case .notes:       MeetingNotesPane()
+                    case .meetingTemplates: MeetingTemplatesPane()
                     case .draftTemplates: DraftTemplatesPane()
                     case .digest:      DigestPane()
                     case .privacy:     PrivacyPane()
                     case .permissions: PermissionsPane()
                     case .shortcuts:   ShortcutsPane()
+                    case .integrations: IntegrationsPane()
                     case .stats:       StatsPane()
                     case .diagnostics: DiagnosticsPane()
                     case .about:       AboutPane()
@@ -1263,10 +1275,6 @@ private struct MeetingNotesPane: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
-            SettingsGroup("Templates") {
-                TemplateManager()
-            }
-
             SettingsGroup("Summary Content") {
                 Toggle("Append AI summary when a meeting ends", isOn: $settings.summariesEnabled)
                 Text("Adds the template's sections to the notes file.")
@@ -1374,6 +1382,22 @@ private struct MeetingNotesPane: View {
 /// Draft Templates — edit the drafting guidance behind each output document
 /// type (the Draft… menu in the note viewer). Each type has an editable
 /// instruction with a per-item reset to the built-in default.
+/// Meeting templates — split out of Notes & Summaries (which had grown to eight
+/// groups). Owns the meeting-type template editor and the shared template
+/// import/export, sitting beside Draft Templates under Meetings.
+private struct MeetingTemplatesPane: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Meeting Templates") {
+                Text("Each meeting type shapes what the summary extracts and how a follow-up is drafted. Edit the built-ins or add your own.")
+                    .font(.caption).foregroundColor(.secondary)
+                TemplateManager()
+            }
+            TemplateTransferSection()
+        }
+    }
+}
+
 private struct DraftTemplatesPane: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var selectedID: String = FollowUpKind.minutes.rawValue
@@ -1472,9 +1496,13 @@ private struct DraftTemplatesPane: View {
                 Text("The instruction the AI follows for this document — recipient, tone, sections, and format. Draw only from the meeting's notes. Changing it regenerates the document the next time you draft it (each type caches separately).")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
-                Text("Looking for a follow-up that adapts to the meeting type (including your custom meeting templates)? That's the note viewer's “Auto — match meeting type” draft, edited under Notes & Summaries → Templates → follow-up guidance.")
+                Text("Looking for a follow-up that adapts to the meeting type (including your custom meeting templates)? That's the note viewer's “Auto — match meeting type” draft, edited under Meeting Templates → follow-up guidance.")
                     .font(.caption).foregroundColor(.secondary)
             }
+
+            // Same shared bundle as Meeting Templates — surfaced here too so
+            // email/document templates can be backed up or shared from this pane.
+            TemplateTransferSection()
         }
         .onAppear { load() }
     }
@@ -1482,6 +1510,178 @@ private struct DraftTemplatesPane: View {
     private func load() {
         text = current.guidance
         if case .user(let t) = current { name = t.name }
+    }
+}
+
+/// Export / import for all custom template data (meeting templates, custom
+/// document types, and built-in guidance overrides) as one portable `.json`.
+/// Shown in both template panes since one bundle carries everything. Mirrors
+/// the Catalog's export/import UX (save/open panel + merge/replace choice).
+private struct TemplateTransferSection: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var pendingImportData: Data?
+    @State private var showImportChoice = false
+    @State private var status: String?
+
+    var body: some View {
+        SettingsGroup("Backup & Sharing") {
+            HStack {
+                Button("Export Templates…") { export() }
+                    .disabled(!settings.hasExportableTemplates)
+                Button("Import Templates…") { beginImport() }
+                Spacer()
+            }
+            if let status {
+                Text(status).font(.caption).foregroundColor(.secondary)
+            }
+            Text("Save your custom meeting templates, custom document types, and any edits to built-in guidance as one .json file — a backup, or a house style to share with teammates. Built-in templates aren't included; only your additions and edits.")
+                .font(.caption).foregroundColor(.secondary)
+        }
+        .confirmationDialog("Import templates", isPresented: $showImportChoice, titleVisibility: .visible) {
+            Button("Merge") { runImport(.merge) }
+            Button("Replace", role: .destructive) { runImport(.replace) }
+            Button("Cancel", role: .cancel) { pendingImportData = nil }
+        } message: {
+            Text("Merge adds and updates templates from the file, keeping your others. Replace swaps all your custom template data for the file's.")
+        }
+    }
+
+    private func export() {
+        guard let data = try? settings.exportTemplates() else {
+            status = "Nothing to export yet."
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "GhostWriter-Templates.json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url, options: .atomic)
+            status = "Exported to \(url.lastPathComponent)."
+        } catch {
+            status = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func beginImport() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url,
+              let data = try? Data(contentsOf: url) else { return }
+        guard settings.isValidTemplateBundle(data) else {
+            status = "That file isn't a GhostWriter template export."
+            return
+        }
+        pendingImportData = data
+        showImportChoice = true
+    }
+
+    private func runImport(_ mode: AppSettings.TemplateImportMode) {
+        guard let data = pendingImportData else { return }
+        pendingImportData = nil
+        do {
+            let n = try settings.importTemplates(data, mode: mode)
+            status = "Imported \(n) template item\(n == 1 ? "" : "s")."
+        } catch {
+            status = "Import failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+/// Integrations — outbound event hooks fired when a meeting finishes, so users
+/// can wire GhostWriter into their own tools. Both destinations are opt-in and
+/// suppressed in Local-only mode (a banner explains why they're disabled).
+private struct IntegrationsPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    private var scriptIsValid: Bool {
+        let p = settings.scriptHookPath.trimmingCharacters(in: .whitespaces)
+        return !p.isEmpty && FileManager.default.isExecutableFile(atPath: p)
+    }
+    private var webhookIsValid: Bool {
+        let u = settings.webhookURL.trimmingCharacters(in: .whitespaces)
+        return URL(string: u)?.scheme?.lowercased() == "https"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if settings.localOnlyMode {
+                Label("Local-only mode is on, so outbound integrations are disabled — they'd send data off your Mac. Turn off Local-only mode in Privacy to use these.",
+                      systemImage: "hand.raised.fill")
+                    .font(.caption).foregroundColor(.orange)
+            }
+
+            SettingsGroup("When a Meeting Finishes") {
+                Text("Fire an event the moment a meeting is saved, carrying the note's metadata (title, date, meeting type, linked org/opportunity, tags) — never the audio. Free-text fields are run through your redaction settings first. Use these to post into Notion, Slack, Zapier, or your own scripts.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Local Script Hook") {
+                Toggle("Run a script when a meeting finishes", isOn: $settings.scriptHookEnabled)
+                    .disabled(settings.localOnlyMode)
+                Text("Runs your executable with the event JSON on stdin. No network — the easiest option to trust.")
+                    .font(.caption).foregroundColor(.secondary)
+                HStack {
+                    TextField("/path/to/script.sh", text: $settings.scriptHookPath)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(!settings.scriptHookEnabled)
+                    Button("Choose…") { chooseScript() }
+                        .disabled(!settings.scriptHookEnabled)
+                }
+                if settings.scriptHookEnabled && !settings.scriptHookPath.isEmpty && !scriptIsValid {
+                    Label("Not an executable file — run `chmod +x` on it.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundColor(.orange)
+                }
+            }
+
+            SettingsGroup("Outgoing Webhook") {
+                Toggle("POST to a webhook when a meeting finishes", isOn: $settings.webhookEnabled)
+                    .disabled(settings.localOnlyMode)
+                Text("Sends the event JSON as an HTTP POST. Must be an https URL.")
+                    .font(.caption).foregroundColor(.secondary)
+                TextField("https://example.com/hooks/ghostwriter", text: $settings.webhookURL)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!settings.webhookEnabled)
+                if settings.webhookEnabled && !settings.webhookURL.isEmpty && !webhookIsValid {
+                    Label("Enter a valid https:// URL.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundColor(.orange)
+                }
+            }
+
+            SettingsGroup("Payload") {
+                Text("""
+                {
+                  "event": "meeting.finished",
+                  "title": "Acme SSO Scoping",
+                  "file": "…/Meeting_2026-07-13.md",
+                  "date": "2026-07-13T10:00:00Z",
+                  "durationSeconds": 1830,
+                  "meetingType": "Solution Scoping",
+                  "organisation": "Acme",
+                  "opportunity": "SSO Migration",
+                  "project": "Platform",
+                  "tags": ["meeting", "sso"]
+                }
+                """)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func chooseScript() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose an executable script to run when a meeting finishes."
+        if panel.runModal() == .OK, let url = panel.url {
+            settings.scriptHookPath = url.path
+        }
     }
 }
 

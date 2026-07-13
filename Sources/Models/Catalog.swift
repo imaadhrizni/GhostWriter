@@ -296,19 +296,6 @@ final class CatalogStore: ObservableObject {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    @discardableResult
-    func addPocCriterion(_ text: String, to oppID: String) -> PocCriterion? {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return nil }
-        let c = PocCriterion(text: t)
-        mutate { doc in
-            if let i = doc.opportunities.firstIndex(where: { $0.id == oppID }) {
-                doc.opportunities[i].pocCriteria.append(c)
-            }
-        }
-        return c
-    }
-
     /// Bulk-add criteria (e.g. AI-extracted from meetings), skipping any whose
     /// text already exists on the opportunity (case-insensitive). Returns how
     /// many were actually added.
@@ -335,16 +322,6 @@ final class CatalogStore: ObservableObject {
             guard let oi = doc.opportunities.firstIndex(where: { $0.id == oppID }),
                   let ci = doc.opportunities[oi].pocCriteria.firstIndex(where: { $0.id == criterionID }) else { return }
             doc.opportunities[oi].pocCriteria[ci].status = status
-        }
-    }
-
-    func setPocText(_ text: String, criterionID: String, oppID: String) {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        mutate { doc in
-            guard let oi = doc.opportunities.firstIndex(where: { $0.id == oppID }),
-                  let ci = doc.opportunities[oi].pocCriteria.firstIndex(where: { $0.id == criterionID }) else { return }
-            doc.opportunities[oi].pocCriteria[ci].text = t
         }
     }
 

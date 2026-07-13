@@ -101,6 +101,10 @@ final class AppSettings: ObservableObject {
         static let priceInputPerMTok      = "cost.inputPerMTok"
         static let priceOutputPerMTok     = "cost.outputPerMTok"
         static let monthlyBudgetUSD       = "cost.monthlyBudgetUSD"
+        static let webhookEnabled         = "integrations.webhookEnabled"
+        static let webhookURL             = "integrations.webhookURL"
+        static let scriptHookEnabled      = "integrations.scriptHookEnabled"
+        static let scriptHookPath         = "integrations.scriptHookPath"
 
         static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
                           preferBuiltInMic,
@@ -111,7 +115,8 @@ final class AppSettings: ObservableObject {
                           summariesEnabled, actionItemsEnabled,
                           structuredExtraction, extractKeyFields, extractUnanswered, watchlistKeywords, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, liveAssistantEnabled, meetingPrepCard,
                           notifyOnMeetingEnd, frontMatterEnabled,
-                          diarizationEnabled, offlineFallback, transcriptionLanguage,
+                          diarizationEnabled, offlineFallback, preferOnDeviceAI, transcriptionLanguage,
+                          digestEnabled, digestFrequency, digestHour, digestWeekday, staleRelationshipDays, lastDigestDay,
                           vocabulary, replacements, appProfiles,
                           dictationHistoryOn, dictationHistoryLimit,
                           captionLingerSeconds, retryMaxAttempts, retryIntervalSeconds,
@@ -128,7 +133,8 @@ final class AppSettings: ObservableObject {
                           browserTabDetection, domainStyleRules,
                           saveDictations, dictationsFolderPath, dictationOrganization,
                           priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok,
-                          monthlyBudgetUSD]
+                          monthlyBudgetUSD,
+                          webhookEnabled, webhookURL, scriptHookEnabled, scriptHookPath]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -215,6 +221,10 @@ final class AppSettings: ObservableObject {
         static let priceInputPerMTok               = 0.59    // llama-3.3-70b input
         static let priceOutputPerMTok              = 0.79    // llama-3.3-70b output
         static let monthlyBudgetUSD                = 0.0     // 0 = no budget set
+        static let webhookEnabled                  = false
+        static let webhookURL                      = ""
+        static let scriptHookEnabled               = false
+        static let scriptHookPath                  = ""
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -870,6 +880,85 @@ final class AppSettings: ObservableObject {
         userTemplates = userTemplates.filter { $0.id != id }
     }
 
+    // MARK: - Template import / export
+
+    /// How an incoming template bundle is applied — mirrors the Catalog's
+    /// import semantics.
+    enum TemplateImportMode { case merge, replace }
+
+    /// Snapshot every piece of user-customized template data — custom meeting
+    /// templates, custom draft document types, and any per-built-in overrides
+    /// (sections / follow-up / draft guidance) — as portable JSON. Built-in
+    /// definitions themselves are never exported (they ship with the app); only
+    /// the user's additions and overrides travel.
+    func exportTemplates() throws -> Data {
+        let bundle = TemplateBundle(
+            userTemplates: userTemplates,
+            userDraftTemplates: userDraftTemplates,
+            meetingSectionOverrides: templateOverrides,
+            meetingFollowUpOverrides: templateFollowUpOverrides,
+            draftGuidanceOverrides: draftGuidanceOverrides)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(bundle)
+    }
+
+    /// True if `data` decodes as a template bundle — guards against importing
+    /// an unrelated JSON file.
+    func isValidTemplateBundle(_ data: Data) -> Bool {
+        (try? JSONDecoder().decode(TemplateBundle.self, from: data)) != nil
+    }
+
+    /// True when there is any custom template data to export (disables the
+    /// Export control otherwise).
+    var hasExportableTemplates: Bool {
+        !userTemplates.isEmpty || !userDraftTemplates.isEmpty
+            || !templateOverrides.isEmpty || !templateFollowUpOverrides.isEmpty
+            || !draftGuidanceOverrides.isEmpty
+    }
+
+    /// Apply a template bundle. `.replace` swaps all custom template data for
+    /// the bundle's; `.merge` upserts custom templates by id (incoming wins on
+    /// clash) and layers the bundle's overrides on top of the current ones.
+    /// Returns the number of custom templates + overrides applied.
+    @discardableResult
+    func importTemplates(_ data: Data, mode: TemplateImportMode) throws -> Int {
+        let bundle = try JSONDecoder().decode(TemplateBundle.self, from: data)
+        switch mode {
+        case .replace:
+            userTemplates = bundle.userTemplates
+            userDraftTemplates = bundle.userDraftTemplates
+            templateOverrides = bundle.meetingSectionOverrides
+            templateFollowUpOverrides = bundle.meetingFollowUpOverrides
+            draftGuidanceOverrides = bundle.draftGuidanceOverrides
+        case .merge:
+            userTemplates = Self.upsert(userTemplates, bundle.userTemplates)
+            userDraftTemplates = Self.upsert(userDraftTemplates, bundle.userDraftTemplates)
+            templateOverrides.merge(bundle.meetingSectionOverrides) { _, new in new }
+            templateFollowUpOverrides.merge(bundle.meetingFollowUpOverrides) { _, new in new }
+            draftGuidanceOverrides.merge(bundle.draftGuidanceOverrides) { _, new in new }
+        }
+        // Selection may reference a template that was replaced away — the
+        // selectedTemplateID getter self-heals, so nothing to do here.
+        return bundle.userTemplates.count + bundle.userDraftTemplates.count
+            + bundle.meetingSectionOverrides.count + bundle.meetingFollowUpOverrides.count
+            + bundle.draftGuidanceOverrides.count
+    }
+
+    /// Upsert `incoming` into `base` by id, preserving base order and appending
+    /// genuinely new items (incoming values win on id clash).
+    private static func upsert<T: Identifiable>(_ base: [T], _ incoming: [T]) -> [T] where T.ID == String {
+        var result = base
+        for item in incoming {
+            if let i = result.firstIndex(where: { $0.id == item.id }) {
+                result[i] = item
+            } else {
+                result.append(item)
+            }
+        }
+        return result
+    }
+
     // MARK: - Dictation Writing Styles
 
     /// Every dictation style — the six built-in categories (with any
@@ -1079,6 +1168,34 @@ final class AppSettings: ObservableObject {
     var monthlyBudgetUSD: Double {
         get { double(Key.monthlyBudgetUSD, Default.monthlyBudgetUSD) }
         set { set(newValue, Key.monthlyBudgetUSD) }
+    }
+
+    // MARK: - Integrations (event hooks)
+
+    /// POST a JSON payload to a user-configured URL when a meeting finishes.
+    /// Off by default; suppressed entirely in Local-only mode.
+    var webhookEnabled: Bool {
+        get { bool(Key.webhookEnabled, Default.webhookEnabled) }
+        set { set(newValue, Key.webhookEnabled) }
+    }
+
+    /// The destination URL for the outgoing webhook (must be https for it to fire).
+    var webhookURL: String {
+        get { string(Key.webhookURL, Default.webhookURL) }
+        set { set(newValue, Key.webhookURL) }
+    }
+
+    /// Run a user-configured local script when a meeting finishes, receiving the
+    /// event payload as JSON on stdin. Off by default.
+    var scriptHookEnabled: Bool {
+        get { bool(Key.scriptHookEnabled, Default.scriptHookEnabled) }
+        set { set(newValue, Key.scriptHookEnabled) }
+    }
+
+    /// Absolute path to the executable script run on meeting finish.
+    var scriptHookPath: String {
+        get { string(Key.scriptHookPath, Default.scriptHookPath) }
+        set { set(newValue, Key.scriptHookPath) }
     }
 
     // MARK: - Transcription Quality
@@ -1601,6 +1718,43 @@ struct UserTemplate: Codable, Identifiable, Hashable {
     /// Optional custom follow-up guidance; empty → a generic default is used.
     /// Defaulted so JSON saved before this field existed still decodes.
     var followUp: String = ""
+}
+
+/// A portable bundle of user-customized template data, for Export / Import in
+/// the Settings template panes. Every field is defaulted and decoded
+/// tolerantly (see `init(from:)`) so a bundle written by any version — or one
+/// missing a section — still imports cleanly.
+struct TemplateBundle: Codable {
+    var version: Int = 1
+    var userTemplates: [UserTemplate] = []
+    var userDraftTemplates: [UserDraftTemplate] = []
+    var meetingSectionOverrides: [String: String] = [:]
+    var meetingFollowUpOverrides: [String: String] = [:]
+    var draftGuidanceOverrides: [String: String] = [:]
+
+    init(version: Int = 1,
+         userTemplates: [UserTemplate] = [],
+         userDraftTemplates: [UserDraftTemplate] = [],
+         meetingSectionOverrides: [String: String] = [:],
+         meetingFollowUpOverrides: [String: String] = [:],
+         draftGuidanceOverrides: [String: String] = [:]) {
+        self.version = version
+        self.userTemplates = userTemplates
+        self.userDraftTemplates = userDraftTemplates
+        self.meetingSectionOverrides = meetingSectionOverrides
+        self.meetingFollowUpOverrides = meetingFollowUpOverrides
+        self.draftGuidanceOverrides = draftGuidanceOverrides
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        userTemplates = try c.decodeIfPresent([UserTemplate].self, forKey: .userTemplates) ?? []
+        userDraftTemplates = try c.decodeIfPresent([UserDraftTemplate].self, forKey: .userDraftTemplates) ?? []
+        meetingSectionOverrides = try c.decodeIfPresent([String: String].self, forKey: .meetingSectionOverrides) ?? [:]
+        meetingFollowUpOverrides = try c.decodeIfPresent([String: String].self, forKey: .meetingFollowUpOverrides) ?? [:]
+        draftGuidanceOverrides = try c.decodeIfPresent([String: String].self, forKey: .draftGuidanceOverrides) ?? [:]
+    }
 }
 
 /// A resolved template — built-in or user-defined — that the pickers, the

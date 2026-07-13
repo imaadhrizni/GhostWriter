@@ -217,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DigestWindowController.present()
     }
 
+
     private func finishInitialization() {
         // Note: hotkeyManager.start() is deliberately NOT called here — it creates a
         // CGEventTap which itself triggers the system Accessibility prompt. We let
@@ -971,9 +972,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         meta = OnDeviceNLP.extractMetadata(transcript: transcript, includePeople: includePeople)
                     }
                     if !meta.isEmpty {
+                        let customer = await self.validatedCustomer(meta.customer)
                         MeetingNotesWriter.addMeetingMetadata(
                             topics: meta.topics, people: meta.people,
-                            customer: meta.customer, project: meta.project, to: fileURL)
+                            customer: customer, project: meta.project, to: fileURL)
                     }
                 }
 
@@ -1005,7 +1007,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NotificationManager.shared.notifyMeetingSaved(duration: duration, fileURL: fileURL)
             }
             self.warnIfOverBudget()
+
+            // Fire user-configured integrations (local script hook / outgoing
+            // webhook). Runs last, so the payload reflects the finished note.
+            // Metadata only, redaction-aware, and a no-op in Local-only mode.
+            await MainActor.run {
+                self.dispatchMeetingEvent(fileURL: fileURL, start: start, durationSeconds: elapsed)
+            }
         }
+    }
+
+    /// Build the "meeting finished" event payload from the saved note and hand
+    /// it to `EventDispatcher`. Catalog resolution and front-matter reads happen
+    /// here (on the main actor); the dispatcher itself does the redaction,
+    /// script launch, and webhook POST off the main thread.
+    @MainActor
+    private func dispatchMeetingEvent(fileURL: URL, start: Date, durationSeconds: Int) {
+        let s = AppSettings.shared
+        guard !s.localOnlyMode, (s.scriptHookEnabled || s.webhookEnabled) else { return }
+
+        let markdown = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+        let title = FrontMatter.title(in: markdown)
+            ?? fileURL.deletingPathExtension().lastPathComponent
+        let tags = FrontMatter.tags(in: markdown)
+        let typeID = FrontMatter.field("gw_meeting_type", in: markdown)
+        let meetingType = typeID.flatMap { id in
+            AppSettings.shared.allTemplates.first { $0.id == id }?.displayName
+        } ?? typeID
+
+        // Resolve the org / opportunity / project chain from the Catalog link.
+        var org: String?, opportunity: String?, project: String?
+        let store = CatalogStore.shared
+        let root = s.notesFolder.path + "/"
+        let rel = fileURL.path.replacingOccurrences(of: root, with: "")
+        if let note = store.doc.notes.first(where: { $0.filePath == rel }) {
+            if let oppID = note.opportunityIDs.first, let opp = store.opportunity(oppID) {
+                opportunity = opp.name
+                if let pid = opp.projectID, let proj = store.project(pid) {
+                    project = proj.name
+                    org = proj.orgID.flatMap { store.org($0)?.name }
+                }
+            } else if let projID = note.projectIDs.first, let proj = store.project(projID) {
+                project = proj.name
+                org = proj.orgID.flatMap { store.org($0)?.name }
+            } else if let orgID = note.orgIDs.first {
+                org = store.org(orgID)?.name
+            }
+        }
+
+        let payload = EventDispatcher.MeetingFinishedPayload(
+            title: title,
+            file: fileURL.path,
+            date: ISO8601DateFormatter().string(from: start),
+            durationSeconds: durationSeconds,
+            meetingType: meetingType,
+            organisation: org,
+            opportunity: opportunity,
+            project: project,
+            tags: tags)
+        EventDispatcher.dispatch(payload)
     }
 
     /// Local-only finalize: summarize and tag entirely on-device (Apple
@@ -1031,11 +1091,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let meta = OnDeviceNLP.extractMetadata(
                 transcript: transcript, includePeople: !settings.redactionEnabled)
             if !meta.isEmpty {
+                let customer = await validatedCustomer(meta.customer)
                 MeetingNotesWriter.addMeetingMetadata(
                     topics: meta.topics, people: meta.people,
-                    customer: meta.customer, project: meta.project, to: fileURL)
+                    customer: customer, project: meta.project, to: fileURL)
             }
         }
+    }
+
+    /// Guard against low-confidence `customer` guesses from entity extraction.
+    /// Accepts a name that matches a known Catalog org/opportunity (or alias);
+    /// otherwise drops a lone short token or an all-caps acronym — almost always
+    /// transcript noise (e.g. a mis-heard "Wwe") rather than a real customer.
+    /// Multi-word names pass through so genuinely new customers aren't lost.
+    @MainActor
+    private func validatedCustomer(_ raw: String?) -> String? {
+        guard let name = raw?.trimmingCharacters(in: .whitespaces), !name.isEmpty else { return nil }
+        let store = CatalogStore.shared
+        let known = store.doc.orgs.flatMap { [$0.name] + $0.aliases }
+            + store.doc.opportunities.map(\.name)
+        if known.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) { return name }
+        let tokens = name.split(whereSeparator: { $0 == " " })
+        if tokens.count == 1 {
+            let t = String(tokens[0])
+            if t.count <= 3 || t == t.uppercased() { return nil }
+        }
+        return name
     }
 
     /// Fire a single monthly notification the first time the estimated spend

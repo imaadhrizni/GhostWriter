@@ -503,14 +503,18 @@ final class TextPolisher {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
         let clipped = String(Self.summarizableBody(transcript).suffix(20_000))
         let requestBody = ChatRequest(
-            model: fastModel,
+            model: model,   // polishing model — the answered-vs-open judgment is subtle; the fast model over-lists
             messages: [
                 .init(role: "system", content: """
-                From this meeting transcript, list ONLY the questions that were explicitly asked but \
-                left WITHOUT a clear answer by the end — genuine open items to follow up on. \
-                Output Markdown bullets, one question per line, phrased as the question. \
-                Ignore rhetorical or already-answered questions. If every question was answered \
-                (or none were asked), output exactly NONE and nothing else.
+                From this meeting transcript, list ONLY genuinely open questions to follow up on: a \
+                question was explicitly asked AND no answer or resolution follows anywhere later in \
+                the transcript. Before listing a question, confirm no later line answers it — if any \
+                does, drop it. Exclude rhetorical questions, small talk, and anything that was \
+                addressed even partially or informally. Bias strongly toward leaving a question OUT \
+                when you are unsure whether it was answered. \
+                Output Markdown bullets, one open question per line, phrased as the question. \
+                If every question was answered, or none were genuinely open (or asked), output \
+                exactly NONE and nothing else.
                 """),
                 .init(role: "user", content: clipped)
             ],

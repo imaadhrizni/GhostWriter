@@ -28,7 +28,7 @@
 | `Sources/Services/AICache.swift` | On-disk cache for deterministic AI derivations (note briefs, follow-up drafts) in Application Support, keyed by content hash + model + prompt version |
 | `Sources/Meetings/AppleIntelligence.swift` | On-device LLM wrapper (Apple Foundation Models, macOS 26+) — availability-gated summaries/briefs/follow-ups |
 | `Sources/Transcription/OnDeviceNLP.swift` | On-device entity/topic tagging via Apple `NaturalLanguage` NER (universal — every Mac) |
-| `Sources/Services/TextInjector.swift` | Accessibility-based text injection |
+| `Sources/Services/TextInjector.swift` | Text injection — Accessibility (`AXSelectedText`) with a clipboard-paste fallback; browsers are routed straight to paste, since web `contenteditable` fields (Gmail compose/chat, Google Docs) accept an AX set but often don't insert |
 | `Sources/Services/BrowserURL.swift` | Reads the active browser tab's address for per-site styling |
 | `Sources/Services/KeychainService.swift` | Groq API-key storage in the macOS Keychain |
 | `Sources/Meetings/MeetingNotesWriter.swift` | Markdown transcript writer (front-matter, summaries, dated subfolders) |

@@ -107,7 +107,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
 
 private struct CatalogView: View {
     @ObservedObject private var store = CatalogStore.shared
-    @State private var section: CatalogSection = .notes
+    @State private var section: CatalogSection = .dashboard
     @State private var selID: String?
     @State private var status = ""
     @State private var showQuickAdd = false

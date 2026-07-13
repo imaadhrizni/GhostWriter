@@ -474,10 +474,24 @@ private struct AccountFilterPicker: View {
     private var currentName: String {
         selection.isEmpty ? "All accounts" : (store.org(selection)?.name ?? "All accounts")
     }
-    private var filtered: [CatalogOrg] {
+
+    /// Orgs in hierarchical order (parent then its children, depth-first) with a
+    /// depth for indentation. While searching, flattens to matches (depth 0) so
+    /// the query still finds nested accounts.
+    private var rows: [(org: CatalogOrg, depth: Int)] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return q.isEmpty ? store.orgsSorted
-            : store.orgsSorted.filter { $0.name.lowercased().contains(q) }
+        if !q.isEmpty {
+            return store.orgsSorted
+                .filter { $0.name.lowercased().contains(q) }
+                .map { ($0, 0) }
+        }
+        var out: [(CatalogOrg, Int)] = []
+        func walk(_ org: CatalogOrg, _ depth: Int) {
+            out.append((org, depth))
+            for child in store.childOrgs(of: org.id) { walk(child, depth + 1) }
+        }
+        for root in store.rootOrgs { walk(root, 0) }
+        return out
     }
 
     var body: some View {
@@ -496,12 +510,12 @@ private struct AccountFilterPicker: View {
                 TextField("Search accounts", text: $query)
                     .textFieldStyle(.roundedBorder)
                 List {
-                    accountRow(name: "All accounts", selected: selection.isEmpty) {
+                    accountRow(name: "All accounts", selected: selection.isEmpty, depth: 0) {
                         selection = ""; open = false; query = ""
                     }
-                    ForEach(filtered) { org in
-                        accountRow(name: org.name, selected: selection == org.id) {
-                            selection = org.id; open = false; query = ""
+                    ForEach(rows, id: \.org.id) { row in
+                        accountRow(name: row.org.name, selected: selection == row.org.id, depth: row.depth) {
+                            selection = row.org.id; open = false; query = ""
                         }
                     }
                 }
@@ -512,13 +526,18 @@ private struct AccountFilterPicker: View {
         }
     }
 
-    private func accountRow(name: String, selected: Bool, action: @escaping () -> Void) -> some View {
+    private func accountRow(name: String, selected: Bool, depth: Int, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack {
+            HStack(spacing: 4) {
+                if depth > 0 {
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
                 Text(name).lineLimit(1)
                 Spacer()
                 if selected { Image(systemName: "checkmark").foregroundStyle(.tint) }
             }
+            .padding(.leading, CGFloat(depth) * 14)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

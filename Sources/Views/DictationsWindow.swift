@@ -108,6 +108,7 @@ private struct DictationItem: Identifiable, Hashable {
 private struct DictationsView: View {
     @State private var items: [DictationItem] = []
     @State private var query = ""
+    @State private var loading = false
 
     private var filtered: [DictationItem] {
         guard !query.isEmpty else { return items }
@@ -134,6 +135,11 @@ private struct DictationsView: View {
                 Image(systemName: "magnifyingglass").foregroundColor(.secondary)
                 TextField("Search dictations", text: $query)
                     .textFieldStyle(.roundedBorder)
+                Button { Task { await reload() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Reload — drops any dictations deleted on disk")
+                .disabled(loading)
             }
             .padding(.horizontal, 12).padding(.top, 12)
 
@@ -189,6 +195,19 @@ private struct DictationsView: View {
         .frame(minWidth: 480, minHeight: 360)
         // Enumerating + parsing files is I/O — do it off the main thread so a
         // large archive doesn't freeze the window on open.
-        .task { items = await Task.detached(priority: .userInitiated) { DictationItem.loadAll() }.value }
+        .task { await reload() }
+        // The window controller is cached and reused, so re-scan whenever it
+        // becomes active again — a dictation deleted in Finder then drops off.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            Task { await reload() }
+        }
+    }
+
+    /// Re-enumerate the archive off the main thread. `loadAll` only returns
+    /// files that still exist, so deleted dictations disappear on reload.
+    private func reload() async {
+        loading = true
+        items = await Task.detached(priority: .userInitiated) { DictationItem.loadAll() }.value
+        loading = false
     }
 }

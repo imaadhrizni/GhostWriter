@@ -217,10 +217,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DigestWindowController.present()
     }
 
-    @MainActor @objc private func showPocTracker() {
-        PocTrackerWindowController.present()
-    }
-
     private func finishInitialization() {
         // Note: hotkeyManager.start() is deliberately NOT called here — it creates a
         // CGEventTap which itself triggers the system Accessibility prompt. We let
@@ -447,11 +443,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         askItem.image = NSImage(systemSymbolName: "sparkle.magnifyingglass", accessibilityDescription: nil)
         askItem.target = self
         menu.addItem(askItem)
-
-        let pocItem = NSMenuItem(title: "POC Tracker…", action: #selector(showPocTracker), keyEquivalent: "")
-        pocItem.image = NSImage(systemSymbolName: "flask", accessibilityDescription: nil)
-        pocItem.target = self
-        menu.addItem(pocItem)
 
         menu.addItem(NSMenuItem.separator())
 

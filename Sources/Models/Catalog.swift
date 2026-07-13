@@ -78,9 +78,28 @@ struct CatalogOpportunity: Codable, Identifiable, Hashable {
     var stage: OppStage = .open
     var valueCents: Int?
     var currency = "USD"
-    /// Proof-of-concept success criteria tracked across meetings. Defaulted so
-    /// catalogs written before this field existed still decode.
+    /// Proof-of-concept success criteria tracked across meetings. See the
+    /// custom decoder below — Swift's synthesized decoding ignores the default,
+    /// so a hand-rolled `init(from:)` is what actually lets older catalogs
+    /// (written before this field) still decode.
     var pocCriteria: [PocCriterion] = []
+}
+
+extension CatalogOpportunity {
+    /// Tolerant decoder: fields added after v1 (currently `pocCriteria`) are
+    /// optional on the wire, so catalogs exported before they existed still
+    /// load instead of failing the whole document. Declared in an extension so
+    /// the memberwise initializer and synthesized encoder are preserved.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        name = try c.decode(String.self, forKey: .name)
+        projectID = try c.decodeIfPresent(String.self, forKey: .projectID)
+        stage = try c.decodeIfPresent(OppStage.self, forKey: .stage) ?? .open
+        valueCents = try c.decodeIfPresent(Int.self, forKey: .valueCents)
+        currency = try c.decodeIfPresent(String.self, forKey: .currency) ?? "USD"
+        pocCriteria = try c.decodeIfPresent([PocCriterion].self, forKey: .pocCriteria) ?? []
+    }
 }
 
 /// Where a POC success criterion stands. `pending` until an evaluation lands.
@@ -288,6 +307,27 @@ final class CatalogStore: ObservableObject {
             }
         }
         return c
+    }
+
+    /// Bulk-add criteria (e.g. AI-extracted from meetings), skipping any whose
+    /// text already exists on the opportunity (case-insensitive). Returns how
+    /// many were actually added.
+    @discardableResult
+    func addPocCriteriaTexts(_ texts: [String], to oppID: String) -> Int {
+        var added = 0
+        mutate { doc in
+            guard let i = doc.opportunities.firstIndex(where: { $0.id == oppID }) else { return }
+            var existing = Set(doc.opportunities[i].pocCriteria.map { $0.text.lowercased() })
+            for raw in texts {
+                let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                let key = t.lowercased()
+                guard !t.isEmpty, !existing.contains(key) else { continue }
+                doc.opportunities[i].pocCriteria.append(PocCriterion(text: t))
+                existing.insert(key)
+                added += 1
+            }
+        }
+        return added
     }
 
     func setPocStatus(_ status: PocStatus, criterionID: String, oppID: String) {

@@ -526,6 +526,38 @@ final class TextPolisher {
         return trimmed.uppercased() == "NONE" ? "" : trimmed
     }
 
+    /// Extract POC success criteria from one or more meeting transcripts — the
+    /// measurable outcomes the proof-of-concept must prove (acceptance criteria,
+    /// "success looks like…", must-work requirements). Returns one criterion per
+    /// line, no bullets/numbering, or "" when none are stated. Used by the
+    /// Catalog's POC tracker to seed criteria from an opportunity's meetings.
+    func extractPocCriteria(transcript: String) async throws -> [String] {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(Self.summarizableBody(transcript).prefix(20_000))
+        let requestBody = ChatRequest(
+            model: model,   // measurable-criterion extraction is judgment-heavy — use the polishing model
+            messages: [
+                .init(role: "system", content: """
+                From this meeting transcript, extract the proof-of-concept SUCCESS CRITERIA — the \
+                specific, measurable outcomes the POC must demonstrate to be accepted (acceptance \
+                criteria, "success looks like…", must-work requirements, agreed evaluation points). \
+                Phrase each as a concise, testable statement (e.g. "SSO login works with Azure AD", \
+                "Handles 10k concurrent users"). One criterion per line, no bullets, no numbering, \
+                no preamble. Include ONLY criteria actually discussed — never invent. If none are \
+                stated, output exactly NONE and nothing else.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.2,
+            max_tokens: 400
+        )
+        let raw = try await send(requestBody, timeout: 40).trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.uppercased() == "NONE" { return [] }
+        return raw.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "-*• \t")) }
+            .filter { !$0.isEmpty && $0.uppercased() != "NONE" }
+    }
+
     /// A short, human-readable title for a finished meeting (used as the note's
     /// front-matter `title:` in place of the timestamp). Cheap fast-model call.
     func meetingTitle(transcript: String) async throws -> String {

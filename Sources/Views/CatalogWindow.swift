@@ -41,6 +41,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     case opportunities = "Opportunities"
     case people        = "People"
     case tags          = "Tags"
+    case poc           = "POC Tracker"
     var id: String { rawValue }
 
     /// Sidebar layout: the two ways to look at the catalog on top (Notes is the
@@ -52,6 +53,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         ("Browse",   [.notes, .map]),
         ("Records",  [.organisations, .projects, .opportunities, .people]),
         ("Labels",   [.tags]),
+        ("Tools",    [.poc]),
     ]
 
     var singular: String {
@@ -63,6 +65,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .opportunities: return "Opportunity"
         case .tags:          return "Tag"
         case .notes:         return "Note"
+        case .poc:           return "POC"
         }
     }
     var icon: String {
@@ -74,6 +77,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .opportunities: return "chart.line.uptrend.xyaxis"
         case .tags:          return "tag"
         case .notes:         return "doc.text"
+        case .poc:           return "flask"
         }
     }
     var tint: Color {
@@ -85,6 +89,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .opportunities: return .green
         case .tags:          return .pink
         case .notes:         return .indigo
+        case .poc:           return .cyan
         }
     }
 }
@@ -148,6 +153,7 @@ private struct CatalogView: View {
         case .opportunities: return store.doc.opportunities.count
         case .tags:          return store.doc.tags.count
         case .notes:         return store.doc.notes.count
+        case .poc:           return store.doc.opportunities.filter { !$0.pocCriteria.isEmpty }.count
         }
     }
 
@@ -189,6 +195,9 @@ private struct CatalogView: View {
                     ContentUnavailableView("Catalog map", systemImage: "point.3.filled.connected.trianglepath.dotted",
                                            description: Text("Expand the tree and pick any item to open it here."))
                 }
+            } else if section == .poc {
+                PocDetail(store: store, oppID: selID)
+                    .frame(minWidth: 360)
             } else {
                 EntityDetail(store: store, section: section, selID: $selID)
             }
@@ -216,6 +225,8 @@ private struct CatalogView: View {
     @ViewBuilder private var contentColumn: some View {
         if section == .map {
             MapTree(store: store) { sec, id in mapSection = sec; mapID = id }
+        } else if section == .poc {
+            PocOpportunityList(store: store, selID: $selID)
         } else if section == .notes {
             VStack(spacing: 0) {
                 notesSearchHeader
@@ -828,7 +839,7 @@ private struct EntityList: View {
             Divider()
             Group {
                 switch section {
-                case .map, .notes:   EmptyView()   // handled by CatalogView
+                case .map, .notes, .poc: EmptyView()   // handled by CatalogView
                 case .organisations: orgList
                 case .people:        peopleList
                 case .projects:      projectList
@@ -941,7 +952,7 @@ private struct EntityList: View {
             var name = "New Tag", n = 2
             while existing.contains(name.lowercased()) { name = "New Tag \(n)"; n += 1 }
             selID = store.addTag(name: name).id
-        case .notes:         break
+        case .notes, .poc:   break
         }
     }
 }
@@ -975,7 +986,7 @@ private struct EntityEditorView: View {
 
     var body: some View {
         switch section {
-        case .map: EmptyView()
+        case .map, .poc: EmptyView()
         case .organisations:
             if let o = store.org(id) { OrgEditor(store: store, org: o, onDelete: onDelete) } else { missing }
         case .people:
@@ -2051,6 +2062,241 @@ private struct NoteMapNode: View {
                 }
             } label: { label }
         }
+    }
+}
+
+// MARK: - POC Tracker (Catalog section)
+//
+// POC success criteria hang off a Catalog opportunity (`pocCriteria`), so the
+// tracker lives here rather than in a standalone window: pick an opportunity in
+// the middle column, edit its criteria in the detail pane. The detail pane can
+// also seed criteria from the opportunity's linked meetings (the "bridge").
+
+/// Middle column: opportunities, each showing POC progress at a glance.
+private struct PocOpportunityList: View {
+    @ObservedObject var store: CatalogStore
+    @Binding var selID: String?
+
+    private func label(_ o: CatalogOpportunity) -> String {
+        if let pid = o.projectID, let proj = store.project(pid) {
+            if let oid = proj.orgID, let org = store.org(oid) { return org.name }
+            return proj.name
+        }
+        return "—"
+    }
+
+    var body: some View {
+        Group {
+            if store.doc.opportunities.isEmpty {
+                ContentUnavailableView("No opportunities", systemImage: "chart.line.uptrend.xyaxis",
+                    description: Text("Add an opportunity under Records, then track its POC here."))
+            } else {
+                List(store.doc.opportunities.sortedByName, selection: $selID) { o in
+                    let total = o.pocCriteria.count
+                    let passed = o.pocCriteria.filter { $0.status == .pass }.count
+                    HStack(spacing: 10) {
+                        Image(systemName: "flask")
+                            .foregroundStyle(.white).frame(width: 20, height: 20)
+                            .background(RoundedRectangle(cornerRadius: 5).fill(Color.cyan))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(o.name)
+                            Text(label(o)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if total > 0 {
+                            Text("\(passed)/\(total)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(passed == total ? .green : .secondary)
+                        }
+                    }
+                    .tag(o.id)
+                }
+            }
+        }
+    }
+}
+
+/// Detail pane: the selected opportunity's POC criteria — add, cycle status,
+/// remove, and seed from linked meetings.
+private struct PocDetail: View {
+    @ObservedObject var store: CatalogStore
+    let oppID: String?
+    @State private var newCriterion = ""
+    @State private var suggesting = false
+    @State private var status = ""
+
+    private var opp: CatalogOpportunity? { oppID.flatMap { store.opportunity($0) } }
+
+    /// The bridge can run only when cloud AI is available and the opportunity
+    /// has at least one linked meeting to read.
+    private var canSuggest: Bool {
+        guard let opp else { return false }
+        return !AppSettings.shared.localOnlyMode && !store.notes(forOpportunity: opp).isEmpty
+    }
+
+    var body: some View {
+        if let opp {
+            VStack(alignment: .leading, spacing: 14) {
+                header(opp)
+                if opp.pocCriteria.isEmpty {
+                    ContentUnavailableView("No success criteria yet", systemImage: "checklist",
+                        description: Text("Add the measurable outcomes this POC must prove — or seed them from the opportunity's meetings."))
+                        .frame(maxHeight: .infinity)
+                } else {
+                    criteriaList(opp)
+                }
+                addBar(opp)
+            }
+            .padding(18)
+            .animation(.default, value: status)
+        } else {
+            ContentUnavailableView("Select an opportunity", systemImage: "flask",
+                description: Text("Pick an opportunity to track its proof-of-concept criteria."))
+        }
+    }
+
+    @ViewBuilder private func header(_ opp: CatalogOpportunity) -> some View {
+        let total = opp.pocCriteria.count
+        let passed = opp.pocCriteria.filter { $0.status == .pass }.count
+        let failed = opp.pocCriteria.filter { $0.status == .fail }.count
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "flask").foregroundStyle(.cyan)
+                Text(opp.name).font(.title3.weight(.semibold))
+                Spacer()
+                Button {
+                    suggestFromMeetings(opp)
+                } label: {
+                    if suggesting { ProgressView().controlSize(.small) }
+                    else { Label("Suggest from meetings", systemImage: "sparkles") }
+                }
+                .disabled(!canSuggest || suggesting)
+                .help(canSuggest
+                      ? "Read this opportunity's linked meetings and add the success criteria they mention"
+                      : "Needs cloud AI (not Local-only) and at least one meeting linked to this opportunity")
+            }
+            if total > 0 {
+                HStack(spacing: 12) {
+                    Text("\(passed)/\(total) passed").font(.subheadline.weight(.medium))
+                    if failed > 0 { Text("\(failed) failed").font(.subheadline).foregroundStyle(.red) }
+                    Spacer()
+                    if passed == total {
+                        Label("All criteria met", systemImage: "checkmark.seal.fill")
+                            .font(.caption).foregroundStyle(.green)
+                    }
+                }
+                ProgressView(value: Double(passed), total: Double(total))
+                    .tint(passed == total ? .green : .accentColor)
+            }
+            if !status.isEmpty {
+                Text(status).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func criteriaList(_ opp: CatalogOpportunity) -> some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(opp.pocCriteria) { c in
+                    HStack(alignment: .top, spacing: 10) {
+                        Button { store.setPocStatus(c.status.next, criterionID: c.id, oppID: opp.id) } label: {
+                            Image(systemName: statusIcon(c.status)).foregroundStyle(statusColor(c.status))
+                                .font(.system(size: 16))
+                        }
+                        .buttonStyle(.plain).help("Click to cycle: Pending → Passed → Failed")
+                        Text(c.text)
+                            .strikethrough(c.status == .pass, color: .secondary)
+                            .foregroundStyle(c.status == .fail ? Color.red : .primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(c.status.label).font(.caption).foregroundStyle(statusColor(c.status))
+                        Button { store.removePocCriterion(c.id, from: opp.id) } label: {
+                            Image(systemName: "xmark.circle").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain).help("Remove criterion")
+                    }
+                    .padding(.vertical, 8)
+                    Divider()
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    private func addBar(_ opp: CatalogOpportunity) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 8) {
+                // Multi-line so you can paste a whole list at once — one
+                // criterion per line (commas also split). ⌥⏎ for a newline;
+                // ⏎ commits.
+                TextField("Add a success criterion… (one per line to add several)",
+                          text: $newCriterion, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...4)
+                    .onSubmit { commitAdd(opp) }
+                Button("Add") { commitAdd(opp) }
+                    .disabled(newCriterion.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if splitCriteria(newCriterion).count > 1 {
+                Text("Adds \(splitCriteria(newCriterion).count) criteria")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Split the add field into individual criteria — one per line, and commas
+    /// split too — so a pasted list becomes many criteria at once.
+    private func splitCriteria(_ s: String) -> [String] {
+        s.split(whereSeparator: { $0 == "\n" || $0 == "," })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func commitAdd(_ opp: CatalogOpportunity) {
+        let items = splitCriteria(newCriterion)
+        guard !items.isEmpty else { return }
+        let added = store.addPocCriteriaTexts(items, to: opp.id)
+        newCriterion = ""
+        if items.count > 1 {
+            status = added == 0 ? "All already tracked."
+                                : "Added \(added) criteri\(added == 1 ? "on" : "a")."
+        } else {
+            status = ""
+        }
+    }
+
+    /// Bridge: read the opportunity's linked meeting notes, extract POC success
+    /// criteria, and add the new ones (deduped). Non-destructive — everything
+    /// added is editable/removable like a hand-typed criterion.
+    private func suggestFromMeetings(_ opp: CatalogOpportunity) {
+        let notes = store.notes(forOpportunity: opp)
+        let transcripts = notes.compactMap { try? String(contentsOf: store.url(of: $0), encoding: .utf8) }
+        guard !transcripts.isEmpty else { status = "No readable meetings linked to this opportunity."; return }
+        // Cap the combined text so a busy opportunity doesn't blow the context.
+        let combined = String(transcripts.joined(separator: "\n\n---\n\n").prefix(40_000))
+        let oppID = opp.id
+        suggesting = true
+        status = "Reading \(transcripts.count) meeting\(transcripts.count == 1 ? "" : "s")…"
+        Task { @MainActor in
+            defer { suggesting = false }
+            do {
+                let criteria = try await TextPolisher().extractPocCriteria(transcript: combined)
+                guard !criteria.isEmpty else { status = "No success criteria found in the linked meetings."; return }
+                let added = store.addPocCriteriaTexts(criteria, to: oppID)
+                status = added == 0
+                    ? "Found \(criteria.count) — all already tracked."
+                    : "Added \(added) criteri\(added == 1 ? "on" : "a") from \(transcripts.count) meeting\(transcripts.count == 1 ? "" : "s")."
+            } catch {
+                status = "Suggest failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func statusIcon(_ s: PocStatus) -> String {
+        switch s { case .pending: return "circle"; case .pass: return "checkmark.circle.fill"; case .fail: return "xmark.circle.fill" }
+    }
+    private func statusColor(_ s: PocStatus) -> Color {
+        switch s { case .pending: return .secondary; case .pass: return .green; case .fail: return .red }
     }
 }
 

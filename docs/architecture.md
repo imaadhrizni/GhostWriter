@@ -9,7 +9,7 @@
 - **System audio:** CoreAudio process taps — `CATapDescription` → `AudioHardwareCreateProcessTap` → aggregate device → direct `AudioDeviceIOProc` callback, converted to 16 kHz mono via `AVAudioConverter`. Uses only the **System Audio Recording** permission (`NSAudioCaptureUsageDescription`), not Screen Recording.
 - **Input/Output:** `CoreGraphics` CGEvent taps for the global hotkey; `ApplicationServices` `AXUIElement` API for text injection.
 - **UI:** SwiftUI for the API-key onboarding and the floating recording indicator.
-- **AI backend:** REST calls to Groq's Whisper (`whisper-large-v3`) and Llama (`llama-3.3-70b-versatile`) models.
+- **AI backend:** REST calls to Groq's Whisper (`whisper-large-v3`) for transcription and a configurable Llama/OpenAI-OSS/Qwen chat model (default `llama-4-scout`) for polishing & summaries, with an on-device path via Apple **Foundation Models** (the Apple Intelligence LLM, macOS **26+**) for summaries/briefs/follow-ups and Apple **NaturalLanguage** for entity/topic tagging. On-device is used in Local-only mode, when "Prefer on-device AI" is on, and as an automatic fallback when Groq fails. Deterministic derivations (note briefs, follow-up drafts) are cached on disk (see `AICache`).
 - **Logging:** unified `os.Logger` with per-feature categories. Rare lifecycle events at info, errors/warnings always persisted, high-frequency events at debug (transcript content is privacy-redacted). Inspect with:
   ```bash
   log stream --predicate 'subsystem BEGINSWITH "com.ghostwriter"' --level debug
@@ -23,24 +23,34 @@
 | `Sources/Audio/AudioCapture.swift` | Microphone capture |
 | `Sources/Audio/VoiceActivityDetector.swift` | RMS-based voice-activity detection |
 | `Sources/Audio/SystemAudioCapture.swift` | System-audio capture via CoreAudio process taps |
-| `Sources/Transcription/GroqService.swift` | Groq transcription + polishing API client |
-| `Sources/Meetings/TextPolisher.swift` / `Sources/Services/AppDetector.swift` | Context-aware formatting |
+| `Sources/Transcription/GroqService.swift` | Groq transcription API client — primes Whisper with the user glossary, rolling context, and a per-meeting `sessionGlossary` (Catalog entity names + people + taught voices) for accurate proper nouns |
+| `Sources/Meetings/TextPolisher.swift` / `Sources/Services/AppDetector.swift` | Context-aware formatting; the unified `noteBrief`; the cached, Groq→Apple degrading generation path; map-reduce summarization for long meetings (`condenseIfNeeded`); timestamp-cited summaries; and per-meeting-type key-field extraction |
+| `Sources/Services/AICache.swift` | On-disk cache for deterministic AI derivations (note briefs, follow-up drafts) in Application Support, keyed by content hash + model + prompt version |
+| `Sources/Meetings/AppleIntelligence.swift` | On-device LLM wrapper (Apple Foundation Models, macOS 26+) — availability-gated summaries/briefs/follow-ups |
+| `Sources/Transcription/OnDeviceNLP.swift` | On-device entity/topic tagging via Apple `NaturalLanguage` NER (universal — every Mac) |
 | `Sources/Services/TextInjector.swift` | Accessibility-based text injection |
 | `Sources/Services/BrowserURL.swift` | Reads the active browser tab's address for per-site styling |
 | `Sources/Services/KeychainService.swift` | Groq API-key storage in the macOS Keychain |
 | `Sources/Meetings/MeetingNotesWriter.swift` | Markdown transcript writer (front-matter, summaries, dated subfolders) |
 | `Sources/Audio/SpeakerProfiler.swift` | Voice-fingerprint clustering for speaker diarization |
+| `Sources/Audio/VoiceIdentityStore.swift` | Persistent named voice identities — matches diarized voices to saved names across meetings; learns from renames |
 | `Sources/Meetings/MeetingDetector.swift` | Per-process mic inspection — call start/end detection |
 | `Sources/Views/RenameSpeakersWindow.swift` | Per-meeting speaker renaming |
 | `Sources/Transcription/OfflineTranscriber.swift` | On-device speech fallback (Apple Speech) |
 | `Sources/Services/NotificationManager.swift` | Post-meeting, quick-note, and error notifications |
-| `Sources/Meetings/NotesAssistant.swift` | `NotesLibrary` — shared notes data layer (file listing, text/semantic search, cross-meeting excerpts, action-item parsing) |
-| `Sources/Transcription/SemanticIndex.swift` | On-device semantic search over notes (Apple `NLEmbedding`, cached) |
+| `Sources/Meetings/NotesLibrary.swift` | `NotesLibrary` — shared notes data layer (file listing, hybrid search, cross-meeting excerpts, action-item parsing) |
+| `Sources/Meetings/DigestService.swift` | Builds the proactive daily/weekly digest model + archived note (meetings, open/overdue action items, quiet relationships) |
+| `Sources/Views/DigestWindow.swift` | Interactive digest window — tickable action items, overdue highlighting, click-to-open |
+| `Sources/Views/AskWindow.swift` | Multi-turn "Ask your notes" chat with a scope selector (all / chosen meetings / org / opportunity) and cited sources |
+| `Sources/Transcription/SemanticIndex.swift` | On-device hybrid search over notes — blends `NLEmbedding` cosine similarity (meaning) with a BM25 lexical score (exact words/names), reranked with an exact-phrase bonus + recency boost; cached on disk. Lexical half runs even when no embedding model exists |
 | `Sources/Meetings/LiveMeetingAssistant.swift` | Floating in-meeting brief + grounded Ask (rolling TL;DR / actions) |
-| `Sources/Views/NotesViewerWindow.swift` | In-app Markdown viewer/editor (find bar, read-only/unlock-to-edit, follow-up, rename, PDF export, open externally) |
+| `Sources/Views/NotesViewerWindow.swift` | In-app Markdown viewer/editor — **rendered Markdown when reading** (headings, bullets, task lists, quotes, code, rules, inline styling, front-matter Properties box), raw monospaced editor with find bar when unlocked to edit; Summarize brief + Regenerate, follow-up, rename, PDF export. Honors the "open notes in external editor" setting, which routes every note-open to the OS default `.md` app instead |
 | `Sources/Models/Catalog.swift` | Catalog model + `CatalogStore` (Codable `Catalog.json` store: orgs/projects/opportunities plus per-note people/tags, org hierarchy, project→org inheritance, import, missing-file reconcile, purge) |
-| `Sources/Catalog/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, per-entity relationship timeline, search (Text/Meaning/Ask) + consolidated Filter menu with removable chips, row actions, Quick add, catalog export/import |
+| `Sources/Views/CatalogWindow.swift` | Catalog window — three-column browser, Map tree (per-note people/tags, expand/collapse), note linking, per-entity relationship timeline, search (Text/Meaning/Ask) + consolidated Filter menu with removable chips, row actions, Quick add, catalog export/import |
+| `Sources/Views/PocTrackerWindow.swift` | POC / success-criteria tracker — per-opportunity criteria with Pending/Passed/Failed status cycling and a progress bar; state stored on the opportunity in `Catalog.json` |
 | `Sources/Utils/MarkdownPDF.swift` | Paginated Markdown → PDF renderer (CoreText) |
+| `Sources/Utils/WindowHelpers.swift` | Shared `NSWindowController.bringToFront()` present helper |
+| `Sources/Utils/FrontMatter.swift` | Shared YAML front-matter split/strip helper (one implementation for all note-body extraction) |
 | `Sources/Services/RemindersExporter.swift` | Export action items to Apple Reminders (EventKit) |
 | `Sources/Services/BackupService.swift` | Full backup/restore — zips notes, quick notes, dictations & Catalog |
 | `Sources/Views/DictationsWindow.swift` | Searchable, day-grouped browser for archived dictations |
@@ -54,7 +64,7 @@
 | `Sources/Views/APIKeyView.swift` | API-key onboarding UI (SwiftUI) |
 | `Sources/Views/GlowOverlayView.swift` | Floating recording indicator / live-caption overlay |
 | `Sources/Views/MeetingPrepWindow.swift` | Non-modal meeting-prep panel — recent notes for the linked org/opp |
-| `Sources/Utils/DateDisplay.swift` | Date formatting for the menu & Notes Assistant |
+| `Sources/Utils/DateDisplay.swift` | Date formatting for the menu, Catalog, and note lists |
 | `Sources/App/GhostWriterApp.swift` | Menu-bar app, meeting mode, permission flow |
 | `Sources/App/main.swift` | Executable entry point |
 | `ship.sh` | Build, bundle, sign, and install to `/Applications` |
@@ -68,6 +78,6 @@
 | **System Audio Recording** | Capture the other participants' audio in Meeting Mode (via process taps). |
 | **Accessibility** | Detect the Right Option hotkey globally and inject text at your cursor. |
 | **Automation** (optional) | Read the active browser tab's address for per-site dictation styling (Safari + Chromium browsers). Prompted only on first use, per browser; decline and browser dictation just uses the generic Browser style. |
-| **Reminders** (optional) | Export meeting action items to the Reminders app (Notes Assistant → Action Items). Prompted only on first export; decline and the rest of the app is unaffected. |
+| **Reminders** (optional) | Export meeting action items to the Reminders app (from the Catalog and Today's Digest). Prompted only on first export; decline and the rest of the app is unaffected. |
 
 macOS keys each grant to the app's code signature, so re-signing with a different identity resets them. If a permission gets stuck, use **Reset All Permissions…** from the menu (it also clears the Automation and Reminders grants).

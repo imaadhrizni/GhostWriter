@@ -27,30 +27,31 @@ final class CatalogWindowController: NSWindowController {
         window.contentView = NSHostingView(rootView: CatalogView())
     }
 
-    func showAndActivate() {
-        NSApp.activate(ignoringOtherApps: true)
-        showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
-    }
 }
 
 // MARK: Sections
 
 private enum CatalogSection: String, CaseIterable, Identifiable {
+    // Declared in sidebar order so the enum and `sidebarGroups` can't drift:
+    // the two ways to browse first, then records in containment order.
+    case notes         = "Notes"
     case map           = "Map"
     case organisations = "Organisations"
-    case people        = "People"
     case projects      = "Projects"
     case opportunities = "Opportunities"
+    case people        = "People"
     case tags          = "Tags"
-    case notes         = "Notes"
     var id: String { rawValue }
 
-    /// Sidebar layout: the two ways to look at the catalog on top, then the
-    /// underlying records grouped together.
+    /// Sidebar layout: the two ways to look at the catalog on top (Notes is the
+    /// primary document list; Map is the graph explorer), then the records with
+    /// the deal-flow chain kept contiguous (org → project → opportunity) to
+    /// match the Map tree, with People — a cross-cutting per-note entity like
+    /// Tags — sitting last.
     static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
-        (nil,        [.map, .notes]),
-        ("Records",  [.organisations, .projects, .opportunities, .people, .tags]),
+        ("Browse",   [.notes, .map]),
+        ("Records",  [.organisations, .projects, .opportunities, .people]),
+        ("Labels",   [.tags]),
     ]
 
     var singular: String {
@@ -92,7 +93,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
 
 private struct CatalogView: View {
     @ObservedObject private var store = CatalogStore.shared
-    @State private var section: CatalogSection = .organisations
+    @State private var section: CatalogSection = .notes
     @State private var selID: String?
     @State private var status = ""
     @State private var showQuickAdd = false
@@ -217,7 +218,9 @@ private struct CatalogView: View {
             MapTree(store: store) { sec, id in mapSection = sec; mapID = id }
         } else if section == .notes {
             VStack(spacing: 0) {
+                notesSearchHeader
                 activeFilterBar
+                Divider()
                 Group {
                     if scope == .ask {
                         NoteAskView(store: store, question: query, nonce: askNonce,
@@ -229,26 +232,56 @@ private struct CatalogView: View {
                     }
                 }
             }
-                .searchable(text: $query, placement: .toolbar,
-                            prompt: scope == .ask ? "Ask a question…" : "Search notes")
-                .onSubmit(of: .search) { if scope == .ask { askNonce += 1 } }
-                .toolbar {
-                    ToolbarItem(placement: .automatic) { filterMenu }
-                    ToolbarItem(placement: .primaryAction) {
-                        Picker("Search type", selection: $scope) {
-                            Label("Text", systemImage: "textformat").tag(NoteSearchScope.text)
-                            if NotesLibrary.semanticAvailable {
-                                Label("Meaning", systemImage: "brain").tag(NoteSearchScope.meaning)
-                            }
-                            if canAsk { Label("Ask", systemImage: "sparkles").tag(NoteSearchScope.ask) }
-                        }
-                        .pickerStyle(.segmented)
-                        .help("Search type")
-                    }
-                }
         } else {
             EntityList(store: store, section: section, selID: $selID)
         }
+    }
+
+    /// Unified search + filter header atop the notes list: the search field, a
+    /// labeled Text/Meaning/Ask scope, and the Filter button — all in one block
+    /// so it reads as a single search system (removable filter chips sit just
+    /// below via `activeFilterBar`).
+    /// Placeholder tuned to the active search mode.
+    private var searchPrompt: String {
+        switch scope {
+        case .text:    return "Search notes by keyword…"
+        case .meaning: return "Search notes by meaning…"
+        case .ask:     return "Ask a question about these notes…"
+        }
+    }
+
+    private var notesSearchHeader: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: scope == .ask ? "sparkles" : "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField(searchPrompt, text: $query)
+                        .textFieldStyle(.plain)
+                        .onSubmit { if scope == .ask { askNonce += 1 } }
+                    if !query.isEmpty {
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.5)))
+
+                filterMenu
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+            }
+
+            Picker("Search type", selection: $scope) {
+                Text("Text").tag(NoteSearchScope.text)
+                if NotesLibrary.semanticAvailable { Text("Meaning").tag(NoteSearchScope.meaning) }
+                if canAsk { Text("Ask").tag(NoteSearchScope.ask) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+        .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 6)
     }
 
     /// Number of active filters, for the toolbar badge.
@@ -705,14 +738,6 @@ private struct RelationshipSummaryButton: View {
 
     private var canRun: Bool { !AppSettings.shared.localOnlyMode && !notes.isEmpty }
 
-    /// Insert a blank line before the "Next Steps" / "Action Items" labels so
-    /// each block reads more clearly, regardless of the model's own spacing.
-    private static func spaced(_ body: String) -> String {
-        body.components(separatedBy: "\n").flatMap { line -> [String] in
-            let t = line.trimmingCharacters(in: .whitespaces)
-            return (t == "Next Steps" || t == "Action Items") ? ["", line] : [line]
-        }.joined(separator: "\n")
-    }
 
     var body: some View {
         if canRun {
@@ -733,30 +758,43 @@ private struct RelationshipSummaryButton: View {
         let name = entityName
         Task { @MainActor in
             defer { working = false }
-            let polisher = TextPolisher()
-            var blocks: [String] = []
-            var lastError: String?
-            // One call per meeting so blocks stay separate (never blended). A
-            // single note failing (e.g. a transient rate limit) is skipped so
-            // the rest of the digest still opens.
-            for e in entries {
-                guard let text = try? String(contentsOf: e.url, encoding: .utf8), !text.isEmpty else { continue }
-                do {
-                    let body = try await polisher.meetingDigest(text: text)
-                    blocks.append("\(e.title)\n\(Self.spaced(body))")
-                } catch {
-                    lastError = error.localizedDescription
-                }
+            do {
+                let (digest, lastError) = try await Self.buildDigest(entries: entries, forceRefresh: false)
+                // Two blank lines between meetings.
+                NotesViewerWindowController.present(
+                    draftTitle: "Relationship — \(name)", text: digest,
+                    regenerate: {
+                        let (fresh, _) = try await Self.buildDigest(entries: entries, forceRefresh: true)
+                        return fresh
+                    })
+                if let lastError { status = "Some meetings were skipped (\(lastError))." }
+            } catch {
+                status = "Summary failed: \(error.localizedDescription)"
             }
-            guard !blocks.isEmpty else {
-                status = "Summary failed: \(lastError ?? "no note content to summarize.")"
-                return
-            }
-            // Two blank lines between meetings.
-            NotesViewerWindowController.present(draftTitle: "Relationship — \(name)",
-                                               text: blocks.joined(separator: "\n\n\n"))
-            if lastError != nil { status = "Some meetings were skipped (\(lastError!))." }
         }
+    }
+
+    /// Digest the given notes into one block per meeting. Skips a note that
+    /// fails (e.g. a transient rate limit) so the rest still open. Throws only
+    /// when nothing could be digested at all. `forceRefresh` bypasses the cache.
+    private static func buildDigest(entries: [(title: String, url: URL)],
+                                    forceRefresh: Bool) async throws -> (text: String, lastError: String?) {
+        let polisher = TextPolisher()
+        var blocks: [String] = []
+        var lastError: String?
+        for e in entries {
+            guard let text = try? String(contentsOf: e.url, encoding: .utf8), !text.isEmpty else { continue }
+            do {
+                let body = try await polisher.noteBrief(text: text, forceRefresh: forceRefresh)
+                blocks.append("\(e.title)\n\(TextPolisher.spacedBrief(body))")
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+        guard !blocks.isEmpty else {
+            throw GroqError.apiError(statusCode: 0, message: lastError ?? "no note content to summarize.")
+        }
+        return (blocks.joined(separator: "\n\n\n"), lastError)
     }
 }
 
@@ -785,7 +823,7 @@ private struct EntityList: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            EntitySearchBar(text: $search, placeholder: "Filter \(section.rawValue.lowercased())")
+            EntitySearchBar(text: $search, placeholder: "Search \(section.rawValue.lowercased())")
                 .padding(.horizontal, 8).padding(.vertical, 6)
             Divider()
             Group {

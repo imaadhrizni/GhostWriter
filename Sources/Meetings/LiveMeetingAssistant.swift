@@ -71,9 +71,10 @@ final class LiveMeetingAssistant: ObservableObject {
         coverage.removeAll { $0.id == id }
     }
 
-    // Cadence knobs: check often, but only spend a call when the transcript has
-    // grown enough since the last brief.
-    private let tickSeconds: UInt64 = 25
+    // Cadence knobs: refresh interval is user-configurable (it's the main cost
+    // lever); only spend a call when the transcript has grown enough since the
+    // last brief.
+    private var tickSeconds: UInt64 { UInt64(max(10, AppSettings.shared.liveBriefInterval)) }
     private let minGrowthChars = 350
 
     /// Begin briefing for a meeting. `transcriptProvider` returns the current
@@ -101,7 +102,33 @@ final class LiveMeetingAssistant: ObservableObject {
         self.collapsed = false
         self.question = ""
         self.answer = ""
+        self.ended = false
 
+        showPanel()
+        loop?.cancel()
+        loop = Task { [weak self] in await self?.run() }
+    }
+
+    /// The user turned the brief off for this meeting (no more AI calls), but
+    /// the meeting keeps recording and it can be resumed.
+    @Published private(set) var ended = false
+
+    /// Stop briefing for this meeting — halts the polling loop (and its token
+    /// spend) while leaving the transcript/agenda intact so it can resume.
+    func endForMeeting() {
+        loop?.cancel()
+        loop = nil
+        updating = false
+        ended = true
+        panel?.orderOut(nil)
+        visible = false
+    }
+
+    /// Restart briefing after `endForMeeting()`, if a meeting is still running.
+    func resume() {
+        guard ended, transcriptProvider != nil else { return }
+        ended = false
+        lastBriefedLength = 0   // re-brief from the current transcript
         showPanel()
         loop?.cancel()
         loop = Task { [weak self] in await self?.run() }
@@ -118,6 +145,7 @@ final class LiveMeetingAssistant: ObservableObject {
         panel?.orderOut(nil)
         visible = false
         updating = false
+        ended = false
     }
 
     /// True while a meeting is actively briefing (loop running).
@@ -385,7 +413,7 @@ private struct LiveAssistantView: View {
                 Image(systemName: "xmark").font(.caption)
             }
             .buttonStyle(.plain)
-            .help("Hide — reopen from the menu")
+            .help("Hide — reopen from the menu (or turn it off from the menu)")
         }
         .contentShape(Rectangle())
         .onTapGesture {

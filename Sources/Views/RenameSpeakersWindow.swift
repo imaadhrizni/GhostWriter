@@ -31,11 +31,6 @@ final class RenameSpeakersWindowController: NSWindowController {
             close: { [weak window] in window?.close() }))
     }
 
-    func showAndActivate() {
-        NSApp.activate(ignoringOtherApps: true)
-        showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
-    }
 }
 
 private struct RenameSpeakersView: View {

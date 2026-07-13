@@ -22,10 +22,8 @@ final class APIKeyWindowController: NSWindowController {
     }
 
     func showAndActivate() {
-        NSApp.activate(ignoringOtherApps: true)
-        showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
         window?.center()
+        bringToFront()
     }
 }
 

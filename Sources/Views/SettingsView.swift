@@ -25,10 +25,8 @@ final class SettingsWindowController: NSWindowController {
     }
 
     func showAndActivate() {
-        NSApp.activate(ignoringOtherApps: true)
-        showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
         window?.center()
+        bringToFront()
     }
 }
 
@@ -36,11 +34,14 @@ final class SettingsWindowController: NSWindowController {
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general     = "General"
+    case ai          = "AI & Models"
     case dictation   = "Dictation"
     case styles      = "Writing Styles"
     case quickNotes  = "Quick Notes"
     case meeting     = "Recording"
     case notes       = "Notes & Summaries"
+    case draftTemplates = "Draft Templates"
+    case digest      = "Digest"
     case privacy     = "Privacy"
     case permissions = "Permissions"
     case shortcuts   = "Shortcuts"
@@ -53,21 +54,25 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     /// Sidebar layout: related panes grouped under headers, the way
     /// System Settings clusters its domains.
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
-        (nil,                  [.general]),
+        (nil,                  [.general, .ai]),
         ("Capture",            [.dictation, .styles, .quickNotes]),
-        ("Meetings",           [.meeting, .notes]),
+        ("Meetings",           [.meeting, .notes, .draftTemplates, .digest]),
         ("Privacy & Security", [.privacy, .permissions]),
-        ("App",                [.shortcuts, .stats, .diagnostics, .about]),
+        ("System",             [.shortcuts, .stats, .diagnostics]),
+        ("About",              [.about]),
     ]
 
     var icon: String {
         switch self {
         case .general:     return "gearshape.fill"
+        case .ai:          return "cpu.fill"
         case .dictation:   return "mic.fill"
         case .styles:      return "textformat"
         case .quickNotes:  return "square.and.pencil"
         case .meeting:     return "person.2.wave.2.fill"
         case .notes:       return "doc.text.fill"
+        case .draftTemplates: return "doc.badge.gearshape"
+        case .digest:      return "newspaper.fill"
         case .privacy:     return "hand.raised.fill"
         case .permissions: return "lock.shield.fill"
         case .shortcuts:   return "command"
@@ -80,11 +85,14 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     var iconColor: Color {
         switch self {
         case .general:     return .gray
+        case .ai:          return .mint
         case .dictation:   return .blue
         case .styles:      return .cyan
         case .quickNotes:  return .yellow
         case .meeting:     return .purple
         case .notes:       return .indigo
+        case .draftTemplates: return .teal
+        case .digest:      return .brown
         case .privacy:     return .pink
         case .permissions: return .green
         case .shortcuts:   return .orange
@@ -144,11 +152,14 @@ struct SettingsView: View {
                 Group {
                     switch selection {
                     case .general:     GeneralPane()
+                    case .ai:          AIPane()
                     case .dictation:   DictationPane()
                     case .styles:      WritingStylesPane()
                     case .quickNotes:  QuickNotesPane()
                     case .meeting:     MeetingPane()
                     case .notes:       MeetingNotesPane()
+                    case .draftTemplates: DraftTemplatesPane()
+                    case .digest:      DigestPane()
                     case .privacy:     PrivacyPane()
                     case .permissions: PermissionsPane()
                     case .shortcuts:   ShortcutsPane()
@@ -171,26 +182,9 @@ struct SettingsView: View {
 
 // MARK: - General
 
-private struct GeneralPane: View {
+private struct AIPane: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var hasAPIKey = KeychainService.groqAPIKey() != nil
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
-
-    /// Registers/unregisters the app as a macOS login item. The system stores
-    /// this (System Settings → General → Login Items), so there is no
-    /// UserDefaults setting to keep in sync — status is re-read on appear.
-    private func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-        } catch {
-            Log.app.error("❌ Login item change failed: \(error.localizedDescription)")
-            launchAtLogin = SMAppService.mainApp.status == .enabled
-        }
-    }
 
     private static let transcriptionModels = [
         "whisper-large-v3",
@@ -199,13 +193,16 @@ private struct GeneralPane: View {
     ]
     private static let polishingModels = [
         "llama-3.3-70b-versatile",
+        "meta-llama/llama-4-scout-17b-16e-instruct",  // 500K TPD / 30K TPM — highest limits, avoids the 70B daily cap
         "llama-3.1-8b-instant",
-        "openai/gpt-oss-120b",
+        "openai/gpt-oss-120b",                          // reasoning; higher quality for digests
+        "openai/gpt-oss-20b",
+        "qwen/qwen3-32b",
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SettingsGroup("Groq API") {
+            SettingsGroup("Groq Account") {
                 HStack {
                     Image(systemName: hasAPIKey ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                         .foregroundColor(hasAPIKey ? .green : .orange)
@@ -215,9 +212,9 @@ private struct GeneralPane: View {
                         NotificationCenter.default.post(name: .showAPIKeyWindow, object: nil)
                     }
                 }
+            }
 
-                Divider()
-
+            SettingsGroup("Models") {
                 ModelField(
                     title: "Transcription model",
                     presets: Self.transcriptionModels,
@@ -260,11 +257,57 @@ private struct GeneralPane: View {
                 )
                 Text("A cheaper, faster model for high-frequency background work — the live brief, agenda coverage, auto-tagging, and search-term expansion. Summaries, follow-ups, and Ask use the polishing model above.")
                     .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("On-Device & Fallback") {
+                Toggle("Offline fallback (Apple on-device recognition)", isOn: $settings.offlineFallback)
+                Text("If Groq can't be reached, transcribe on-device instead of failing — applies to dictation, quick notes, and meetings. Lower accuracy and no AI polishing or summaries (transcription only), but zero network. Triggers on connectivity errors, not on API-key or server errors.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
 
                 Divider()
 
-                Toggle("Offline fallback (Apple on-device recognition)", isOn: $settings.offlineFallback)
-                Text("If Groq can't be reached, transcribe on-device instead of failing — applies to dictation, quick notes, and meetings. Lower accuracy and no AI polishing or summaries (transcription only), but zero network. Triggers on connectivity errors, not on API-key or server errors.")
+                Toggle("Prefer on-device AI for summaries & drafts", isOn: $settings.preferOnDeviceAI)
+                    .disabled(!AppleIntelligence.isAvailable)
+                Text("Generate note summaries, relationship digests, and follow-up drafts with Apple Intelligence instead of Groq — keeping Groq for transcription. Private and free; falls back to Groq if the on-device model isn't available. Groq still handles the live brief, auto-tags, and Ask.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if !AppleIntelligence.isAvailable {
+                    Label(AppleIntelligence.unavailableReason ?? "Apple Intelligence is unavailable on this Mac.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundColor(.orange)
+                }
+            }
+        }
+        .onAppear { hasAPIKey = KeychainService.groqAPIKey() != nil }
+    }
+}
+
+private struct GeneralPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+
+    /// Registers/unregisters the app as a macOS login item. The system stores
+    /// this (System Settings → General → Login Items), so there is no
+    /// UserDefaults setting to keep in sync — status is re-read on appear.
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            Log.app.error("❌ Login item change failed: \(error.localizedDescription)")
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Notes") {
+                Toggle("Open notes in external editor", isOn: $settings.openNotesExternally)
+                Text("Open note files in your default Markdown app (e.g. VS Code, Obsidian, Typora) instead of the in-app viewer — everywhere notes open: the menu, recent list, Catalog, and Ask. Set your preferred app in Finder → a .md file → Get Info → Open with → Change All. Off uses the built-in viewer.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -299,7 +342,6 @@ private struct GeneralPane: View {
             }
         }
         .onAppear {
-            hasAPIKey = KeychainService.groqAPIKey() != nil
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
     }
@@ -491,7 +533,7 @@ private struct DictationPane: View {
                         defaultValue: AppSettings.Default.streamChunkSeconds
                     )
                 }
-                Text("Transcription language lives in General → Groq API, since it applies to meetings too.")
+                Text("Transcription language lives in AI & Models → Models, since it applies to meetings too.")
                     .font(.caption).foregroundColor(.secondary)
             }
 
@@ -959,6 +1001,17 @@ private struct MeetingPane: View {
                             settings.maxSpeakers = AppSettings.Default.maxSpeakers
                         }
                     }
+                    HStack {
+                        Text("Separation sensitivity")
+                        Spacer()
+                        Slider(value: $settings.speakerSensitivity, in: 0.6...1.6, step: 0.1)
+                            .frame(width: 130)
+                        DefaultResetButton(isDefault: settings.speakerSensitivity == AppSettings.Default.speakerSensitivity) {
+                            settings.speakerSensitivity = AppSettings.Default.speakerSensitivity
+                        }
+                    }
+                    Text("Lower separates voices more eagerly (may over-split one speaker); higher merges similar-sounding voices into one. Adjust if speakers are being split or merged incorrectly.")
+                        .font(.caption).foregroundColor(.secondary)
                 }
             }
 
@@ -1066,7 +1119,7 @@ private struct MeetingNotesPane: View {
                 TemplateManager()
             }
 
-            SettingsGroup("Summaries & Action Items") {
+            SettingsGroup("Summary Content") {
                 Toggle("Append AI summary when a meeting ends", isOn: $settings.summariesEnabled)
                 Text("Adds the template's sections to the notes file.")
                     .font(.caption).foregroundColor(.secondary)
@@ -1079,10 +1132,36 @@ private struct MeetingNotesPane: View {
                 Text("Adds Decisions, Risks & Blockers, and Open Questions sections to the summary. Requires network access.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
+                Toggle("Extract key fields per meeting type", isOn: $settings.extractKeyFields)
+                Text("Pulls the fields that matter for the chosen template — a customer call's deal stage, budget, timeline, and next step; an interview's recommendation; a 1:1's sentiment — into a Key Details section and machine-readable front-matter. Categorical fields (deal stage, recommendation, sentiment) are mirrored into tags so you can filter by them in the Catalog. Requires network access.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Extract unanswered questions", isOn: $settings.extractUnanswered)
+                Text("Adds an Unanswered Questions section — questions raised in the meeting that never got a clear answer, i.e. your follow-up list. One extra AI call; disabled in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
                 Toggle("Add topic chapters", isOn: $settings.topicChapters)
                 Text("Appends a timestamped jump-list segmenting the meeting into topics. One extra AI call per meeting; disabled in Local-only mode.")
                     .font(.caption).foregroundColor(.secondary)
-                Divider()
+            }
+
+            SettingsGroup("Keyword Radar") {
+                Text("A watchlist of terms to flag — competitors, product names, risk phrases. One per line. Each finished meeting is scanned locally (works offline); matches appear in a Mentions section and, with front-matter on, as tags you can filter in the Catalog.")
+                    .font(.caption).foregroundColor(.secondary)
+                TextEditor(text: $settings.watchlistKeywords)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 90)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+                if settings.watchlist().isEmpty {
+                    Text("Empty — no scanning is performed.")
+                        .font(.caption).foregroundColor(.secondary)
+                } else {
+                    Text("\(settings.watchlist().count) term\(settings.watchlist().count == 1 ? "" : "s") tracked.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+
+            SettingsGroup("Metadata & Notifications") {
                 Toggle("Auto-tag topics & entities into front-matter", isOn: $settings.autoTagging)
                 Text("After summarizing, extract topic tags plus the people, customer, and project a meeting is about — mirrored into tags and written as structured attendees/customer/project fields (great for Obsidian/Notion graphs and Dataview). Names are skipped when redaction is on. Requires front-matter enabled and network access.")
                     .font(.caption).foregroundColor(.secondary)
@@ -1094,6 +1173,22 @@ private struct MeetingNotesPane: View {
                 Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
                 Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
                     .font(.caption).foregroundColor(.secondary)
+                if settings.liveAssistantEnabled {
+                    HStack {
+                        Text("Refresh every")
+                        Spacer()
+                        Picker("", selection: $settings.liveBriefInterval) {
+                            ForEach([15, 25, 45, 60, 90], id: \.self) { Text("\($0)s").tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 90)
+                        DefaultResetButton(isDefault: settings.liveBriefInterval == AppSettings.Default.liveBriefInterval) {
+                            settings.liveBriefInterval = AppSettings.Default.liveBriefInterval
+                        }
+                    }
+                    Text("How often the brief updates. Longer intervals mean fewer AI calls — lower cost, less frequent refreshes.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
                 Divider()
                 Toggle("Show prep card on start", isOn: $settings.meetingPrepCard)
                 Text("When a meeting is linked to an organisation or opportunity, a floating panel of that entity's recent notes appears as the meeting starts. This is the default for the per-meeting switch in the start dialog.")
@@ -1128,6 +1223,201 @@ private struct MeetingNotesPane: View {
     }
 }
 
+/// Draft Templates — edit the drafting guidance behind each output document
+/// type (the Draft… menu in the note viewer). Each type has an editable
+/// instruction with a per-item reset to the built-in default.
+private struct DraftTemplatesPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var selectedID: String = FollowUpKind.minutes.rawValue
+    @State private var text: String = ""
+    @State private var name: String = ""
+
+    /// The currently-selected document type, self-healing to the first built-in
+    /// if the selected custom template was deleted.
+    private var current: DraftDoc {
+        settings.allDraftDocs.first { $0.id == selectedID } ?? .builtIn(.minutes)
+    }
+
+    private var builtInIsCustomized: Bool {
+        if case .builtIn(let k) = current { return settings.hasCustomDraftGuidance(for: k) }
+        return false
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Document Type") {
+                HStack {
+                    Picker("Type", selection: $selectedID) {
+                        ForEach(settings.groupedDraftDocs, id: \.title) { group in
+                            Section(group.title) {
+                                ForEach(group.docs) { doc in
+                                    Label(doc.displayName, systemImage: doc.icon).tag(doc.id)
+                                }
+                            }
+                        }
+                    }
+                    .labelsHidden()
+                    .onChange(of: selectedID) { _, _ in load() }
+
+                    Button {
+                        let id = settings.addUserDraftTemplate(name: "New Document")
+                        selectedID = id
+                        load()
+                    } label: { Image(systemName: "plus") }
+                        .help("Add a custom document type")
+
+                    if current.isCustom {
+                        Button(role: .destructive) {
+                            if case .user(let t) = current {
+                                settings.deleteUserDraftTemplate(id: t.id)
+                                selectedID = FollowUpKind.minutes.rawValue
+                                load()
+                            }
+                        } label: { Image(systemName: "trash") }
+                            .help("Delete this custom document type")
+                    }
+                }
+                if case .builtIn(let k) = current {
+                    Text(k.blurb).font(.caption).foregroundColor(.secondary)
+                } else {
+                    Text("Pick a document type to edit how it's drafted, or add your own. These are the types offered by the note viewer's Draft… menu.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+
+            if current.isCustom {
+                SettingsGroup("Name") {
+                    TextField("Document name", text: $name)
+                        .onChange(of: name) { _, newValue in
+                            if case .user(let t) = current {
+                                settings.updateUserDraftTemplate(id: t.id, name: newValue)
+                            }
+                        }
+                }
+            }
+
+            SettingsGroup("\(current.displayName) guidance") {
+                TextEditor(text: $text)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 200)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+                    .onChange(of: text) { _, newValue in
+                        switch current {
+                        case .builtIn(let k): settings.setDraftGuidance(newValue, for: k)
+                        case .user(let t):    settings.updateUserDraftTemplate(id: t.id, guidance: newValue)
+                        }
+                    }
+                if !current.isCustom {
+                    HStack {
+                        Text(builtInIsCustomized ? "Customized" : "Using the built-in default")
+                            .font(.caption).foregroundColor(.secondary)
+                        Spacer()
+                        Button("Reset to Default") {
+                            if case .builtIn(let k) = current {
+                                settings.setDraftGuidance("", for: k)
+                                text = k.guidance
+                            }
+                        }
+                        .disabled(!builtInIsCustomized)
+                    }
+                }
+                Text("The instruction the AI follows for this document — recipient, tone, sections, and format. Draw only from the meeting's notes. Changing it regenerates the document the next time you draft it (each type caches separately).")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Text("Looking for a follow-up that adapts to the meeting type (including your custom meeting templates)? That's the note viewer's “Auto — match meeting type” draft, edited under Notes & Summaries → Templates → follow-up guidance.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .onAppear { load() }
+    }
+
+    private func load() {
+        text = current.guidance
+        if case .user(let t) = current { name = t.name }
+    }
+}
+
+/// Proactive digest — its own pane (it spans meetings, Catalog relationships,
+/// and scheduling, so it doesn't belong under notes formatting). The schedule
+/// controls stay visible but disabled until the digest is turned on, so users
+/// can see what it does before committing.
+private struct DigestPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    private static let weekdayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    private static func hourLabel(_ h: Int) -> String {
+        let period = h < 12 ? "AM" : "PM"
+        let hour12 = h % 12 == 0 ? 12 : h % 12
+        return "\(hour12) \(period)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Proactive Digest") {
+                Toggle("Enable digest", isOn: $settings.digestEnabled)
+                Text("A scheduled rollup — grouped by relationship — of your recent meetings, open (and overdue) action items, and Catalog relationships that have gone quiet. Opens in an interactive window and is archived as a Digests note. Generated on-device, no API cost. Build one anytime from the menu → Today's Digest.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Schedule") {
+                HStack {
+                    Text("Frequency")
+                    Spacer()
+                    Picker("", selection: $settings.digestFrequency) {
+                        Text("Daily").tag("daily")
+                        Text("Weekly").tag("weekly")
+                        Text("Monthly").tag("monthly")
+                        Text("Yearly").tag("yearly")
+                    }
+                    .labelsHidden().frame(width: 120)
+                }
+                if settings.digestFrequency == "weekly" {
+                    HStack {
+                        Text("Day")
+                        Spacer()
+                        Picker("", selection: $settings.digestWeekday) {
+                            ForEach(Array(Self.weekdayNames.enumerated()), id: \.offset) { i, name in
+                                Text(name).tag(i + 1)   // 1 = Sunday
+                            }
+                        }
+                        .labelsHidden().frame(width: 140)
+                    }
+                }
+                HStack {
+                    Text("At")
+                    Spacer()
+                    Picker("", selection: $settings.digestHour) {
+                        ForEach(0..<24, id: \.self) { h in Text(Self.hourLabel(h)).tag(h) }
+                    }
+                    .labelsHidden().frame(width: 100)
+                }
+                if settings.digestFrequency == "monthly" {
+                    Text("Monthly digests run on the 1st.")
+                        .font(.caption).foregroundColor(.secondary)
+                } else if settings.digestFrequency == "yearly" {
+                    Text("Yearly digests run on 1 January.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+            .disabled(!settings.digestEnabled)
+
+            SettingsGroup("Relationships") {
+                HStack {
+                    Text("Flag relationships quiet after")
+                    Spacer()
+                    Picker("", selection: $settings.staleRelationshipDays) {
+                        ForEach([14, 30, 60, 90], id: \.self) { Text("\($0) days").tag($0) }
+                    }
+                    .labelsHidden().frame(width: 110)
+                }
+                Text("An open opportunity with no note in this window is surfaced under \u{201C}Quiet Relationships\u{201D} in the digest.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            .disabled(!settings.digestEnabled)
+        }
+    }
+}
+
 /// Manages meeting templates: pick the default, add/rename/delete your own,
 /// and edit the section list of whichever is selected. Built-in templates are
 /// curated starting points (their sections are editable, resettable); user
@@ -1144,8 +1434,12 @@ private struct TemplateManager: View {
                 Text("Meeting template")
                 Spacer()
                 Picker("", selection: $settings.selectedTemplateID) {
-                    ForEach(settings.allTemplates) { template in
-                        Text(template.displayName).tag(template.id)
+                    ForEach(settings.groupedTemplates, id: \.title) { group in
+                        Section(group.title) {
+                            ForEach(group.templates) { template in
+                                Text(template.displayName).tag(template.id)
+                            }
+                        }
                     }
                 }
                 .labelsHidden()
@@ -1165,8 +1459,12 @@ private struct TemplateManager: View {
                     .help("Delete this template")
                 }
             }
-            Text("Shapes what the summary extracts — Standup gets Updates/Blockers, Customer Call gets Needs/Objections/Commitments, and so on. Also switchable per meeting from the menu bar.")
-                .font(.caption).foregroundColor(.secondary)
+            if case .builtIn(let t) = selected {
+                Text(t.blurb).font(.caption).foregroundColor(.secondary)
+            } else {
+                Text("Shapes what the summary extracts. Also switchable per meeting from the menu bar.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
 
             // Name field for user templates (built-in names are fixed).
             if !selected.isBuiltIn {
@@ -1277,7 +1575,7 @@ private struct TemplateFollowUpEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Follow-up guidance — how the “Draft Follow-up” action shapes the message (recipient, tone, what to include).")
+                Text("Auto follow-up shape — how the note viewer's “Auto — match meeting type” draft is written for *this* meeting type (recipient, tone, what to include).")
                     .font(.caption).foregroundColor(.secondary)
                 Spacer()
                 if case .builtIn(let t) = template {
@@ -1292,6 +1590,8 @@ private struct TemplateFollowUpEditor: View {
                 .frame(height: 70)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
                 .onChange(of: text) { _, newValue in save(newValue) }
+            Text("For explicit document types (Minutes, Follow-up Email, Status Update, …), see Meetings → Draft Templates.")
+                .font(.caption).foregroundColor(.secondary)
         }
         .onAppear { text = template.followUpText }
         // Switching the picker re-points this editor at another template.
@@ -1313,6 +1613,7 @@ private struct StatsPane: View {
     @ObservedObject private var stats = UsageStats.shared
     @ObservedObject private var settings = AppSettings.shared
     @State private var confirmingReset = false
+    @State private var aiCacheCount = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1373,7 +1674,34 @@ private struct StatsPane: View {
                             Button("Cancel", role: .cancel) {}
                         }
                 }
+                Divider()
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("AI summary cache")
+                        Text("Reuses generated note summaries, relationship digests, and follow-up drafts to save tokens. Rebuilds automatically. \(aiCacheCount) cached.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Button("Clear Cache") {
+                        AICache.shared.clear()
+                        aiCacheCount = AICache.shared.count
+                    }
+                    .disabled(aiCacheCount == 0)
+                }
+                HStack {
+                    Text("Cache limit (entries)")
+                    Spacer()
+                    Picker("", selection: $settings.aiCacheLimit) {
+                        ForEach([100, 250, 500, 1000, 2000], id: \.self) { Text("\($0)").tag($0) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 100)
+                    DefaultResetButton(isDefault: settings.aiCacheLimit == AppSettings.Default.aiCacheLimit) {
+                        settings.aiCacheLimit = AppSettings.Default.aiCacheLimit
+                    }
+                }
             }
+            .onAppear { aiCacheCount = AICache.shared.count }
         }
     }
 }
@@ -1421,8 +1749,17 @@ private struct PrivacyPane: View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Network") {
                 Toggle("Local-only mode (never contact the network)", isOn: $settings.localOnlyMode)
-                Text("Transcribe entirely on-device and skip every cloud step — no polishing, summaries, auto-tags, or follow-up drafts, and no API cost. Lower transcription accuracy; nothing leaves this Mac.")
+                Text("Transcribe on-device (Apple Speech) and run AI on-device too — summaries and follow-ups via Apple Intelligence, and entity/topic tags via macOS NaturalLanguage. No API cost and nothing leaves this Mac. Lower transcription accuracy than the cloud.")
                     .font(.caption).foregroundColor(.secondary)
+                Label {
+                    Text(AppleIntelligence.isAvailable
+                         ? "Apple Intelligence is available — on-device summaries are on."
+                         : "Apple Intelligence unavailable: \(AppleIntelligence.unavailableReason ?? "") On-device tagging still works; summaries need the cloud.")
+                } icon: {
+                    Image(systemName: AppleIntelligence.isAvailable ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                }
+                .font(.caption)
+                .foregroundColor(AppleIntelligence.isAvailable ? .secondary : .orange)
             }
 
             SettingsGroup("Redaction") {
@@ -1484,7 +1821,7 @@ private struct DiagnosticsPane: View {
             }
 
             SettingsGroup("Reliability") {
-                Text("When a Groq request fails, GhostWriter automatically retries meeting segments and — if offline fallback is on (General) — transcribes on-device so you don't lose audio. Detailed logs are in Console.app under the “GhostWriter” subsystem.")
+                Text("When a Groq request fails, GhostWriter automatically retries meeting segments and — if offline fallback is on (AI & Models → On-Device & Fallback) — transcribes on-device so you don't lose audio. Detailed logs are in Console.app under the “GhostWriter” subsystem.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }
@@ -1733,6 +2070,8 @@ extension Notification.Name {
     static let resetAllPermissions = Notification.Name("ResetAllPermissions")
     static let dictationHistoryDisabled = Notification.Name("DictationHistoryDisabled")
     static let renameSpeakersForFile = Notification.Name("RenameSpeakersForFile")
+    static let openDigest = Notification.Name("OpenDigest")
+    static let openNoteFile = Notification.Name("OpenNoteFile")
 }
 
 // MARK: - About

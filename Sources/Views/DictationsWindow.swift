@@ -23,11 +23,6 @@ final class DictationsWindowController: NSWindowController {
         window.contentView = NSHostingView(rootView: DictationsView())
     }
 
-    func showAndActivate() {
-        NSApp.activate(ignoringOtherApps: true)
-        showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
-    }
 }
 
 // MARK: - Model
@@ -70,28 +65,23 @@ private struct DictationItem: Identifiable, Hashable {
             return v
         }
 
-        var app = "", style = "", body: [String] = []
-        var secs = 0
-        var inFrontMatter = false
-        for (i, line) in content.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-            if i == 0, line == "---" { inFrontMatter = true; continue }
-            if inFrontMatter {
-                if line == "---" { inFrontMatter = false; continue }
-                if line.hasPrefix("app:") { app = unquote(String(line.dropFirst(4))) }
-                if line.hasPrefix("style:") { style = unquote(String(line.dropFirst(6))) }
-                if line.hasPrefix("duration:") {
-                    // stored as "duration: 12s"
-                    let v = String(line.dropFirst(9)).trimmingCharacters(in: .whitespaces)
-                        .replacingOccurrences(of: "s", with: "")
-                    secs = Int(v) ?? 0
-                }
-            } else {
-                // Everything outside the front-matter block is body content —
-                // works whether or not the file has front-matter.
-                let t = line.trimmingCharacters(in: .whitespaces)
-                if !t.isEmpty { body.append(t) }
+        let (frontMatter, bodyText) = FrontMatter.split(content)
+
+        var app = "", style = "", secs = 0
+        for line in (frontMatter ?? "").components(separatedBy: "\n") {
+            if line.hasPrefix("app:") { app = unquote(String(line.dropFirst(4))) }
+            if line.hasPrefix("style:") { style = unquote(String(line.dropFirst(6))) }
+            if line.hasPrefix("duration:") {
+                // stored as "duration: 12s"
+                let v = String(line.dropFirst(9)).trimmingCharacters(in: .whitespaces)
+                    .replacingOccurrences(of: "s", with: "")
+                secs = Int(v) ?? 0
             }
         }
+        let body = bodyText.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
         self.app = app
         self.style = style
         self.preview = body.joined(separator: " ")

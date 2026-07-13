@@ -96,7 +96,7 @@ cat <<EOF > "${APP_NAME}.app/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.17.2</string>
+    <string>0.25.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
@@ -123,8 +123,17 @@ EOF
 
 echo "💾 Copying binary and icon..."
 cp ".build/release/${APP_NAME}" "${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
+# App icon: regenerate from the vector source if it's missing, then bundle it.
+# Run ./make-appicon.sh to rebuild GhostWriter.iconset + GhostWriter.icns.
+if [ ! -f "GhostWriter.icns" ] && [ -x "make-appicon.sh" ]; then
+    echo "   ↻ GhostWriter.icns missing — regenerating…"
+    ./make-appicon.sh || echo "   ⚠️  icon build failed; continuing without a custom icon"
+fi
 if [ -f "GhostWriter.icns" ]; then
     cp "GhostWriter.icns" "${APP_NAME}.app/Contents/Resources/AppIcon.icns"
+    echo "   🎨 Bundled AppIcon.icns"
+else
+    echo "   ⚠️  No GhostWriter.icns — app will use the default icon"
 fi
 
 echo "🔐 Signing app with FRESH Identity..."

@@ -665,13 +665,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Log.dictation.debug("📝 Quick note cancelled")
     }
 
+    /// Whether a dictation blob is worth uploading to Groq: it must contain
+    /// voiced audio above the configured floor (unless the guard is disabled).
+    /// Skips the wasted round-trip — and the Whisper hallucinations it invites —
+    /// on recordings that are pure silence.
+    private func dictationHasSpeech(_ audio: Data) -> Bool {
+        guard settings.skipSilentDictation else { return true }
+        return voiceActivityDetector.containsVoice(
+            in: audio, aboveDBFS: settings.dictationSilenceThreshold)
+    }
+
     private func finishQuickNote() {
         audioCapture.stop()
         let captured = audioBuffer
         audioBuffer = Data()
         endQuickNoteRecording()
 
-        guard !captured.isEmpty else {
+        guard !captured.isEmpty, dictationHasSpeech(captured) else {
+            if !captured.isEmpty { Log.dictation.debug("🔇 Quick note was silent — skipping upload") }
             appState.recordingState = .idle
             hideOverlayUnlessMeeting()
             return
@@ -682,7 +693,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 let rawText = try await transcribeWithFallback(captured)
                 let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else {
+                guard !trimmed.isEmpty, !whisperHallucinations.contains(trimmed.lowercased()) else {
                     await MainActor.run {
                         appState.recordingState = .idle
                         hideOverlayUnlessMeeting()
@@ -1266,6 +1277,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if streaming, self.audioBuffer.count >= chunkBytes {
                 let chunk = self.audioBuffer
                 self.audioBuffer = Data()
+                // Don't spend a Groq call on a chunk that's all silence.
+                guard self.dictationHasSpeech(chunk) else {
+                    Log.dictation.debug("🔇 Silent chunk — skipping upload")
+                    return
+                }
                 self.streamTasks.append(Task { [weak self] in
                     try? await self?.transcribeWithFallback(chunk)
                 })
@@ -1340,7 +1356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         parts.append(piece)
                     }
                 }
-                if !capturedAudio.isEmpty {
+                if !capturedAudio.isEmpty, dictationHasSpeech(capturedAudio) {
                     // Prime the final tail with the chunks already transcribed
                     // in this same dictation, so terms stay consistent.
                     let tail = try await transcribeWithFallback(capturedAudio, context: parts.joined(separator: " "))
@@ -1348,7 +1364,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     if !tail.isEmpty { parts.append(tail) }
                 }
                 let rawText = parts.joined(separator: " ")
-                guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                let rawTrimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !rawTrimmed.isEmpty, !whisperHallucinations.contains(rawTrimmed.lowercased()) else {
                     await MainActor.run {
                         appState.recordingState = .idle
                         if !appState.isMeetingMode { overlayPanel?.orderOut(nil) }
@@ -1849,21 +1866,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// The tracked call released the mic while Meeting Mode is still running —
-    /// offer to stop instead of transcribing an empty room.
+    /// offer to stop instead of transcribing an empty room. Routes through the
+    /// same coverage check as a manual end so the open-items list is folded into
+    /// this one prompt rather than shown as a second dialog afterwards.
     private func offerToStopMeeting() {
         guard appState.isMeetingMode else { return }
-
-        let alert = NSAlert()
-        alert.messageText = "Call ended"
-        alert.informativeText = "The call seems to be over, but Meeting Mode is still recording. Stop and finalize the notes?"
-        alert.addButton(withTitle: "Stop & Save Notes")
-        alert.addButton(withTitle: "Keep Recording")
-        alert.alertStyle = .informational
-
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            Task { @MainActor in await confirmEndAndStopMeeting() }
-        }
+        Task { @MainActor in await confirmEndAndStopMeeting(callEnded: true) }
     }
 
     // MARK: - Meeting Mode
@@ -1876,12 +1884,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// "Ask before it ends": when the user deliberately ends a meeting, warn
-    /// about anything still open — the user's uncovered agenda items AND any
-    /// dynamically-discovered topics raised but left unresolved — and offer to
-    /// keep recording. Stops straight away if there's nothing outstanding.
+    /// "Ask before it ends": when a meeting ends, warn about anything still
+    /// open — the user's uncovered agenda items AND any dynamically-discovered
+    /// topics raised but left unresolved — and offer to keep recording.
+    ///
+    /// `callEnded` marks the auto-detect path (a tracked call released the mic):
+    /// there we always confirm (detection can misfire), and the open-items list,
+    /// if any, is folded into that single "Call ended" prompt. A manual end
+    /// (menu / ⌃⌥M) stops straight away when nothing is outstanding.
     @MainActor
-    private func confirmEndAndStopMeeting() async {
+    private func confirmEndAndStopMeeting(callEnded: Bool = false) async {
         guard !endCoverageChecking else { return }
 
         let assistant = LiveMeetingAssistant.shared
@@ -1897,37 +1909,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let settings = AppSettings.shared
             let transcript = meetingNotes.currentFilePath.flatMap { meetingNotes.transcriptText(of: $0) } ?? ""
             let spoken = Self.dialogueLength(of: transcript)
-            guard !settings.localOnlyMode, KeychainService.groqAPIKey() != nil, spoken > 200 else {
+            if !settings.localOnlyMode, KeychainService.groqAPIKey() != nil, spoken > 200 {
+                endCoverageChecking = true
+                meetingModeMenuItem?.title = "Checking coverage…"
+                let status = await textPolisher.agendaStatus(
+                    userAgenda: meetingAgenda,
+                    transcript: transcript.trimmingCharacters(in: .whitespacesAndNewlines),
+                    preferFast: false)
+                endCoverageChecking = false
+                meetingModeMenuItem?.title = appState.isMeetingMode ? "End Meeting" : "Start Meeting"
+                let userUncovered = zip(meetingAgenda, status.userCovered).filter { !$0.1 }.map { $0.0 }
+                let openTopics = status.newTopics.map { "\($0) (raised, unresolved)" }
+                uncovered = userUncovered + openTopics
+                Log.meeting.info("🔎 End-coverage (model): flagged=\(uncovered.count)")
+            } else {
                 Log.meeting.info("⏭ End-coverage skipped (local=\(settings.localOnlyMode), spoken=\(spoken))")
-                stopMeetingMode(); return
+                uncovered = []
             }
-            endCoverageChecking = true
-            meetingModeMenuItem?.title = "Checking coverage…"
-            let status = await textPolisher.agendaStatus(
-                userAgenda: meetingAgenda,
-                transcript: transcript.trimmingCharacters(in: .whitespacesAndNewlines),
-                preferFast: false)
-            endCoverageChecking = false
-            meetingModeMenuItem?.title = appState.isMeetingMode ? "End Meeting" : "Start Meeting"
-            let userUncovered = zip(meetingAgenda, status.userCovered).filter { !$0.1 }.map { $0.0 }
-            let openTopics = status.newTopics.map { "\($0) (raised, unresolved)" }
-            uncovered = userUncovered + openTopics
-            Log.meeting.info("🔎 End-coverage (model): flagged=\(uncovered.count)")
         }
 
         // The meeting may have been stopped another way while we were checking.
         guard appState.isMeetingMode else { return }
-        guard !uncovered.isEmpty else { stopMeetingMode(); return }
 
+        // Manual end with nothing outstanding: stop, no dialog. (An auto-detected
+        // call always confirms — detection can be wrong.)
+        if !callEnded && uncovered.isEmpty { stopMeetingMode(); return }
+
+        let bullets = uncovered.map { "•  \($0)" }.joined(separator: "\n")
         let alert = NSAlert()
-        alert.messageText = "Before you end this meeting"
-        alert.informativeText = "These points still look open:\n\n" + uncovered.map { "•  \($0)" }.joined(separator: "\n")
-        alert.addButton(withTitle: "Keep Recording")
-        alert.addButton(withTitle: "End Anyway")
         alert.alertStyle = .informational
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() != .alertFirstButtonReturn {
-            stopMeetingMode()   // "End Anyway"
+        if callEnded {
+            alert.messageText = "Call ended"
+            alert.informativeText = uncovered.isEmpty
+                ? "The call seems to be over, but Meeting Mode is still recording. Stop and finalize the notes?"
+                : "The call seems to be over. These points still look open:\n\n\(bullets)\n\nStop and finalize the notes?"
+            alert.addButton(withTitle: "Stop & Save Notes")   // default: the call really is over
+            alert.addButton(withTitle: "Keep Recording")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn { stopMeetingMode() }
+        } else {
+            alert.messageText = "Before you end this meeting"
+            alert.informativeText = "These points still look open:\n\n\(bullets)"
+            alert.addButton(withTitle: "Keep Recording")      // default: guard against an accidental end
+            alert.addButton(withTitle: "End Anyway")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() != .alertFirstButtonReturn { stopMeetingMode() }
         }
     }
 

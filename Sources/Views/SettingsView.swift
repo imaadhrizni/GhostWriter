@@ -162,6 +162,9 @@ fileprivate enum SettingsSearchIndex {
         // Dictation
         .init(label: "Dictation hotkey", section: .dictation, keywords: ["shortcut", "push to talk", "trigger", "default", "reset"]),
         .init(label: "Activation (hold / tap-to-lock / toggle)", section: .dictation, keywords: ["hands-free", "hands free", "toggle", "tap to lock", "latch", "hold", "long dictation", "push to talk", "ptt"]),
+        .init(label: "Skip silent recordings", section: .dictation, keywords: ["silence", "silent", "vad", "voice activity", "threshold", "dbfs", "noise gate", "skip", "save api", "hallucination"]),
+        .init(label: "Voice commands", section: .styles, keywords: ["dictation commands", "new paragraph", "scratch that", "phrase", "effect", "rules"]),
+        .init(label: "Per-app style overrides", section: .styles, keywords: ["app", "bundle id", "override", "force style", "slack", "vscode", "per app"]),
         // Writing styles
         .init(label: "Writing styles", section: .styles, keywords: ["tone", "prompt", "rewrite", "voice", "custom style"]),
         .init(label: "Add or delete a writing style", section: .styles, keywords: ["new", "remove", "delete", "create", "edit"]),
@@ -871,6 +874,19 @@ private struct DictationPane: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
+            SettingsGroup("Silence") {
+                Toggle("Skip silent recordings", isOn: $settings.skipSilentDictation)
+                Text("Don't upload a recording (or streaming chunk) to Groq unless it actually contains speech — saves API calls and avoids Whisper inventing text from silence.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.skipSilentDictation {
+                    ThresholdSlider(
+                        title: "Silence threshold",
+                        value: $settings.dictationSilenceThreshold, range: -60...(-25),
+                        defaultValue: AppSettings.Default.dictationSilenceThreshold,
+                        help: "Audio quieter than this the whole time counts as silence. Lower = uploads quieter speech; higher = skips more aggressively.")
+                }
+            }
+
             SettingsGroup("Accuracy") {
                 Text("Custom vocabulary").font(.caption.bold())
                 MultilineField(text: $settings.vocabulary,
@@ -954,22 +970,13 @@ private struct WritingStylesPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Voice Commands") {
-                HStack {
-                    Toggle("Voice commands", isOn: $settings.voiceCommandsEnabled)
-                    Spacer()
-                    DefaultResetButton(isDefault: settings.voiceCommandRules == AppSettings.Default.voiceCommandRules) {
-                        settings.voiceCommandRules = AppSettings.Default.voiceCommandRules
-                    }
-                }
+                Toggle("Voice commands", isOn: $settings.voiceCommandsEnabled)
                 Text("Say \"new paragraph\", \"comma\", \"scratch that\", or \"all caps … end caps\" while dictating.")
                     .font(.caption).foregroundColor(.secondary)
                 if settings.voiceCommandsEnabled {
-                    Text("Rules — one per line, \"spoken phrase → effect\". Edit freely; the polishing model follows them.")
+                    Text("Each rule is a spoken phrase and the effect it triggers. Edit freely; the polishing model follows them.")
                         .font(.caption).foregroundColor(.secondary)
-                    MultilineField(text: $settings.voiceCommandRules,
-                                   placeholder: "new paragraph → line break\nscratch that → delete last sentence",
-                                   minHeight: 90,
-                                   font: .system(.caption, design: .monospaced))
+                    VoiceCommandEditor()
                 }
             }
 
@@ -978,10 +985,9 @@ private struct WritingStylesPane: View {
             }
 
             SettingsGroup("Per-App Style Overrides") {
-                MultilineField(text: $settings.appProfiles,
-                               placeholder: "com.tinyspeck.slackmacgap: messaging")
-                Text("Force a built-in style per app, one per line: bundle.id: style — styles: messaging, email, code, browser, notes, general (e.g. com.tinyspeck.slackmacgap: messaging). Custom styles apply via the default above.")
+                Text("Force a built-in style for a specific app. Use “Add current app” to grab the frontmost app's ID. Custom styles apply via the default above.")
                     .font(.caption).foregroundColor(.secondary)
+                AppProfileEditor()
             }
 
             SettingsGroup("Browser Tab Styles") {
@@ -1092,6 +1098,215 @@ private struct DomainStyleEditor: View {
         list.map { ($0.host.trimmingCharacters(in: .whitespaces), $0.style) }
             .filter { !$0.0.isEmpty }
             .map { "\($0.0): \($0.1)" }
+            .joined(separator: "\n")
+    }
+}
+
+/// Row-based editor for per-app style overrides. Same shape as the browser-tab
+/// editor — a bundle-ID field + a style Picker (built-ins only) — plus an
+/// "Add app…" menu of running apps so you don't have to hunt for bundle IDs.
+/// Backed by the same newline `bundle.id: style` string, kept in sync with a
+/// collapsible bulk-edit box.
+private struct AppProfileEditor: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var rules: [Rule] = []
+    @State private var showBulk = false
+
+    private struct Rule: Identifiable, Equatable {
+        let id = UUID()
+        var bundleID: String
+        var style: String
+    }
+
+    private var defaultStyle: String { settings.builtInStyleKeys.first?.key ?? "general" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if rules.isEmpty {
+                Text("No app overrides yet.").font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach($rules) { $rule in
+                    HStack(spacing: 8) {
+                        TextField("com.tinyspeck.slackmacgap", text: $rule.bundleID)
+                            .textFieldStyle(.roundedBorder)
+                        Image(systemName: "arrow.right").font(.caption2).foregroundColor(.secondary)
+                        Picker("", selection: $rule.style) {
+                            ForEach(styleOptions(including: rule.style), id: \.key) { opt in
+                                Text(opt.label).tag(opt.key)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 130)
+                        Button { rules.removeAll { $0.id == rule.id } } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .buttonStyle(.plain).foregroundColor(.secondary).help("Remove")
+                    }
+                }
+            }
+
+            HStack {
+                Menu {
+                    ForEach(runningApps(), id: \.bundleID) { app in
+                        Button(app.name) { add(bundleID: app.bundleID) }
+                    }
+                    Divider()
+                    Button("Blank row") { add(bundleID: "") }
+                } label: {
+                    Label("Add app…", systemImage: "plus")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                Spacer()
+                DefaultResetButton(isDefault: settings.appProfiles.isEmpty) {
+                    settings.appProfiles = ""
+                    hydrate()
+                }
+            }
+
+            DisclosureGroup(isExpanded: $showBulk) {
+                MultilineField(text: $settings.appProfiles,
+                               placeholder: "com.tinyspeck.slackmacgap: messaging\ncom.microsoft.VSCode: code",
+                               minHeight: 70,
+                               font: .system(.caption, design: .monospaced))
+                Text("One override per line, bundle.id: style. Edits here stay in sync with the rows above.")
+                    .font(.caption2).foregroundColor(.secondary)
+            } label: {
+                Text("Paste or edit as a list").font(.caption)
+            }
+        }
+        .onAppear(perform: hydrate)
+        .onChange(of: rules) { _, new in
+            let serialized = serialize(new)
+            if serialized != settings.appProfiles { settings.appProfiles = serialized }
+        }
+        .onChange(of: settings.appProfiles) { _, new in
+            if new != serialize(rules) { hydrate() }
+        }
+    }
+
+    private func add(bundleID: String) {
+        // Don't add a duplicate; just focus stays where it is if already present.
+        guard bundleID.isEmpty || !rules.contains(where: { $0.bundleID == bundleID }) else { return }
+        rules.append(Rule(bundleID: bundleID, style: defaultStyle))
+    }
+
+    /// Currently-running regular apps (excluding GhostWriter itself), by name.
+    private func runningApps() -> [(name: String, bundleID: String)] {
+        NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app -> (String, String)? in
+                guard let id = app.bundleIdentifier, id != Bundle.main.bundleIdentifier,
+                      let name = app.localizedName else { return nil }
+                return (name, id)
+            }
+            .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+            .map { (name: $0.0, bundleID: $0.1) }
+    }
+
+    private func styleOptions(including current: String) -> [(key: String, label: String)] {
+        var opts = settings.builtInStyleKeys
+        if !current.isEmpty && !opts.contains(where: { $0.key == current }) {
+            opts.append((current, "\(current) (missing)"))
+        }
+        return opts
+    }
+
+    private func hydrate() {
+        rules = settings.appProfileList.map { Rule(bundleID: $0.bundleID, style: $0.style) }
+    }
+    private func serialize(_ list: [Rule]) -> String {
+        list.map { ($0.bundleID.trimmingCharacters(in: .whitespaces), $0.style) }
+            .filter { !$0.0.isEmpty }
+            .map { "\($0.0): \($0.1)" }
+            .joined(separator: "\n")
+    }
+}
+
+/// Row-based editor for voice commands. Each rule is a spoken phrase and the
+/// effect it triggers, shown as a two-column row. There's no structured model
+/// behind this — the rows serialize back to the same free-form
+/// "phrase → effect" lines the polishing model reads, so the LLM keeps its
+/// latitude to interpret fuzzy phrasing. Collapsible bulk-edit box included.
+private struct VoiceCommandEditor: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var rules: [Rule] = []
+    @State private var showBulk = false
+
+    private struct Rule: Identifiable, Equatable {
+        let id = UUID()
+        var phrase: String
+        var effect: String
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if rules.isEmpty {
+                Text("No voice commands yet.").font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach($rules) { $rule in
+                    HStack(spacing: 8) {
+                        TextField("spoken phrase", text: $rule.phrase)
+                            .textFieldStyle(.roundedBorder)
+                        Image(systemName: "arrow.right").font(.caption2).foregroundColor(.secondary)
+                        TextField("effect", text: $rule.effect)
+                            .textFieldStyle(.roundedBorder)
+                        Button { rules.removeAll { $0.id == rule.id } } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .buttonStyle(.plain).foregroundColor(.secondary).help("Remove")
+                    }
+                }
+            }
+
+            HStack {
+                Button { rules.append(Rule(phrase: "", effect: "")) } label: {
+                    Label("Add command", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                Spacer()
+                DefaultResetButton(isDefault: settings.voiceCommandRules == AppSettings.Default.voiceCommandRules) {
+                    settings.voiceCommandRules = AppSettings.Default.voiceCommandRules
+                    hydrate()
+                }
+            }
+
+            DisclosureGroup(isExpanded: $showBulk) {
+                MultilineField(text: $settings.voiceCommandRules,
+                               placeholder: "new paragraph → line break\nscratch that → delete last sentence",
+                               minHeight: 70,
+                               font: .system(.caption, design: .monospaced))
+                Text("One rule per line, phrase → effect. Edits here stay in sync with the rows above.")
+                    .font(.caption2).foregroundColor(.secondary)
+            } label: {
+                Text("Paste or edit as a list").font(.caption)
+            }
+        }
+        .onAppear(perform: hydrate)
+        .onChange(of: rules) { _, new in
+            let serialized = serialize(new)
+            if serialized != settings.voiceCommandRules { settings.voiceCommandRules = serialized }
+        }
+        .onChange(of: settings.voiceCommandRules) { _, new in
+            if new != serialize(rules) { hydrate() }
+        }
+    }
+
+    private func hydrate() {
+        rules = settings.voiceCommandRules
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line in
+                let parts = line.components(separatedBy: "→")
+                let phrase = parts.first?.trimmingCharacters(in: .whitespaces) ?? ""
+                let effect = parts.count > 1 ? parts[1...].joined(separator: "→").trimmingCharacters(in: .whitespaces) : ""
+                guard !phrase.isEmpty else { return nil }
+                return Rule(phrase: phrase, effect: effect)
+            }
+    }
+    private func serialize(_ list: [Rule]) -> String {
+        list.map { ($0.phrase.trimmingCharacters(in: .whitespaces), $0.effect.trimmingCharacters(in: .whitespaces)) }
+            .filter { !$0.0.isEmpty }
+            .map { $0.1.isEmpty ? $0.0 : "\($0.0) → \($0.1)" }
             .joined(separator: "\n")
     }
 }
@@ -1688,7 +1903,7 @@ private struct KeywordRadarEditor: View {
                 MultilineField(text: $settings.watchlistKeywords,
                                placeholder: "Acme Corp\nlatency\nrenewal",
                                minHeight: 80,
-                               font: .system(size: 12, design: .monospaced))
+                               font: .system(.caption, design: .monospaced))
                 Text("One term per line (commas also work). Edits here stay in sync with the chips above.")
                     .font(.caption).foregroundColor(.secondary)
             } label: {
@@ -1931,7 +2146,7 @@ private struct DraftTemplatesPane: View {
                 MultilineField(text: $text,
                                placeholder: "Describe the recipient, tone, sections, and format the model should use…",
                                minHeight: 200,
-                               font: .system(size: 12, design: .monospaced))
+                               font: .system(.caption, design: .monospaced))
                     .onChange(of: text) { _, newValue in
                         switch current {
                         case .builtIn(let k): settings.setDraftGuidance(newValue, for: k)
@@ -2764,7 +2979,7 @@ private struct MultilineField: View {
     @Binding var text: String
     var placeholder: String = ""
     var minHeight: CGFloat = 54
-    var font: Font = .system(.body, design: .monospaced)
+    var font: Font = .system(.caption, design: .monospaced)
 
     var body: some View {
         TextEditor(text: $text)

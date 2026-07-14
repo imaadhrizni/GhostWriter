@@ -71,6 +71,8 @@ final class AppSettings: ObservableObject {
         static let voiceCommandRules      = "dictation.voiceCommandRules"
         static let streamingDictation     = "dictation.streaming"
         static let streamChunkSeconds     = "dictation.streamChunkSeconds"
+        static let skipSilentDictation    = "dictation.skipSilent"
+        static let dictationSilenceThreshold = "dictation.silenceThreshold"
         static let maxSpeakers            = "meeting.maxSpeakers"
         static let speakerSensitivity     = "meeting.speakerSensitivity"
         static let liveBriefInterval      = "meeting.liveBriefInterval"
@@ -129,7 +131,8 @@ final class AppSettings: ObservableObject {
                           captionLingerSeconds, retryMaxAttempts, retryIntervalSeconds,
                           notesOrganization, meetingAutoDetect,
                           voiceCommandsEnabled, voiceCommandRules, streamingDictation,
-                          streamChunkSeconds, maxSpeakers, speakerSensitivity,
+                          streamChunkSeconds, skipSilentDictation, dictationSilenceThreshold,
+                          maxSpeakers, speakerSensitivity,
                           liveBriefInterval, aiCacheLimit,
                           searchDepth, meetingTemplate,
                           customTemplateSections, customTemplateFollowUp, userTemplates,
@@ -202,6 +205,8 @@ final class AppSettings: ObservableObject {
         """
         static let streamingDictation              = true
         static let streamChunkSeconds: Double      = 10.0
+        static let skipSilentDictation             = true
+        static let dictationSilenceThreshold: Float = -45.0
         static let maxSpeakers                     = 4
         static let speakerSensitivity: Double      = 1.0
         static let liveBriefInterval               = 25
@@ -583,6 +588,19 @@ final class AppSettings: ObservableObject {
     }
 
     /// Chunk length for streaming dictation, in seconds.
+    var skipSilentDictation: Bool {
+        get { bool(Key.skipSilentDictation, Default.skipSilentDictation) }
+        set { set(newValue, Key.skipSilentDictation) }
+    }
+
+    /// dBFS floor below which a dictation recording is treated as silence and
+    /// never uploaded to Groq. More negative = more sensitive (uploads quieter
+    /// audio); less negative = stricter (skips more).
+    var dictationSilenceThreshold: Float {
+        get { float(Key.dictationSilenceThreshold, Default.dictationSilenceThreshold) }
+        set { set(newValue, Key.dictationSilenceThreshold) }
+    }
+
     var streamChunkSeconds: Double {
         get { double(Key.streamChunkSeconds, Default.streamChunkSeconds) }
         set { set(newValue, Key.streamChunkSeconds) }
@@ -1398,6 +1416,23 @@ final class AppSettings: ObservableObject {
     var appProfiles: String {
         get { string(Key.appProfiles, "") }
         set { set(newValue, Key.appProfiles) }
+    }
+
+    /// Parsed `bundle.id: style` overrides, in order, skipping blank/malformed
+    /// lines. The structured per-app editor reads and writes through this.
+    var appProfileList: [(bundleID: String, style: String)] {
+        appProfiles.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, !parts[0].isEmpty else { return nil }
+            return (parts[0], parts[1])
+        }
+    }
+
+    /// Style keys valid for a per-app override — the built-in categories only.
+    /// (Per-app overrides resolve to an `AppCategory`; custom styles apply via
+    /// the global default, not here.)
+    var builtInStyleKeys: [(key: String, label: String)] {
+        AppCategory.allCases.map { ($0.rawValue, $0.displayName) }
     }
 
     // MARK: - Derived helpers

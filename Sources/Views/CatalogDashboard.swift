@@ -145,20 +145,47 @@ struct DashboardMetrics {
     }
 }
 
-// MARK: "At a glance" KPI strip (instant, catalog-only) — inside the dashboard
+// MARK: "At a glance" KPI strip — inside the dashboard
+//
+// When a range and/or account filter is active, every tile scopes to entities
+// touched by a meeting in the filtered scan set (`scannedURLs`); with no filter
+// it shows the global catalog snapshot. `filtered` is false while the scan is
+// in flight, so the strip shows the instant global counts until data arrives.
 
 private struct KPIStrip: View {
     @ObservedObject var store: CatalogStore
+    var scannedURLs: Set<URL> = []
+    var filtered: Bool = false
 
-    private var openOpps: Int { store.doc.opportunities.filter { $0.stage == .open }.count }
-    private var activePOCs: Int { store.doc.opportunities.filter { !$0.pocCriteria.isEmpty }.count }
+    /// Opportunities in scope — those with a linked note in the filtered set.
+    private var opps: [CatalogOpportunity] {
+        guard filtered else { return store.doc.opportunities }
+        return store.doc.opportunities.filter { o in
+            store.notes(forOpportunity: o).contains { scannedURLs.contains(store.url(of: $0)) }
+        }
+    }
+    /// Distinct organisations touched by a filtered note.
+    private var orgCount: Int {
+        guard filtered else { return store.doc.orgs.count }
+        var ids = Set<String>()
+        for n in store.doc.notes where scannedURLs.contains(store.url(of: n)) {
+            ids.formUnion(store.effectiveOrgIDs(of: n))
+        }
+        return ids.count
+    }
+    private var linkedNotes: Int {
+        guard filtered else { return store.doc.notes.count }
+        return store.doc.notes.filter { !store.isUnassigned($0) && scannedURLs.contains(store.url(of: $0)) }.count
+    }
+    private var openOpps: Int { opps.filter { $0.stage == .open }.count }
+    private var activePOCs: Int { opps.filter { !$0.pocCriteria.isEmpty }.count }
     private var pocPassRate: Double {
-        let all = store.doc.opportunities.flatMap { $0.pocCriteria }
+        let all = opps.flatMap { $0.pocCriteria }
         guard !all.isEmpty else { return 0 }
         return Double(all.filter { $0.status == .pass }.count) / Double(all.count)
     }
     private var pipeline: [(String, Int)] {
-        Dictionary(grouping: store.doc.opportunities.filter { $0.stage == .open && $0.valueCents != nil },
+        Dictionary(grouping: opps.filter { $0.stage == .open && $0.valueCents != nil },
                    by: { $0.currency })
             .mapValues { $0.reduce(0) { $0 + ($1.valueCents ?? 0) } }
             .sorted { $0.value > $1.value }
@@ -167,11 +194,12 @@ private struct KPIStrip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("At a glance").font(.subheadline.bold()).foregroundStyle(.secondary)
+            Text(filtered ? "At a glance — in range" : "At a glance")
+                .font(.subheadline.bold()).foregroundStyle(.secondary)
             // Tiles wrap to the available width rather than living in a column.
             FlowLayout(spacing: 10) {
                 KPITile(icon: "building.2.fill", tint: .blue,
-                        value: "\(store.doc.orgs.count)", label: "Organisations")
+                        value: "\(orgCount)", label: "Organisations")
                 KPITile(icon: "chart.line.uptrend.xyaxis", tint: .green,
                         value: "\(openOpps)", label: "Open opportunities")
                 KPITile(icon: "flask.fill", tint: .cyan,
@@ -185,7 +213,7 @@ private struct KPIStrip: View {
                             value: Self.money(cents, cur), label: "Open pipeline (\(cur))")
                 }
                 KPITile(icon: "doc.text.fill", tint: .gray,
-                        value: "\(store.doc.notes.count)", label: "Linked notes")
+                        value: "\(linkedNotes)", label: "Linked notes")
             }
         }
     }
@@ -243,8 +271,9 @@ struct DashboardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 filterBar
-                // "At a glance" — instant catalog KPIs as a strip across the top.
-                KPIStrip(store: store)
+                // "At a glance" KPIs — scoped to the filtered set once the scan lands.
+                KPIStrip(store: store, scannedURLs: metrics.scannedURLs,
+                         filtered: !loading && (range.days != nil || !orgFilter.isEmpty))
                 // Hero — the SE's core artifact, full width.
                 pocCard
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 16)],

@@ -63,7 +63,7 @@ final class MeetingDetector {
 
     func start() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: AppSettings.shared.meetingDetectInterval, repeats: true) { [weak self] _ in
             self?.poll()
         }
         Log.meeting.info("👂 Meeting detection active")

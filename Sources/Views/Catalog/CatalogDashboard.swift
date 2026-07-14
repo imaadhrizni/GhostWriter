@@ -169,35 +169,64 @@ struct DashboardMetrics {
 
 // MARK: "At a glance" KPI strip — inside the dashboard
 //
-// When a range and/or account filter is active, every tile scopes to entities
-// touched by a meeting in the filtered scan set (`scannedURLs`); with no filter
-// it shows the global catalog snapshot. `filtered` is false while the scan is
-// in flight, so the strip shows the instant global counts until data arrives.
+// These are structural totals of your book of business, so they reflect the
+// whole catalog — NOT the dashboard's time range (that only scopes the
+// note-scan activity cards below). When an account is selected, the strip
+// scopes to that org and its descendants so the numbers still add up against
+// the sidebar counts.
 
 private struct KPIStrip: View {
     @ObservedObject var store: CatalogStore
-    var scannedURLs: Set<URL> = []
-    var filtered: Bool = false
+    var accountID: String = ""       // "" = whole catalog
+    var scannedURLs: Set<URL> = []   // notes in the active time window (+account)
+    var rangeActive = false          // a finite range is selected (not "All time")
+    var rangeLabel = ""              // e.g. "90 days" — for the header
+    var loading = false
 
-    /// Projects in scope — those with a linked note in the filtered set.
+    /// The account subtree (the selected org + descendants), or nil for "all".
+    private var scopeOrgIDs: Set<String>? {
+        accountID.isEmpty ? nil : store.orgSubtree(of: accountID)
+    }
+    /// When a range is active (and the scan has landed), the strip reflects what
+    /// happened in that window — entities touched by a scanned meeting. Otherwise
+    /// it's the structural catalog snapshot (account-scoped).
+    private var windowed: Bool { rangeActive && !loading }
+
+    private func inAccount(_ p: CatalogProject) -> Bool {
+        guard let ids = scopeOrgIDs else { return true }
+        return store.org(forProject: p.id).map { ids.contains($0.id) } ?? false
+    }
+    /// Projects in scope — account-filtered, and (when windowed) only those with a
+    /// meeting in the scanned set.
     private var opps: [CatalogProject] {
-        guard filtered else { return store.doc.projects }
-        return store.doc.projects.filter { o in
-            store.notes(forProject: o.id).contains { scannedURLs.contains(store.url(of: $0)) }
+        store.doc.projects.filter { p in
+            guard inAccount(p) else { return false }
+            guard windowed else { return true }
+            return store.notes(forProject: p.id).contains { scannedURLs.contains(store.url(of: $0)) }
         }
     }
-    /// Distinct organisations touched by a filtered note.
     private var orgCount: Int {
-        guard filtered else { return store.doc.orgs.count }
-        var ids = Set<String>()
-        for n in store.doc.notes where scannedURLs.contains(store.url(of: n)) {
-            ids.formUnion(store.effectiveOrgIDs(of: n))
+        if windowed {
+            var ids = Set<String>()
+            for n in store.doc.notes where scannedURLs.contains(store.url(of: n)) {
+                ids.formUnion(store.effectiveOrgIDs(of: n))
+            }
+            if let scope = scopeOrgIDs { ids.formIntersection(scope) }
+            return ids.count
         }
+        guard let ids = scopeOrgIDs else { return store.doc.orgs.count }
         return ids.count
     }
     private var linkedNotes: Int {
-        guard filtered else { return store.doc.notes.count }
-        return store.doc.notes.filter { !store.isUnassigned($0) && scannedURLs.contains(store.url(of: $0)) }.count
+        if windowed {
+            return store.doc.notes.filter {
+                scannedURLs.contains(store.url(of: $0)) && !store.isUnassigned($0)
+            }.count
+        }
+        guard let ids = scopeOrgIDs else {
+            return store.doc.notes.filter { !store.isUnassigned($0) }.count
+        }
+        return store.doc.notes.filter { !store.effectiveOrgIDs(of: $0).isDisjoint(with: ids) }.count
     }
     private var openOpps: Int { opps.filter { $0.stage == .open }.count }
     private var activePOCs: Int { opps.filter { !$0.pocCriteria.isEmpty }.count }
@@ -214,9 +243,18 @@ private struct KPIStrip: View {
             .map { ($0.key, $0.value) }
     }
 
+    /// "At a glance" + whichever scopes are active, so the numbers are never
+    /// mistaken for whole-catalog totals when they're windowed.
+    private var heading: String {
+        var scopes: [String] = []
+        if !accountID.isEmpty { scopes.append(store.org(accountID)?.name ?? "account") }
+        if windowed, !rangeLabel.isEmpty { scopes.append(rangeLabel) }
+        return scopes.isEmpty ? "At a glance" : "At a glance — " + scopes.joined(separator: " · ")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(filtered ? "At a glance — in range" : "At a glance")
+            Text(heading)
                 .font(.subheadline.bold()).foregroundStyle(.secondary)
             // Tiles wrap to the available width rather than living in a column.
             FlowLayout(spacing: 10) {
@@ -271,10 +309,10 @@ private struct KPITile: View {
 
 /// Time window for the note-scan insights.
 enum DashboardRange: String, CaseIterable, Identifiable {
-    case day = "Today", week = "7 days", month = "30 days", quarter = "90 days", half = "6 months", all = "All time"
+    case day = "Today", week = "7 days", month = "30 days", quarter = "90 days", half = "6 months", year = "1 year", all = "All time"
     var id: String { rawValue }
     var days: Int? {
-        switch self { case .day: 1; case .week: 7; case .month: 30; case .quarter: 90; case .half: 182; case .all: nil }
+        switch self { case .day: 1; case .week: 7; case .month: 30; case .quarter: 90; case .half: 182; case .year: 365; case .all: nil }
     }
 }
 
@@ -297,9 +335,13 @@ struct DashboardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 filterBar
-                // "At a glance" KPIs — scoped to the filtered set once the scan lands.
-                KPIStrip(store: store, scannedURLs: metrics.scannedURLs,
-                         filtered: !loading && (range.days != nil || !orgFilter.isEmpty))
+                // "At a glance" KPIs — honors both the account and the time range.
+                // With no range ("All time") it's the structural catalog snapshot;
+                // with a range it reflects what happened in that window.
+                KPIStrip(store: store, accountID: orgFilter,
+                         scannedURLs: metrics.scannedURLs,
+                         rangeActive: range.days != nil, rangeLabel: range.rawValue,
+                         loading: loading)
                 // Hero — the SE's core artifact, full width.
                 pocCard
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 16)],
@@ -322,13 +364,7 @@ struct DashboardView: View {
 
     /// The selected account plus all descendant orgs (empty when no account filter).
     private var orgSubtreeIDs: Set<String> {
-        guard !orgFilter.isEmpty else { return [] }
-        var ids: Set<String> = [], queue = [orgFilter]
-        while let id = queue.popLast() {
-            guard ids.insert(id).inserted else { continue }
-            queue.append(contentsOf: store.childOrgs(of: id).map { $0.id })
-        }
-        return ids
+        orgFilter.isEmpty ? [] : store.orgSubtree(of: orgFilter)
     }
     private var orgSubtreeNames: [String] {
         orgSubtreeIDs.compactMap { store.org($0)?.name }
@@ -342,7 +378,14 @@ struct DashboardView: View {
             .pickerStyle(.segmented)
             .fixedSize()
 
-            AccountFilterPicker(store: store, selection: $orgFilter)
+            // Same shared selector as the rest of the app, in orgs-only mode
+            // (the dashboard scopes by account, not project).
+            OrgProjectTreePicker(
+                store: store,
+                kind: .constant(orgFilter.isEmpty ? "" : "org"),
+                id: $orgFilter,
+                allLabel: "All accounts", allIcon: "building.2",
+                scope: .orgsOnly)
 
             if filtersActive {
                 Button {
@@ -615,87 +658,6 @@ struct DashboardView: View {
 }
 
 // MARK: Account filter — searchable dropdown
-
-/// A compact dropdown for the dashboard's account scope with a search field,
-/// so it stays usable as the org list grows (a plain Picker can't search).
-private struct AccountFilterPicker: View {
-    @ObservedObject var store: CatalogStore
-    @Binding var selection: String       // "" = all accounts
-    @State private var open = false
-    @State private var query = ""
-
-    private var currentName: String {
-        selection.isEmpty ? "All accounts" : (store.org(selection)?.name ?? "All accounts")
-    }
-
-    /// Orgs in hierarchical order (parent then its children, depth-first) with a
-    /// depth for indentation. While searching, flattens to matches (depth 0) so
-    /// the query still finds nested accounts.
-    private var rows: [(org: CatalogOrg, depth: Int)] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        if !q.isEmpty {
-            return store.orgsSorted
-                .filter { $0.name.lowercased().contains(q) }
-                .map { ($0, 0) }
-        }
-        var out: [(CatalogOrg, Int)] = []
-        func walk(_ org: CatalogOrg, _ depth: Int) {
-            out.append((org, depth))
-            for child in store.childOrgs(of: org.id) { walk(child, depth + 1) }
-        }
-        for root in store.rootOrgs { walk(root, 0) }
-        return out
-    }
-
-    var body: some View {
-        Button {
-            open = true
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "building.2").font(.caption)
-                Text(currentName).lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down").font(.caption2).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: 200, alignment: .leading)
-        }
-        .popover(isPresented: $open, arrowEdge: .bottom) {
-            VStack(spacing: 6) {
-                TextField("Search accounts", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                List {
-                    accountRow(name: "All accounts", selected: selection.isEmpty, depth: 0) {
-                        selection = ""; open = false; query = ""
-                    }
-                    ForEach(rows, id: \.org.id) { row in
-                        accountRow(name: row.org.name, selected: selection == row.org.id, depth: row.depth) {
-                            selection = row.org.id; open = false; query = ""
-                        }
-                    }
-                }
-                .listStyle(.plain)
-            }
-            .padding(10)
-            .frame(width: 260, height: 320)
-        }
-    }
-
-    private func accountRow(name: String, selected: Bool, depth: Int, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                if depth > 0 {
-                    Image(systemName: "arrow.turn.down.right")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                }
-                Text(name).lineLimit(1)
-                Spacer()
-                if selected { Image(systemName: "checkmark").foregroundStyle(.tint) }
-            }
-            .padding(.leading, CGFloat(depth) * 14)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
 
 // MARK: Card chrome
 

@@ -42,7 +42,7 @@ final class HotkeyManager {
     private var pressStart: Date?          // when the current press began (tapLock timing)
     private var swallowNextUp = false      // release that follows a latch-stopping press
     /// A press+release shorter than this counts as a "tap" in tap-to-lock mode.
-    private let tapThreshold: TimeInterval = 0.4
+    private var tapThreshold: TimeInterval { AppSettings.shared.pttTapThreshold }
 
     private enum KeyCode {
         static let m: Int64      = 46

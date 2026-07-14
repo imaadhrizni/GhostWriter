@@ -387,17 +387,26 @@ final class CatalogStore: ObservableObject {
 
     /// `id` plus every ancestor, nearest first. Guards against broken/looping links.
     func orgLineage(of id: String) -> [String] {
-        var chain: [String] = [], cur: String? = id, seen = Set<String>()
-        while let c = cur, seen.insert(c).inserted, org(c) != nil {
-            chain.append(c); cur = org(c)?.parentID
-        }
-        return chain
+        Self.lineage(of: id, exists: { org($0) != nil }, parentOf: { org($0)?.parentID })
     }
     /// `id` plus all descendants (for cycle-safe parent choices and subtree filters).
     func orgSubtree(of id: String) -> Set<String> {
+        Self.subtree(of: id, children: { childOrgs(of: $0).map(\.id) })
+    }
+
+    /// Shared hierarchy walkers for the two parallel org/project trees. Both are
+    /// cycle-safe (a `seen`/visited set stops broken or looping parent links).
+    private static func lineage(of id: String, exists: (String) -> Bool, parentOf: (String) -> String?) -> [String] {
+        var chain: [String] = [], cur: String? = id, seen = Set<String>()
+        while let c = cur, seen.insert(c).inserted, exists(c) {
+            chain.append(c); cur = parentOf(c)
+        }
+        return chain
+    }
+    private static func subtree(of id: String, children: (String) -> [String]) -> Set<String> {
         var out: Set<String> = [id], stack = [id]
         while let cur = stack.popLast() {
-            for child in childOrgs(of: cur) where out.insert(child.id).inserted { stack.append(child.id) }
+            for child in children(cur) where out.insert(child).inserted { stack.append(child) }
         }
         return out
     }
@@ -412,19 +421,11 @@ final class CatalogStore: ObservableObject {
     func childProjects(of id: String) -> [CatalogProject] { projectsSorted.filter { $0.parentID == id } }
     /// `id` plus every ancestor project, nearest first. Cycle-safe.
     func projectLineage(of id: String) -> [String] {
-        var chain: [String] = [], cur: String? = id, seen = Set<String>()
-        while let c = cur, seen.insert(c).inserted, project(c) != nil {
-            chain.append(c); cur = project(c)?.parentID
-        }
-        return chain
+        Self.lineage(of: id, exists: { project($0) != nil }, parentOf: { project($0)?.parentID })
     }
     /// `id` plus all descendant projects.
     func projectSubtree(of id: String) -> Set<String> {
-        var out: Set<String> = [id], stack = [id]
-        while let cur = stack.popLast() {
-            for child in childProjects(of: cur) where out.insert(child.id).inserted { stack.append(child.id) }
-        }
-        return out
+        Self.subtree(of: id, children: { childProjects(of: $0).map(\.id) })
     }
     /// A project's org, resolved by walking up the project hierarchy to the
     /// first ancestor that carries an orgID.
@@ -438,10 +439,52 @@ final class CatalogStore: ObservableObject {
         let orgPart = org(forProject: id).map { orgPath(of: $0.id) }
         return ([orgPart].compactMap { $0 } + projNames).joined(separator: " › ")
     }
-    /// Valid parent projects: everything except itself and its descendants.
-    func parentProjectChoices(for id: String) -> [CatalogProject] {
-        let banned = projectSubtree(of: id)
-        return projectsSorted.filter { !banned.contains($0.id) }
+
+    /// Which entities a tree picker offers, so one component serves every
+    /// chooser in the app: both (Assign / Ask / import), orgs only (an org's
+    /// parent, a project's org), or projects only (a project's parent — orgs
+    /// still shown for context but not selectable).
+    enum TreeScope { case both, orgsOnly, projectsOnly }
+
+    /// A flattened org→project tree for pickers: every org (nested), each org's
+    /// root projects and their sub-projects, then any orphan projects — with the
+    /// indent depth so callers can render one consistent tree everywhere. Rows
+    /// that don't match `scope` come back `selectable == false` (dimmed context).
+    /// `excluding` drops an id and its subtree (a parent picker excludes itself).
+    /// When `query` is non-empty the tree collapses to a flat, depth-0 match list
+    /// of selectable rows only.
+    struct TreeRow: Identifiable {
+        public let id: String; public let kind: String; public let name: String
+        public let depth: Int; public let selectable: Bool
+    }
+    func orgProjectRows(matching query: String = "",
+                        scope: TreeScope = .both,
+                        excluding: Set<String> = []) -> [TreeRow] {
+        var out: [TreeRow] = []
+        let includeProjects = scope != .orgsOnly
+        let orgsSelectable = scope != .projectsOnly
+        func walkProject(_ p: CatalogProject, _ depth: Int) {
+            if excluding.contains(p.id) { return }
+            out.append(TreeRow(id: p.id, kind: "project", name: p.name, depth: depth, selectable: true))
+            for c in childProjects(of: p.id) { walkProject(c, depth + 1) }
+        }
+        func walkOrg(_ o: CatalogOrg, _ depth: Int) {
+            if excluding.contains(o.id) { return }
+            out.append(TreeRow(id: o.id, kind: "org", name: o.name, depth: depth, selectable: orgsSelectable))
+            for c in childOrgs(of: o.id) { walkOrg(c, depth + 1) }
+            if includeProjects { for p in rootProjects(forOrg: o.id) { walkProject(p, depth + 1) } }
+        }
+        for root in rootOrgs { walkOrg(root, 0) }
+        // Orphan root projects (no org, no parent) so nothing is unreachable.
+        if includeProjects {
+            for p in projectsSorted where p.parentID == nil && org(forProject: p.id) == nil {
+                walkProject(p, 0)
+            }
+        }
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return out }
+        return out.filter { $0.selectable && $0.name.lowercased().contains(q) }
+            .map { TreeRow(id: $0.id, kind: $0.kind, name: $0.name, depth: 0, selectable: true) }
     }
 
     /// A note's projects: those directly assigned plus their ancestor projects.
@@ -567,13 +610,8 @@ final class CatalogStore: ObservableObject {
             }
         }
     }
-    /// Valid parents for an org: everything except itself and its descendants.
-    func parentChoices(for id: String) -> [CatalogOrg] {
-        let banned = orgSubtree(of: id)
-        return orgsSorted.filter { !banned.contains($0.id) }
-    }
 
-    // MARK: Person / Project / Opportunity / Tag CRUD
+    // MARK: Person / Project / Tag CRUD
 
     @discardableResult
     func addPerson(name: String) -> CatalogPerson {
@@ -718,14 +756,11 @@ final class CatalogStore: ObservableObject {
         let fileURL = url(of: note)
         guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
 
-        // Strip YAML front-matter, then take the body after the FIRST content
-        // divider (the "---" that follows the note's title/header block). Using
-        // the first divider — not the last — keeps the whole transcript for a
-        // regular meeting note, whose footer is itself a "---" divider.
-        var body = content
-        if body.hasPrefix("---\n"), let close = body.range(of: "\n---\n", range: body.index(body.startIndex, offsetBy: 3)..<body.endIndex) {
-            body = String(body[close.upperBound...])
-        }
+        // Strip YAML front-matter (shared reader), then take the body after the
+        // FIRST content divider (the "---" following the note's title/header
+        // block). Using the first divider — not the last — keeps the whole
+        // transcript for a regular meeting note, whose footer is itself a "---".
+        var body = FrontMatter.body(content)
         if let divider = body.range(of: "\n---\n") {
             body = String(body[divider.upperBound...])
         }

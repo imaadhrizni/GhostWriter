@@ -7,8 +7,8 @@ import UniformTypeIdentifiers
 final class SettingsWindowController: NSWindowController {
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 660, height: 480),
-            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -17,6 +17,8 @@ final class SettingsWindowController: NSWindowController {
         window.title = "GhostWriter Settings"
         window.titlebarAppearsTransparent = true
         window.toolbarStyle = .unified
+        // Remember a resized/dragged window so the sidebar width sticks.
+        window.setFrameAutosaveName("SettingsWindow")
 
         self.init(window: window)
 
@@ -59,10 +61,13 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
         (nil,                  [.essentials, .general, .ai]),
         ("Capture",            [.dictation, .styles, .quickNotes]),
-        ("Meetings",           [.meeting, .notes, .meetingTemplates, .draftTemplates, .digest]),
+        ("Meetings",           [.meeting, .notes, .meetingTemplates, .draftTemplates]),
+        // Digest + hooks are both scheduled/outbound automation, not meeting capture.
+        ("Automation",         [.digest, .integrations]),
         ("Privacy & Security", [.privacy, .permissions]),
-        ("System",             [.shortcuts, .integrations, .stats, .diagnostics]),
-        ("About",              [.about]),
+        ("System",             [.shortcuts, .diagnostics]),
+        // Usage/cost is account-scoped; About folds in here rather than a lone group.
+        ("Account",            [.stats, .about]),
     ]
 
     var icon: String {
@@ -178,6 +183,10 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Meeting templates", section: .meetingTemplates, keywords: ["agenda", "type", "prep", "add", "delete", "default", "sections", "follow-up"]),
         .init(label: "Import / export templates", section: .meetingTemplates, keywords: ["backup", "share", "bundle", "json", "house style", "merge", "replace"]),
         .init(label: "Per-app recording overrides", section: .meeting, keywords: ["app", "override", "delete", "remove", "default", "unrecognized"]),
+        .init(label: "Auto-detect poll interval", section: .meeting, keywords: ["advanced", "detection", "poll", "interval", "how often", "call detection", "timing"]),
+        .init(label: "Transcription request timeout", section: .meeting, keywords: ["advanced", "timeout", "groq", "network", "seconds", "retry", "stt"]),
+        .init(label: "Live-brief refresh threshold", section: .meeting, keywords: ["advanced", "growth", "chars", "brief", "refresh", "how much"]),
+        .init(label: "Push-to-talk tap threshold", section: .dictation, keywords: ["tap", "hold", "lock", "threshold", "latch", "hands-free", "ptt", "timing"]),
         // Notes & summaries
         .init(label: "Auto-title notes", section: .notes, keywords: ["heading", "name", "smart title"]),
         .init(label: "Summary generation", section: .notes, keywords: ["recap", "overview", "abstract"]),
@@ -313,7 +322,7 @@ struct SettingsView: View {
                 }
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 195, max: 230)
+            .navigationSplitViewColumnWidth(min: 215, ideal: 235, max: 300)
             .searchable(text: $searchText, placement: .sidebar, prompt: "Search settings")
         } detail: {
             ScrollView {
@@ -344,7 +353,7 @@ struct SettingsView: View {
             }
             .navigationTitle(selection.rawValue)
         }
-        .frame(width: 660, height: 480)
+        .frame(minWidth: 760, idealWidth: 760, minHeight: 520, idealHeight: 520)
         // Use macOS switches for every Toggle in Settings (cascades to all panes),
         // sized small so they sit proportionally next to labels and fields.
         .toggleStyle(SmallSwitchToggleStyle())
@@ -855,6 +864,15 @@ private struct DictationPane: View {
                 Text(settings.pttActivation.detail)
                     .font(.caption)
                     .foregroundColor(.secondary)
+                if settings.pttActivation == .tapLock {
+                    DurationSlider(
+                        title: "Tap vs. hold threshold",
+                        value: $settings.pttTapThreshold, range: 0.15...1.0, step: 0.05, unit: "s",
+                        defaultValue: AppSettings.Default.pttTapThreshold
+                    )
+                    Text("A press shorter than this locks hands-free; longer counts as hold-to-talk.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
                 Text("Applies immediately — no restart needed.")
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -1740,6 +1758,37 @@ private struct MeetingPane: View {
                             defaultValue: AppSettings.Default.retryIntervalSeconds
                         )
                         Text("Segments that fail to transcribe (network blips) are retried; exhausted ones become visible markers in the notes.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+
+                    SettingsGroup("Detection & Timing") {
+                        DurationSlider(
+                            title: "Auto-detect poll interval",
+                            value: $settings.meetingDetectInterval, range: 1...10, step: 0.5, unit: "s",
+                            defaultValue: AppSettings.Default.meetingDetectInterval
+                        )
+                        HStack {
+                            Text("Transcription request timeout")
+                            Spacer()
+                            Picker("", selection: $settings.transcriptionTimeout) {
+                                ForEach([15, 30, 45, 60, 90, 120], id: \.self) { Text("\($0)s").tag($0) }
+                            }
+                            .labelsHidden().frame(width: 80)
+                            DefaultResetButton(isDefault: settings.transcriptionTimeout == AppSettings.Default.transcriptionTimeout) {
+                                settings.transcriptionTimeout = AppSettings.Default.transcriptionTimeout
+                            }
+                        }
+                        HStack {
+                            Text("Live-brief refresh threshold")
+                            Spacer()
+                            Stepper("\(settings.liveBriefMinGrowth) chars", value: $settings.liveBriefMinGrowth,
+                                    in: 100...2000, step: 50)
+                                .frame(width: 170)
+                            DefaultResetButton(isDefault: settings.liveBriefMinGrowth == AppSettings.Default.liveBriefMinGrowth) {
+                                settings.liveBriefMinGrowth = AppSettings.Default.liveBriefMinGrowth
+                            }
+                        }
+                        Text("How often GhostWriter checks whether a call has started, how long a transcription request may take before retrying, and how much new speech triggers a fresh live brief.")
                             .font(.caption).foregroundColor(.secondary)
                     }
                 }

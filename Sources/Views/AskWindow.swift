@@ -64,6 +64,9 @@ private struct AskView: View {
     @State private var asking = false
     @State private var scope: AskScope = .all
     @State private var showMeetingPicker = false
+    // Tree-picker selection, mapped to `scope` (org/project/all).
+    @State private var scopeKind = ""
+    @State private var scopeID = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -118,40 +121,28 @@ private struct AskView: View {
     private var scopeBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "line.3.horizontal.decrease.circle").foregroundStyle(.secondary)
-            Menu {
-                Button("All meetings") { scope = .all }
-                Button("Choose meetings…") { showMeetingPicker = true }
-                let store = CatalogStore.shared
-                if !store.doc.projects.isEmpty {
-                    Menu("By project") {
-                        ForEach(store.projectsSorted) { proj in
-                            Button(store.projectPath(of: proj.id)) { scope = .project(proj.id) }
-                        }
-                    }
-                }
-                if !store.orgsSorted.isEmpty {
-                    Menu("By organisation") {
-                        ForEach(store.orgsSorted) { org in
-                            Button(org.name) { scope = .org(org.id) }
-                        }
-                    }
-                }
-            } label: {
-                Text(scopeLabel).font(.callout)
+            // Same tree picker used across the app — scope by any org or project.
+            OrgProjectTreePicker(store: CatalogStore.shared, kind: $scopeKind, id: $scopeID,
+                                 allLabel: "All meetings", allIcon: "tray.full")
+            Button("Choose meetings…") { showMeetingPicker = true }
+                .buttonStyle(.link).font(.callout)
+            if case .meetings(let urls) = scope, !urls.isEmpty {
+                Text("\(urls.count) selected").font(.caption).foregroundStyle(.secondary)
             }
-            .menuStyle(.borderlessButton).fixedSize()
             Spacer()
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .popover(isPresented: $showMeetingPicker) { meetingPicker }
+        // The tree picker sets kind then id; recompute the scope from both.
+        .onChange(of: scopeKind) { _, _ in applyTreeScope() }
+        .onChange(of: scopeID) { _, _ in applyTreeScope() }
     }
 
-    private var scopeLabel: String {
-        switch scope {
-        case .all: return "All meetings"
-        case .meetings(let urls): return urls.isEmpty ? "All meetings" : "\(urls.count) meeting\(urls.count == 1 ? "" : "s")"
-        case .org(let id): return CatalogStore.shared.doc.orgs.first { $0.id == id }?.name ?? "Organisation"
-        case .project(let id): return CatalogStore.shared.project(id)?.name ?? "Project"
+    private func applyTreeScope() {
+        switch scopeKind {
+        case "org" where !scopeID.isEmpty:     scope = .org(scopeID)
+        case "project" where !scopeID.isEmpty:  scope = .project(scopeID)
+        default:                                 scope = .all
         }
     }
 

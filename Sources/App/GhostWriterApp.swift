@@ -411,6 +411,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quickNoteItem)
         self.quickNoteMenuItem = quickNoteItem
 
+        // Transcribe an existing audio file — an ingest verb that *creates* a
+        // note, so it belongs with the capture actions, not the browse list.
+        let importItem = NSMenuItem(title: "Transcribe Audio File…", action: #selector(importAudioFile), keyEquivalent: "")
+        importItem.image = NSImage(systemSymbolName: "waveform.badge.plus", accessibilityDescription: nil)
+        importItem.target = self
+        menu.addItem(importItem)
+
         // Live Brief is a display toggle (show/hide the floating panel), not a
         // capture verb, so it follows the capture cluster. Hidden unless a
         // meeting's live assistant is active (see menuNeedsUpdate).
@@ -452,11 +459,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictationsItem.target = self
         menu.addItem(dictationsItem)
 
-        let importItem = NSMenuItem(title: "Transcribe Audio File…", action: #selector(importAudioFile), keyEquivalent: "")
-        importItem.image = NSImage(systemSymbolName: "waveform.badge.plus", accessibilityDescription: nil)
-        importItem.target = self
-        menu.addItem(importItem)
-
+        // ── Insights ────────────────────────────────────────────
         // AI-over-notes actions, set apart from the raw browse/archive items above.
         menu.addItem(NSMenuItem.separator())
 
@@ -481,9 +484,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
-        // Permissions and the API key live in Settings (Permissions pane /
-        // General pane) — no need to duplicate them at the top level.
-        menu.addItem(NSMenuItem.separator())
+        // Settings + Quit form one trailing utility group (HIG) — no separator
+        // between them. Permissions/API key live inside Settings, not here.
 
         // ── Quit ────────────────────────────────────────────────
         let quitItem = NSMenuItem(title: "Quit GhostWriter", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -1530,12 +1532,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MainActor.assumeIsolated {
             let store = CatalogStore.shared
             var opts: [(String, String)] = [("No link", "")]
-            let projs = store.projectsSorted
-            let orgs = store.orgsSorted
-            if !projs.isEmpty { opts.append(("__sep__", "__sep__")) }
-            for p in projs { opts.append(("◆ \(store.projectPath(of: p.id))", "project:\(p.id)")) }
-            if !orgs.isEmpty { opts.append(("__sep__", "__sep__")) }
-            for o in orgs { opts.append(("🏢 \(store.orgPath(of: o.id))", "org:\(o.id)")) }
+            // One consistent org→project tree, indented by depth (same shape the
+            // SwiftUI OrgProjectTreePicker renders elsewhere).
+            let rows = store.orgProjectRows()
+            if !rows.isEmpty { opts.append(("__sep__", "__sep__")) }
+            for r in rows {
+                let indent = String(repeating: "    ", count: r.depth)
+                let icon = r.kind == "org" ? "🏢" : "◆"
+                opts.append(("\(indent)\(icon) \(r.name)", "\(r.kind):\(r.id)"))
+            }
             opts.append(("__sep__", "__sep__"))
             opts.append(("➕ New Project…", "new:project"))
             opts.append(("➕ New Organisation…", "new:org"))
@@ -1678,7 +1683,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             // Keep an entity row only when it matches; leave fixed rows alone.
             var shown = allOptions.filter { opt in
-                let isEntity = opt.repr.hasPrefix("opp:") || opt.repr.hasPrefix("org:")
+                let isEntity = opt.repr.hasPrefix("project:") || opt.repr.hasPrefix("org:")
                 return !isEntity || q.isEmpty || opt.title.lowercased().contains(q)
             }
             // Collapse separators left dangling by filtering.

@@ -54,9 +54,11 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
         ("Overview", [.dashboard]),
         ("Browse",   [.notes, .map]),
-        ("Records",  [.organisations, .projects, .people]),
-        ("Labels",   [.tags]),
-        ("Tools",    [.poc, .radar, .questions]),
+        // Tags is a cross-cutting per-note entity like People, so it lives with
+        // the records rather than in a one-row "Labels" group.
+        ("Records",  [.organisations, .projects, .people, .tags]),
+        // "Track" = the watch/resolve surfaces, led by the actionable inbox.
+        ("Track",    [.questions, .poc, .radar]),
     ]
 
     var singular: String {
@@ -97,7 +99,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .tags:          return .pink
         case .notes:         return .indigo
         case .poc:           return .cyan
-        case .radar:         return .pink
+        case .radar:         return .red
         case .questions:     return .orange
         }
     }
@@ -1080,11 +1082,14 @@ private struct OrgEditor: View {
         Form {
             Section {
                 TextField("Name", text: $draft.name).onSubmit(commit)
-                Picker("Parent", selection: Binding(
-                    get: { draft.parentID ?? "" },
-                    set: { draft.parentID = $0.isEmpty ? nil : $0; commit() })) {
-                    Text("None (top level)").tag("")
-                    ForEach(store.parentChoices(for: draft.id)) { Text(store.orgPath(of: $0.id)).tag($0.id) }
+                LabeledContent("Parent") {
+                    OrgProjectTreePicker(
+                        store: store,
+                        kind: .constant(draft.parentID == nil ? "" : "org"),
+                        id: Binding(get: { draft.parentID ?? "" },
+                                    set: { draft.parentID = $0.isEmpty ? nil : $0; commit() }),
+                        allLabel: "None (top level)", allIcon: "arrow.up.to.line.compact",
+                        scope: .orgsOnly, excluding: store.orgSubtree(of: draft.id))
                 }
                 Picker("Relationship", selection: Binding(
                     get: { draft.relationship },
@@ -1180,19 +1185,39 @@ private struct ProjectEditor: View {
         Form {
             Section {
                 TextField("Name", text: $draft.name).onSubmit(commit)
-                // A project sits under an org OR under a parent project.
-                Picker("Parent project", selection: Binding(
-                    get: { draft.parentID ?? "" },
-                    set: { draft.parentID = $0.isEmpty ? nil : $0; if !$0.isEmpty { draft.orgID = nil }; commit() })) {
-                    Text("None (top level)").tag("")
-                    ForEach(store.parentProjectChoices(for: draft.id)) { Text(store.projectPath(of: $0.id)).tag($0.id) }
+                // A project sits under an org OR under a parent project. A root
+                // project (no parent) must belong to an organisation.
+                LabeledContent("Parent project") {
+                    OrgProjectTreePicker(
+                        store: store,
+                        kind: .constant(draft.parentID == nil ? "" : "project"),
+                        id: Binding(get: { draft.parentID ?? "" },
+                                    set: { newParent in
+                                        if newParent.isEmpty {
+                                            draft.parentID = nil
+                                            if draft.orgID == nil { draft.orgID = store.orgsSorted.first?.id }
+                                        } else {
+                                            draft.parentID = newParent
+                                            draft.orgID = nil   // org inherited from the parent
+                                        }
+                                        commit()
+                                    }),
+                        allLabel: "None (top level)", allIcon: "arrow.up.to.line.compact",
+                        scope: .projectsOnly, excluding: store.projectSubtree(of: draft.id))
                 }
                 if draft.parentID == nil {
-                    Picker("Organisation", selection: Binding(
-                        get: { draft.orgID ?? "" },
-                        set: { draft.orgID = $0.isEmpty ? nil : $0; commit() })) {
-                        Text("None").tag("")
-                        ForEach(store.orgsSorted) { Text(store.orgPath(of: $0.id)).tag($0.id) }
+                    if store.orgsSorted.isEmpty {
+                        LabeledContent("Organisation", value: "Add an organisation first")
+                    } else {
+                        // No "None" — a root project is always filed under an org.
+                        LabeledContent("Organisation") {
+                            OrgProjectTreePicker(
+                                store: store,
+                                kind: .constant(draft.orgID == nil ? "" : "org"),
+                                id: Binding(get: { draft.orgID ?? "" },
+                                            set: { draft.orgID = $0.isEmpty ? nil : $0; commit() }),
+                                allLabel: nil, scope: .orgsOnly, placeholder: "Choose org…")
+                        }
                     }
                 } else {
                     LabeledContent("Organisation", value: store.org(forProject: draft.id).map { store.orgPath(of: $0.id) } ?? "—")
@@ -1216,6 +1241,12 @@ private struct ProjectEditor: View {
         }
         .formStyle(.grouped)
         .navigationTitle(draft.name.isEmpty ? "Project" : draft.name)
+        // Repair a legacy orphan root project: give it an org on open.
+        .onAppear {
+            if draft.parentID == nil, draft.orgID == nil, let first = store.orgsSorted.first?.id {
+                draft.orgID = first; commit()
+            }
+        }
         .onDisappear(perform: commit)
     }
 }
@@ -1768,52 +1799,40 @@ private struct AssignPopover: View {
     @ObservedObject var store: CatalogStore
     let noteID: String
     @Binding var show: Bool
-    @State private var mode = 0   // 0 = project, 1 = organisation
     @State private var query = ""
 
     var body: some View {
         VStack(spacing: 8) {
-            Picker("", selection: $mode) {
-                Text("Project").tag(0)
-                Text("Organisation").tag(1)
-            }
-            .pickerStyle(.segmented).labelsHidden()
-            EntitySearchBar(text: $query, placeholder: mode == 0 ? "Search projects" : "Search organisations")
-            let q = query.trimmingCharacters(in: .whitespaces)
+            EntitySearchBar(text: $query, placeholder: "Search organisations & projects")
+            let rows = store.orgProjectRows(matching: query)
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    if mode == 0 {
-                        let projs = store.projectsSorted
-                            .filter { q.isEmpty || store.projectPath(of: $0.id).localizedCaseInsensitiveContains(q) }
-                        if projs.isEmpty { Text("No projects").font(.caption).foregroundStyle(.secondary) }
-                        ForEach(projs) { p in
-                            Button { store.setProject(p.id, on: noteID, true); show = false } label: {
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(p.name)
-                                    Text(store.projectPath(of: p.id)).font(.caption2).foregroundStyle(.secondary)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                            }.buttonStyle(.plain)
+                    if rows.isEmpty {
+                        Text("No organisations or projects").font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(rows) { r in
+                        Button {
+                            if r.kind == "org" { store.setOrg(r.id, on: noteID, true) }
+                            else { store.setProject(r.id, on: noteID, true) }
+                            show = false
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: r.kind == "org" ? "building.2" : "folder")
+                                    .font(.caption2).foregroundStyle(.secondary).frame(width: 14)
+                                Text(r.name).lineLimit(1)
+                                Spacer()
+                            }
+                            .padding(.leading, CGFloat(r.depth) * 14)
+                            .contentShape(Rectangle())
                         }
-                    } else {
-                        let orgs = store.orgsSorted
-                            .filter { q.isEmpty || store.orgPath(of: $0.id).localizedCaseInsensitiveContains(q) }
-                        if orgs.isEmpty { Text("No organisations").font(.caption).foregroundStyle(.secondary) }
-                        ForEach(orgs) { o in
-                            Button { store.setOrg(o.id, on: noteID, true); show = false } label: {
-                                Text(store.orgPath(of: o.id))
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 4)
             }
-            .frame(maxHeight: 240)
+            .frame(maxHeight: 260)
         }
-        .padding(10).frame(width: 280)
+        .padding(10).frame(width: 300)
     }
 
 }
@@ -1970,9 +1989,13 @@ private struct MapTree: View {
         }
     }
     private var rootOrgs: [CatalogOrg] { store.rootOrgs.filter(matches) }
+    /// Only TRUE orphans belong in the "No organisation" section: a project with
+    /// no parent AND no (resolvable) org. Sub-projects have `orgID == nil` by
+    /// design — they inherit the org through their parent — so they must NOT be
+    /// listed here; they render nested under their parent instead.
     private var orphanProjects: [CatalogProject] {
         store.doc.projects.sortedByName
-            .filter { $0.orgID == nil || store.org($0.orgID) == nil }
+            .filter { $0.parentID == nil && store.org(forProject: $0.id) == nil }
             .filter { q.isEmpty || $0.name.lowercased().contains(q) }
     }
 
@@ -2117,25 +2140,24 @@ private struct NoteMapNode: View {
     }
 }
 
-// MARK: - POC Tracker (Catalog section)
+// MARK: - Track sections (Open Questions · POC Tracker)
 //
-// POC success criteria hang off a Catalog project (`pocCriteria`), so the
-// tracker lives here rather than in a standalone window: pick a project in
-// the middle column, edit its criteria in the detail pane. The detail pane can
-// also seed criteria from the project's linked meetings (the "bridge").
+// The Catalog's "Track" group. Open Questions is a cross-meeting inbox pulled
+// from each note's `## Unanswered Questions` section. POC criteria hang off a
+// Catalog project (`pocCriteria`), so that tracker lives here too: pick a
+// project, edit its criteria in the detail pane (which can also seed them from
+// the project's linked meetings).
 
-/// Middle column: projects, each showing POC progress at a glance.
-/// A cross-meeting list of every open technical/unanswered question, pulled
-/// from the `## Unanswered Questions` section of each meeting note, with
-/// search + org/project filters. The dashboard card is a 5-item teaser of
-/// this. Click a question to open its source note.
+/// A cross-meeting list of every open technical/unanswered question, grouped by
+/// account/project → note, with search + an org/project filter. The dashboard
+/// card is a 5-item teaser of this. Click a question to open its source note.
 private struct OpenQuestionsList: View {
     @ObservedObject var store: CatalogStore
     @State private var items: [QItem] = []
     @State private var loading = false
     @State private var query = ""
-    @State private var fOrg = ""
-    @State private var fProj = ""
+    @State private var fKind = ""   // "", "org", "project"
+    @State private var fID = ""
 
     struct QItem: Identifiable {
         let id = UUID()
@@ -2145,15 +2167,65 @@ private struct OpenQuestionsList: View {
         let url: URL
         let orgIDs: Set<String>
         let projIDs: Set<String>
+        // Where this note is filed — its primary project (or org), used to group
+        // the queue by account → project → note.
+        let groupKey: String     // "p:<id>" / "o:<id>" / "unassigned"
+        let groupTitle: String   // display path, e.g. "Acme › Platform › Phase 2"
+    }
+
+    // A note and its unanswered questions, inside an account/project group.
+    struct NoteGroup: Identifiable {
+        let url: URL
+        var id: URL { url }
+        let title: String
+        let date: Date?
+        var questions: [QItem]
+    }
+    // An account/project bucket with its notes.
+    struct QGroup: Identifiable {
+        let key: String
+        var id: String { key }
+        let title: String
+        var notes: [NoteGroup]
+        var count: Int { notes.reduce(0) { $0 + $1.questions.count } }
     }
 
     private var filtered: [QItem] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         return items.filter { item in
             (q.isEmpty || item.question.lowercased().contains(q) || item.title.lowercased().contains(q))
-            && (fOrg.isEmpty || item.orgIDs.contains(fOrg))
-            && (fProj.isEmpty || item.projIDs.contains(fProj))
+            && (fKind != "org" || item.orgIDs.contains(fID))
+            && (fKind != "project" || item.projIDs.contains(fID))
         }
+    }
+
+    /// The filtered queue grouped by account/project, then by note. Groups sort
+    /// by their path (so same-org projects cluster together); "Unassigned" sinks
+    /// to the bottom; notes within a group are newest-first.
+    private var sections: [QGroup] {
+        var order: [String] = []
+        var groups: [String: QGroup] = [:]
+        for q in filtered {
+            if groups[q.groupKey] == nil {
+                groups[q.groupKey] = QGroup(key: q.groupKey, title: q.groupTitle, notes: [])
+                order.append(q.groupKey)
+            }
+            if let ni = groups[q.groupKey]!.notes.firstIndex(where: { $0.url == q.url }) {
+                groups[q.groupKey]!.notes[ni].questions.append(q)
+            } else {
+                groups[q.groupKey]!.notes.append(NoteGroup(url: q.url, title: q.title, date: q.date, questions: [q]))
+            }
+        }
+        var result = order.map { groups[$0]! }
+        result.sort { a, b in
+            if a.key == "unassigned" { return false }
+            if b.key == "unassigned" { return true }
+            return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+        }
+        for i in result.indices {
+            result[i].notes.sort { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+        }
+        return result
     }
 
     var body: some View {
@@ -2168,22 +2240,23 @@ private struct OpenQuestionsList: View {
                         description: Text("Questions collect here from meeting notes that have an “Unanswered Questions” section (enable it in Settings → Meetings)."))
                 } else {
                     List {
-                        ForEach(filtered) { q in
-                            Button { NotesViewerWindowController.present(fileURL: q.url) } label: {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(q.question).lineLimit(3)
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "doc.text").font(.caption2)
-                                        Text(q.title).lineLimit(1)
-                                        if let d = q.date { Text("· \(d.formatted(date: .abbreviated, time: .omitted))") }
-                                    }
-                                    .font(.caption2).foregroundStyle(.secondary)
+                        ForEach(sections) { group in
+                            Section {
+                                ForEach(group.notes) { ng in
+                                    noteHeader(ng)
+                                    ForEach(ng.questions) { q in questionRow(q) }
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
+                            } header: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: group.key.hasPrefix("o:") ? "building.2"
+                                            : group.key == "unassigned" ? "tray" : "folder")
+                                        .font(.caption2)
+                                    Text(group.title).lineLimit(1)
+                                    Spacer()
+                                    Text("\(group.count)").monospacedDigit()
+                                }
+                                .font(.caption.bold())
                             }
-                            .buttonStyle(.plain)
-                            .padding(.vertical, 2)
                         }
                     }
                 }
@@ -2192,29 +2265,51 @@ private struct OpenQuestionsList: View {
         .task { await scan() }
     }
 
+    /// A note's row inside a group — click to open the note; shows its date and
+    /// how many questions it holds.
+    private func noteHeader(_ ng: NoteGroup) -> some View {
+        Button { NotesViewerWindowController.present(fileURL: ng.url) } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text").font(.caption2).foregroundStyle(.secondary)
+                Text(ng.title).font(.subheadline.weight(.medium)).lineLimit(1)
+                if let d = ng.date {
+                    Text(d.formatted(date: .abbreviated, time: .omitted))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("\(ng.questions.count) open").font(.caption2).foregroundStyle(.secondary)
+                Image(systemName: "arrow.up.forward.square").font(.caption2).foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 2)
+    }
+
+    /// A single unanswered question, indented under its note.
+    private func questionRow(_ q: QItem) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "questionmark.circle").font(.caption2).foregroundStyle(.orange).padding(.top, 2)
+            Text(q.question).lineLimit(4)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 8)
+        .contentShape(Rectangle())
+        .onTapGesture { NotesViewerWindowController.present(fileURL: q.url) }
+    }
+
     private var header: some View {
         HStack(spacing: 8) {
             Text("\(filtered.count) open").font(.headline)
             Spacer()
             EntitySearchBar(text: $query, placeholder: "Search questions").frame(width: 180)
-            Menu(orgLabel) {
-                Button("All organizations") { fOrg = "" }
-                ForEach(store.orgsSorted) { o in Button(o.name) { fOrg = o.id; fProj = "" } }
-            }.fixedSize()
-            Menu(projLabel) {
-                Button("All projects") { fProj = "" }
-                ForEach(store.projectsSorted) { o in
-                    Button(store.projectPath(of: o.id)) { fProj = o.id; fOrg = "" }
-                }
-            }.fixedSize()
+            OrgProjectTreePicker(store: store, kind: $fKind, id: $fID, allLabel: "All accounts")
             Button { Task { await scan() } } label: { Image(systemName: "arrow.clockwise") }
                 .help("Rescan notes")
         }
         .padding(8)
     }
 
-    private var orgLabel: String { fOrg.isEmpty ? "All orgs" : (store.org(fOrg)?.name ?? "Org") }
-    private var projLabel: String { fProj.isEmpty ? "All projects" : (store.project(fProj)?.name ?? "Project") }
 
     private func scan() async {
         loading = true
@@ -2231,8 +2326,17 @@ private struct OpenQuestionsList: View {
             let orgIDs = Set(note.map { store.effectiveOrgIDs(of: $0) } ?? [])
             let projIDs = note.map { store.effectiveProjectIDs(of: $0) } ?? []
             let date = DateDisplay.posixDay.date(from: f.day)
+            // Primary filing → the group this note's questions belong to.
+            var groupKey = "unassigned", groupTitle = "Unassigned"
+            if let pid = note?.projectIDs.first, store.project(pid) != nil {
+                groupKey = "p:" + pid; groupTitle = store.projectPath(of: pid)
+            } else if let oid = note?.orgIDs.first, store.org(oid) != nil {
+                groupKey = "o:" + oid; groupTitle = store.orgPath(of: oid)
+            }
             for q in qs {
-                result.append(QItem(question: q, title: title, date: date, url: f.url, orgIDs: orgIDs, projIDs: projIDs))
+                result.append(QItem(question: q, title: title, date: date, url: f.url,
+                                    orgIDs: orgIDs, projIDs: projIDs,
+                                    groupKey: groupKey, groupTitle: groupTitle))
             }
         }
         items = result

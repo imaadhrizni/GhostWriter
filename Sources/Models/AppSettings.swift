@@ -101,6 +101,10 @@ final class AppSettings: ObservableObject {
         static let dictationsFolderPath   = "dictation.folderPath"
         static let dictationOrganization  = "dictation.organization"
         static let audioImportMaxMB       = "import.maxMB"
+        static let meetingDetectInterval  = "meeting.detectInterval"
+        static let liveBriefMinGrowth     = "meeting.liveBriefMinGrowth"
+        static let transcriptionTimeout   = "transcription.requestTimeout"
+        static let pttTapThreshold        = "dictation.pttTapThreshold"
         static let priceAudioPerHour      = "cost.audioPerHour"
         static let priceInputPerMTok      = "cost.inputPerMTok"
         static let priceOutputPerMTok     = "cost.outputPerMTok"
@@ -143,6 +147,7 @@ final class AppSettings: ObservableObject {
                           autoTagging, errorNotifications, uiDateFormat,
                           browserTabDetection, domainStyleRules,
                           saveDictations, dictationsFolderPath, dictationOrganization, audioImportMaxMB,
+                          meetingDetectInterval, liveBriefMinGrowth, transcriptionTimeout, pttTapThreshold,
                           priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok,
                           monthlyBudgetUSD,
                           webhookEnabled, webhookURL, scriptHookEnabled, scriptHookPath,
@@ -196,6 +201,10 @@ final class AppSettings: ObservableObject {
         static let notesOrganization               = NotesOrganization.byDay
         static let dictationOrganization           = NotesOrganization.byMonth
         static let audioImportMaxMB: Int           = 50
+        static let meetingDetectInterval: Double   = 3.0    // auto-detect poll seconds
+        static let liveBriefMinGrowth: Int         = 350    // chars of new transcript before a brief refresh
+        static let transcriptionTimeout: Int       = 30     // seconds for a Groq STT request
+        static let pttTapThreshold: Double         = 0.4    // seconds: below = tap-lock, above = hold
         static let meetingAutoDetect               = true
         static let voiceCommandsEnabled            = true
         static let voiceCommandRules = """
@@ -526,16 +535,33 @@ final class AppSettings: ObservableObject {
         get { let v = int(Key.audioImportMaxMB, Default.audioImportMaxMB); return v > 0 ? v : Default.audioImportMaxMB }
         set { set(max(1, newValue), Key.audioImportMaxMB) }
     }
+    /// Seconds between meeting auto-detect polls (clamped 1–10).
+    var meetingDetectInterval: Double {
+        get { min(10, max(1, double(Key.meetingDetectInterval, Default.meetingDetectInterval))) }
+        set { set(min(10, max(1, newValue)), Key.meetingDetectInterval) }
+    }
+    /// New transcript characters required before a live-brief refresh (clamped 100–2000).
+    var liveBriefMinGrowth: Int {
+        get { min(2000, max(100, int(Key.liveBriefMinGrowth, Default.liveBriefMinGrowth))) }
+        set { set(min(2000, max(100, newValue)), Key.liveBriefMinGrowth) }
+    }
+    /// Timeout (seconds) for a single Groq transcription request (clamped 10–120).
+    var transcriptionTimeout: Int {
+        get { min(120, max(10, int(Key.transcriptionTimeout, Default.transcriptionTimeout))) }
+        set { set(min(120, max(10, newValue)), Key.transcriptionTimeout) }
+    }
+    /// Push-to-talk tap-vs-hold threshold in seconds (clamped 0.15–1.0).
+    var pttTapThreshold: Double {
+        get { min(1.0, max(0.15, double(Key.pttTapThreshold, Default.pttTapThreshold))) }
+        set { set(min(1.0, max(0.15, newValue)), Key.pttTapThreshold) }
+    }
 
     /// Apply the folder-organization setting to any base folder for a given
     /// date (e.g. base/2026/2026-07/03/). Folder names are POSIX-stable across
     /// user locales/calendars. Existing files are never moved.
     func organizedFolder(base: URL, using organization: NotesOrganization, for date: Date = Date()) -> URL {
         func stamp(_ format: String) -> String {
-            let f = DateFormatter()
-            f.locale = Locale(identifier: "en_US_POSIX")
-            f.dateFormat = format
-            return f.string(from: date)
+            DateDisplay.posixFormatter(format).string(from: date)
         }
         switch organization {
         case .flat:

@@ -26,6 +26,17 @@ enum DateDisplay {
         return f
     }()
 
+    /// Build a locale-independent (POSIX) formatter for an arbitrary fixed
+    /// pattern — the one place that stamps stable, non-display date strings
+    /// (month keys, folder names). Callers that reuse a fixed pattern should
+    /// prefer the cached `posixDay`/`posixTimestamp` above.
+    static func posixFormatter(_ format: String) -> DateFormatter {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = format
+        return f
+    }
+
     /// Parses the fixed `yyyy-MM-dd` day key. POSIX so it's locale-independent.
     private static var parser: DateFormatter { posixDay }
 

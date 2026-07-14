@@ -75,7 +75,7 @@ final class LiveMeetingAssistant: ObservableObject {
     // lever); only spend a call when the transcript has grown enough since the
     // last brief.
     private var tickSeconds: UInt64 { UInt64(max(10, AppSettings.shared.liveBriefInterval)) }
-    private let minGrowthChars = 350
+    private var minGrowthChars: Int { AppSettings.shared.liveBriefMinGrowth }
 
     /// Begin briefing for a meeting. `transcriptProvider` returns the current
     /// notes text (nil if unavailable). No-op if the toggle is off, there's no

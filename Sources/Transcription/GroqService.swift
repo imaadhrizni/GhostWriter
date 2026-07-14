@@ -47,7 +47,7 @@ final class GroqService {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
+        request.timeoutInterval = TimeInterval(AppSettings.shared.transcriptionTimeout)
 
         var body = Data()
 

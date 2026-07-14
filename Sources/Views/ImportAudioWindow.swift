@@ -104,38 +104,14 @@ struct ImportAudioView: View {
 
     // MARK: Assignment
 
-    @State private var showAssign = false
-
     private var assignRow: some View {
         HStack(spacing: 8) {
             Text("File under:").foregroundStyle(.secondary)
-            Button {
-                showAssign = true
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: service.targetKind.isEmpty ? "tray" : (service.targetKind == "project" ? "folder" : "building.2"))
-                    Text(assignLabel)
-                }
-            }
-            .popover(isPresented: $showAssign, arrowEdge: .bottom) {
-                ImportAssignPopover(store: catalog, show: $showAssign,
-                                    targetKind: $service.targetKind, targetID: $service.targetID)
-            }
-            .disabled(service.isRunning)
-            if !service.targetKind.isEmpty {
-                Button { service.targetKind = ""; service.targetID = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain).help("Clear")
-            }
+            OrgProjectTreePicker(store: catalog, kind: $service.targetKind, id: $service.targetID,
+                                 allLabel: "Unassigned")
+                .disabled(service.isRunning)
             Spacer()
         }
-    }
-
-    private var assignLabel: String {
-        if service.targetKind == "project", let o = catalog.project(service.targetID) { return o.name }
-        if service.targetKind == "org", let o = catalog.org(service.targetID) { return o.name }
-        return "Unassigned"
     }
 
     // MARK: Footer
@@ -184,78 +160,3 @@ struct ImportAudioView: View {
     }
 }
 
-// MARK: - Import assignment picker
-
-/// Searchable, hierarchical project/org picker for the import window — the
-/// same shape as the Catalog note editor's "Filed under", but it reports the
-/// choice back through bindings instead of mutating a note (the note rows don't
-/// exist yet at import time).
-private struct ImportAssignPopover: View {
-    @ObservedObject var store: CatalogStore
-    @Binding var show: Bool
-    @Binding var targetKind: String
-    @Binding var targetID: String
-    @State private var mode = 0   // 0 = project, 1 = organisation
-    @State private var query = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Picker("", selection: $mode) {
-                Text("Project").tag(0)
-                Text("Organization").tag(1)
-            }
-            .pickerStyle(.segmented).labelsHidden()
-
-            EntitySearchBar(text: $query, placeholder: mode == 0 ? "Search projects" : "Search organizations")
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    Button { choose("", "") } label: {
-                        Label("Unassigned", systemImage: "tray").frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.plain).padding(.vertical, 3)
-                    Divider()
-                    if mode == 0 {
-                        ForEach(filteredOpps) { o in
-                            row(o.name, subtitle: store.projectPath(of: o.id)) { choose("project", o.id) }
-                        }
-                    } else {
-                        ForEach(filteredOrgs) { o in
-                            row(o.name, subtitle: store.orgPath(of: o.id)) { choose("org", o.id) }
-                        }
-                    }
-                }
-            }
-            .frame(height: 220)
-        }
-        .padding(10)
-        .frame(width: 300)
-    }
-
-    private func row(_ name: String, subtitle: String?, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(name).lineLimit(1)
-                if let subtitle, !subtitle.isEmpty {
-                    Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.plain).padding(.vertical, 3)
-    }
-
-    private func choose(_ kind: String, _ id: String) {
-        targetKind = kind; targetID = id; show = false
-    }
-
-    private var filteredOpps: [CatalogProject] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        let all = store.projectsSorted
-        return q.isEmpty ? all : all.filter { $0.name.lowercased().contains(q) }
-    }
-    private var filteredOrgs: [CatalogOrg] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return q.isEmpty ? store.orgsSorted : store.orgsSorted.filter { $0.name.lowercased().contains(q) }
-    }
-}

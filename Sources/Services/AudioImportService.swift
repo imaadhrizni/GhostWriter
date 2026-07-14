@@ -27,7 +27,7 @@ final class AudioImportService: ObservableObject {
     @Published var items: [Item] = []
     @Published var isRunning = false
     /// Batch assignment applied to every note created this run.
-    @Published var targetKind = ""   // "", "org", or "opp"
+    @Published var targetKind = ""   // "", "org", or "project"
     @Published var targetID = ""
 
     private let groq = GroqService()

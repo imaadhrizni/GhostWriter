@@ -62,10 +62,7 @@ final class UsageStats: ObservableObject {
 
     /// Current calendar month key, e.g. "2026-07".
     private var currentMonthKey: String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM"
-        return f.string(from: Date())
+        DateDisplay.posixFormatter("yyyy-MM").string(from: Date())
     }
 
     /// Reset the month counters when the calendar month changes.

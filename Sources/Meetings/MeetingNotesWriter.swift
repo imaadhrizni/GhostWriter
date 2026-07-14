@@ -100,6 +100,21 @@ final class MeetingNotesWriter {
         f.dateStyle = .long
         return f
     }()
+    /// Long date + short time (e.g. "3 July 2026 at 2:30 PM"), localized — the
+    /// human-readable stamp written into note bodies.
+    private static let displayDateTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .long
+        f.timeStyle = .short
+        return f
+    }()
+
+    /// Quote a free-text value as a safe double-quoted YAML scalar — an app,
+    /// title, or filename could contain a colon or quote that would otherwise
+    /// produce malformed front-matter. Single source of truth for YAML escaping.
+    static func yamlScalar(_ s: String) -> String {
+        "\"\(s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
+    }
 
     // MARK: - Quick Notes
 
@@ -152,11 +167,7 @@ final class MeetingNotesWriter {
         let stamp = fileNameFormatter.string(from: now)
         let fileURL = folder.appendingPathComponent("Dictation_\(stamp).md")
 
-        // Quote free-text values — an app/host/style could contain a colon or
-        // quote that would otherwise produce malformed YAML.
-        func yaml(_ s: String) -> String {
-            "\"\(s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
-        }
+        let yaml = Self.yamlScalar
         var lines = ["---",
                      "title: Dictation \(stamp)",
                      "date: \(ISO8601DateFormatter().string(from: now))",
@@ -257,17 +268,12 @@ final class MeetingNotesWriter {
         let stamp = fileNameFormatter.string(from: recordedAt)
         let fileURL = folder.appendingPathComponent("Meeting_\(stamp).md")
 
-        let displayFormatter = DateFormatter()
-        displayFormatter.dateStyle = .long
-        displayFormatter.timeStyle = .short
-        let displayDate = displayFormatter.string(from: recordedAt)
+        let displayDate = Self.displayDateTimeFormatter.string(from: recordedAt)
 
         let secs = duration.map { Int($0.rounded()) }
         let durationText = secs.map { String(format: "%d:%02d", $0 / 60, $0 % 60) }
 
-        func yaml(_ s: String) -> String {
-            "\"\(s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
-        }
+        let yaml = Self.yamlScalar
 
         var content = ""
         if AppSettings.shared.frontMatterEnabled {
@@ -315,10 +321,7 @@ final class MeetingNotesWriter {
             let fileName = "Meeting_\(timestamp).md"
             let fileURL = notesDirectory.appendingPathComponent(fileName)
 
-            let displayFormatter = DateFormatter()
-            displayFormatter.dateStyle = .long
-            displayFormatter.timeStyle = .short
-            let displayDate = displayFormatter.string(from: Date())
+            let displayDate = Self.displayDateTimeFormatter.string(from: Date())
 
             var header = ""
             if AppSettings.shared.frontMatterEnabled {

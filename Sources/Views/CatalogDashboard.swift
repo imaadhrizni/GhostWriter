@@ -300,13 +300,21 @@ struct DashboardView: View {
         .padding(.bottom, 2)
     }
 
-    // POC command center (catalog-derived, instant). Scoped by the account
-    // filter so an SE can focus on one customer's POCs.
+    // POC command center. Scoped by the account filter so an SE can focus on one
+    // customer's POCs; when a time range is set, limited to POCs with meeting
+    // activity in that window (criteria themselves aren't time-stamped).
     private var pocCard: some View {
         var opps = store.doc.opportunities.filter { !$0.pocCriteria.isEmpty }
         if !orgFilter.isEmpty {
             let allowed = Set(store.opportunities(forOrg: orgFilter).map { $0.id })
             opps = opps.filter { allowed.contains($0.id) }
+        }
+        // Range: keep POCs touched by a meeting in the filtered set ("All time" = no
+        // limit). Skip while the scan is in flight so the hero doesn't flash empty.
+        if range.days != nil && !loading {
+            opps = opps.filter { o in
+                store.notes(forOpportunity: o).contains { metrics.scannedURLs.contains(store.url(of: $0)) }
+            }
         }
         let all = opps.flatMap { $0.pocCriteria }
         let passed = all.filter { $0.status == .pass }.count

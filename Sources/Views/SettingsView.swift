@@ -33,6 +33,7 @@ final class SettingsWindowController: NSWindowController {
 // MARK: - Sections
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
+    case essentials  = "Essentials"
     case general     = "General"
     case ai          = "AI & Models"
     case dictation   = "Dictation"
@@ -56,7 +57,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     /// Sidebar layout: related panes grouped under headers, the way
     /// System Settings clusters its domains.
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
-        (nil,                  [.general, .ai]),
+        (nil,                  [.essentials, .general, .ai]),
         ("Capture",            [.dictation, .styles, .quickNotes]),
         ("Meetings",           [.meeting, .notes, .meetingTemplates, .draftTemplates, .digest]),
         ("Privacy & Security", [.privacy, .permissions]),
@@ -66,6 +67,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
+        case .essentials:  return "sparkles"
         case .general:     return "gearshape.fill"
         case .ai:          return "cpu.fill"
         case .dictation:   return "mic.fill"
@@ -88,6 +90,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 
     var iconColor: Color {
         switch self {
+        case .essentials:  return .accentColor
         case .general:     return .gray
         case .ai:          return .mint
         case .dictation:   return .blue
@@ -140,6 +143,8 @@ fileprivate enum SettingsSearchIndex {
         [.general, .ai, .dictation, .quickNotes, .meeting, .notes, .digest, .shortcuts]
 
     static let all: [SettingsSearchEntry] = [
+        // Essentials
+        .init(label: "Getting started / setup checklist", section: .essentials, keywords: ["onboarding", "first run", "essentials", "setup", "get started", "welcome", "readiness", "api key", "permissions"]),
         // General
         .init(label: "Launch at login", section: .general, keywords: ["startup", "boot", "open at login", "autostart", "default", "reset"]),
         .init(label: "Notes folder location", section: .general, keywords: ["storage", "save", "directory", "path", "choose", "change", "default", "reset"]),
@@ -245,7 +250,7 @@ private struct SmallSwitchToggleStyle: ToggleStyle {
 }
 
 struct SettingsView: View {
-    @State private var selection: SettingsSection = .general
+    @State private var selection: SettingsSection = .essentials
     @State private var searchText = ""
 
     private func sidebarRow(_ section: SettingsSection) -> some View {
@@ -312,6 +317,7 @@ struct SettingsView: View {
             ScrollView {
                 Group {
                     switch selection {
+                    case .essentials:  EssentialsPane(navigate: { selection = $0 })
                     case .general:     GeneralPane()
                     case .ai:          AIPane()
                     case .dictation:   DictationPane()
@@ -340,6 +346,155 @@ struct SettingsView: View {
         // Use macOS switches for every Toggle in Settings (cascades to all panes),
         // sized small so they sit proportionally next to labels and fields.
         .toggleStyle(SmallSwitchToggleStyle())
+    }
+}
+
+// MARK: - Essentials (first-run / at-a-glance readiness)
+
+/// The landing pane: a live readiness checklist of the few things that must be
+/// set up before GhostWriter works, plus a reminder of the main dictation
+/// gesture. Every row deep-links into the pane that owns the full controls, so
+/// this stays a *dashboard*, not a duplicate settings surface.
+private struct EssentialsPane: View {
+    let navigate: (SettingsSection) -> Void
+
+    @ObservedObject private var settings = AppSettings.shared
+    private let permissionGuard = PermissionGuard()
+
+    @State private var hasAPIKey = KeychainService.groqAPIKey() != nil
+    @State private var hasMic = false
+    @State private var hasA11y = false
+
+    /// The hard requirements for the app to function at all.
+    private var readyCount: Int { [hasAPIKey, hasMic, hasA11y].filter { $0 }.count }
+    private var allReady: Bool { readyCount == 3 }
+
+    private var pttKeyName: String {
+        (PTTKey(rawValue: settings.pttKeyCode) ?? .rightOption).displayName
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            banner
+
+            SettingsGroup("Set Up") {
+                ChecklistRow(
+                    done: hasAPIKey,
+                    title: "Connect your Groq API key",
+                    detail: hasAPIKey ? "API key configured." : "Required for transcription and AI summaries.",
+                    actionTitle: hasAPIKey ? "Change…" : "Set Up…"
+                ) { NotificationCenter.default.post(name: .showAPIKeyWindow, object: nil) }
+
+                Divider()
+
+                ChecklistRow(
+                    done: hasMic,
+                    title: "Grant Microphone access",
+                    detail: hasMic ? "Granted." : "Required to hear your voice and meetings.",
+                    actionTitle: hasMic ? "Manage…" : "Grant…"
+                ) { navigate(.permissions) }
+
+                Divider()
+
+                ChecklistRow(
+                    done: hasA11y,
+                    title: "Grant Accessibility access",
+                    detail: hasA11y ? "Granted." : "Required for the push-to-talk key and typing at your cursor.",
+                    actionTitle: hasA11y ? "Manage…" : "Grant…"
+                ) { navigate(.permissions) }
+            }
+
+            SettingsGroup("How to Dictate") {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "mic.fill")
+                        .foregroundColor(.blue)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(dictationSummary)
+                        Text("Place your cursor in any text field, in any app, then use the key above. Esc cancels.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button("Configure…") { navigate(.dictation) }
+                }
+            }
+
+            SettingsGroup("Where Notes Are Saved") {
+                HStack {
+                    Image(systemName: "folder.fill")
+                        .foregroundColor(.indigo)
+                        .frame(width: 20)
+                    Text(settings.notesFolder.path.abbreviatingHome())
+                        .font(.callout).foregroundColor(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Button("Change…") { navigate(.notes) }
+                }
+            }
+
+            Text("This page just links to the full settings — explore the sidebar for meetings, styles, privacy, and more.")
+                .font(.caption).foregroundColor(.secondary)
+        }
+        .onAppear(perform: refresh)
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in refresh() }
+    }
+
+    private var dictationSummary: String {
+        switch settings.pttActivation {
+        case .hold:    return "Hold \(pttKeyName) to record, release to type."
+        case .tapLock: return "Tap \(pttKeyName) to lock hands-free (or hold for a quick phrase)."
+        case .toggle:  return "Press \(pttKeyName) to start, press again to stop."
+        }
+    }
+
+    @ViewBuilder private var banner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: allReady ? "checkmark.seal.fill" : "sparkles")
+                .font(.title2)
+                .foregroundColor(allReady ? .green : .accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(allReady ? "You're all set." : "Welcome to GhostWriter")
+                    .font(.headline)
+                Text(allReady
+                     ? "Everything's connected — you're ready to dictate and record meetings."
+                     : "\(3 - readyCount) of 3 setup steps left before you can start.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10)
+            .fill((allReady ? Color.green : Color.accentColor).opacity(0.10)))
+    }
+
+    private func refresh() {
+        hasAPIKey = KeychainService.groqAPIKey() != nil
+        hasMic = permissionGuard.hasMicrophonePermission
+        hasA11y = permissionGuard.hasAccessibilityPermission
+    }
+}
+
+/// A setup-step row: a status glyph, a title + detail, and a trailing action.
+private struct ChecklistRow: View {
+    let done: Bool
+    let title: String
+    let detail: String
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(done ? .green : .orange)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(detail).font(.caption).foregroundColor(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button(actionTitle, action: action)
+        }
     }
 }
 
@@ -720,18 +875,14 @@ private struct DictationPane: View {
 
             SettingsGroup("Accuracy") {
                 Text("Custom vocabulary").font(.caption.bold())
-                TextEditor(text: $settings.vocabulary)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                MultilineField(text: $settings.vocabulary,
+                               placeholder: "Kubernetes, Grafana, PostgreSQL")
                 Text("Names, acronyms, jargon — comma or newline separated. Whisper biases toward these terms (e.g. Kubernetes, Grafana, PostgreSQL).")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Text("Replacements").font(.caption.bold())
-                TextEditor(text: $settings.replacements)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                MultilineField(text: $settings.replacements,
+                               placeholder: "cuber netties => Kubernetes")
                 Text("Applied after transcription, one rule per line: wrong => right (e.g. cuber netties => Kubernetes).")
                     .font(.caption).foregroundColor(.secondary)
             }
@@ -817,10 +968,10 @@ private struct WritingStylesPane: View {
                 if settings.voiceCommandsEnabled {
                     Text("Rules — one per line, \"spoken phrase → effect\". Edit freely; the polishing model follows them.")
                         .font(.caption).foregroundColor(.secondary)
-                    TextEditor(text: $settings.voiceCommandRules)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(height: 90)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                    MultilineField(text: $settings.voiceCommandRules,
+                                   placeholder: "new paragraph → line break\nscratch that → delete last sentence",
+                                   minHeight: 90,
+                                   font: .system(.caption, design: .monospaced))
                 }
             }
 
@@ -829,10 +980,8 @@ private struct WritingStylesPane: View {
             }
 
             SettingsGroup("Per-App Style Overrides") {
-                TextEditor(text: $settings.appProfiles)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                MultilineField(text: $settings.appProfiles,
+                               placeholder: "com.tinyspeck.slackmacgap: messaging")
                 Text("Force a built-in style per app, one per line: bundle.id: style — styles: messaging, email, code, browser, notes, general (e.g. com.tinyspeck.slackmacgap: messaging). Custom styles apply via the default above.")
                     .font(.caption).foregroundColor(.secondary)
             }
@@ -844,10 +993,10 @@ private struct WritingStylesPane: View {
                 if settings.browserTabDetection {
                     Text("Rules — one per line, host: style. Style is a built-in (messaging / email / code / browser / notes / general) or a custom style's name. First matching host wins; unmatched tabs use the Browser style.")
                         .font(.caption).foregroundColor(.secondary)
-                    TextEditor(text: $settings.domainStyleRules)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(height: 80)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                    MultilineField(text: $settings.domainStyleRules,
+                                   placeholder: "mail.google.com: email\ngithub.com: code",
+                                   minHeight: 80,
+                                   font: .system(.caption, design: .monospaced))
                     HStack {
                         Spacer()
                         DefaultResetButton(isDefault: settings.domainStyleRules == AppSettings.Default.domainStyleRules) {
@@ -982,10 +1131,10 @@ private struct DictationStyleEditor: View {
                     }
                 }
             }
-            TextEditor(text: $text)
-                .font(.system(.caption, design: .monospaced))
-                .frame(height: 90)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+            MultilineField(text: $text,
+                           placeholder: "Describe how the model should clean up and format this text…",
+                           minHeight: 90,
+                           font: .system(.caption, design: .monospaced))
                 .onChange(of: text) { _, newValue in save(newValue) }
         }
         .onAppear { text = style.instruction }
@@ -1444,10 +1593,10 @@ private struct KeywordRadarEditor: View {
 
             // Power-user bulk edit — same underlying list.
             DisclosureGroup(isExpanded: $showBulk) {
-                TextEditor(text: $settings.watchlistKeywords)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 80)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+                MultilineField(text: $settings.watchlistKeywords,
+                               placeholder: "Acme Corp\nlatency\nrenewal",
+                               minHeight: 80,
+                               font: .system(size: 12, design: .monospaced))
                 Text("One term per line (commas also work). Edits here stay in sync with the chips above.")
                     .font(.caption).foregroundColor(.secondary)
             } label: {
@@ -1583,10 +1732,10 @@ private struct DraftTemplatesPane: View {
             }
 
             SettingsGroup("\(current.displayName) guidance") {
-                TextEditor(text: $text)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 200)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+                MultilineField(text: $text,
+                               placeholder: "Describe the recipient, tone, sections, and format the model should use…",
+                               minHeight: 200,
+                               font: .system(size: 12, design: .monospaced))
                     .onChange(of: text) { _, newValue in
                         switch current {
                         case .builtIn(let k): settings.setDraftGuidance(newValue, for: k)
@@ -1999,10 +2148,10 @@ private struct TemplateSectionsEditor: View {
                     }
                 }
             }
-            TextEditor(text: $text)
-                .font(.system(.caption, design: .monospaced))
-                .frame(height: 90)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+            MultilineField(text: $text,
+                           placeholder: "## Summary\n## Action Items\n## Decisions",
+                           minHeight: 90,
+                           font: .system(.caption, design: .monospaced))
                 .onChange(of: text) { _, newValue in save(newValue) }
         }
         .onAppear { text = template.sectionsText }
@@ -2047,10 +2196,10 @@ private struct TemplateFollowUpEditor: View {
                     }
                 }
             }
-            TextEditor(text: $text)
-                .font(.system(.caption, design: .monospaced))
-                .frame(height: 70)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+            MultilineField(text: $text,
+                           placeholder: "Recipient, tone, and what the follow-up should include…",
+                           minHeight: 70,
+                           font: .system(.caption, design: .monospaced))
                 .onChange(of: text) { _, newValue in save(newValue) }
             Text("For explicit document types (Minutes, Follow-up Email, Status Update, …), see Meetings → Draft Templates.")
                 .font(.caption).foregroundColor(.secondary)
@@ -2410,6 +2559,36 @@ private struct PermissionRow: View {
 }
 
 // MARK: - Reusable Controls
+
+/// A multi-line text box with a greyed placeholder shown while it's empty —
+/// SwiftUI's `TextEditor` has no prompt of its own, so an empty field otherwise
+/// reads as a broken blank box. Centralizes the monospaced font + border styling
+/// every settings editor was hand-rolling. Grows past `minHeight` as text wraps.
+private struct MultilineField: View {
+    @Binding var text: String
+    var placeholder: String = ""
+    var minHeight: CGFloat = 54
+    var font: Font = .system(.body, design: .monospaced)
+
+    var body: some View {
+        TextEditor(text: $text)
+            .font(font)
+            .frame(minHeight: minHeight)
+            // Placeholder sits on top but only while empty (so it never covers
+            // real text) and ignores hits so clicks fall through to the editor.
+            .overlay(alignment: .topLeading) {
+                if text.isEmpty && !placeholder.isEmpty {
+                    Text(placeholder)
+                        .font(font)
+                        .foregroundColor(.secondary.opacity(0.5))
+                        .padding(.horizontal, 5)
+                        .padding(.top, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+    }
+}
 
 /// Card-style settings group with a header, mimicking System Settings.
 private struct SettingsGroup<Content: View>: View {

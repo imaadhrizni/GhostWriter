@@ -1330,19 +1330,7 @@ private struct MeetingNotesPane: View {
             }
 
             SettingsGroup("Keyword Radar") {
-                Text("A watchlist of terms to flag — competitors, product names, risk phrases. One per line. Each finished meeting is scanned locally (works offline); matches appear in a Mentions section and, with front-matter on, as tags you can filter in the Catalog.")
-                    .font(.caption).foregroundColor(.secondary)
-                TextEditor(text: $settings.watchlistKeywords)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 90)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
-                if settings.watchlist().isEmpty {
-                    Text("Empty — no scanning is performed.")
-                        .font(.caption).foregroundColor(.secondary)
-                } else {
-                    Text("\(settings.watchlist().count) term\(settings.watchlist().count == 1 ? "" : "s") tracked.")
-                        .font(.caption).foregroundColor(.secondary)
-                }
+                KeywordRadarEditor()
             }
 
             SettingsGroup("Metadata & Notifications") {
@@ -1378,6 +1366,93 @@ private struct MeetingNotesPane: View {
             settings.notesFolder = url
             CatalogStore.shared.notesFolderDidChange(from: oldFolder)
         }
+    }
+}
+
+/// Keyword Radar watchlist editor — a friendly chip UI: type a term and press
+/// Return (or Add) to append it, tap a chip's ✕ to remove it, with a bulk
+/// paste/edit box tucked into a disclosure for power users. Backed by the same
+/// newline-separated `watchlistKeywords` string, so scanning is unaffected.
+private struct KeywordRadarEditor: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var newTerm = ""
+    @State private var showBulk = false
+    @FocusState private var addFocused: Bool
+
+    private var terms: [String] { settings.watchlist() }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Flag terms — competitors, product names, risk phrases. Every finished meeting is scanned locally (works offline); matches surface in a Mentions section and, with front-matter on, as filterable tags. See the cross-meeting rollup in Catalog → Tools → Keyword Radar.")
+                .font(.caption).foregroundColor(.secondary)
+
+            // Add a term — type and press Return, or hit Add.
+            HStack {
+                TextField("Add a term…", text: $newTerm)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($addFocused)
+                    .onSubmit(add)
+                Button("Add", action: add)
+                    .disabled(newTerm.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            // Current terms as removable chips.
+            if terms.isEmpty {
+                Text("No terms yet — nothing is scanned.")
+                    .font(.caption).foregroundColor(.secondary)
+            } else {
+                FlowLayout(spacing: 6) {
+                    ForEach(terms, id: \.self) { term in
+                        KeywordChip(term: term) { settings.removeWatchlistTerm(term) }
+                    }
+                }
+                HStack {
+                    Text("\(terms.count) term\(terms.count == 1 ? "" : "s") tracked")
+                        .font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                    Button("Clear All", role: .destructive) { settings.watchlistKeywords = "" }
+                        .font(.caption)
+                }
+            }
+
+            // Power-user bulk edit — same underlying list.
+            DisclosureGroup(isExpanded: $showBulk) {
+                TextEditor(text: $settings.watchlistKeywords)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 80)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+                Text("One term per line (commas also work). Edits here stay in sync with the chips above.")
+                    .font(.caption).foregroundColor(.secondary)
+            } label: {
+                Text("Paste or edit as a list").font(.caption)
+            }
+        }
+    }
+
+    private func add() {
+        settings.addWatchlistTerms(newTerm)
+        newTerm = ""
+        addFocused = true
+    }
+}
+
+/// A single removable watchlist term pill.
+private struct KeywordChip: View {
+    let term: String
+    let onRemove: () -> Void
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(term).font(.callout).lineLimit(1)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill").font(.caption2)
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.secondary)
+            .help("Remove")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+        .overlay(Capsule().stroke(Color.accentColor.opacity(0.25)))
     }
 }
 

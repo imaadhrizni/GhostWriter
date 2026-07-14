@@ -419,6 +419,29 @@ final class AppSettings: ObservableObject {
         return out
     }
 
+    /// Add one or more terms to the watchlist (comma/newline-separated input is
+    /// split). Trims, de-duplicates case-insensitively, and preserves order.
+    /// Returns the number actually added.
+    @discardableResult
+    func addWatchlistTerms(_ input: String) -> Int {
+        var terms = watchlist()
+        var seen = Set(terms.map { $0.lowercased() })
+        var added = 0
+        for raw in input.components(separatedBy: CharacterSet(charactersIn: ",\n")) {
+            let t = raw.trimmingCharacters(in: .whitespaces)
+            guard !t.isEmpty, seen.insert(t.lowercased()).inserted else { continue }
+            terms.append(t); added += 1
+        }
+        if added > 0 { watchlistKeywords = terms.joined(separator: "\n") }
+        return added
+    }
+
+    /// Remove a single watchlist term (case-insensitive match).
+    func removeWatchlistTerm(_ term: String) {
+        let kept = watchlist().filter { $0.caseInsensitiveCompare(term) != .orderedSame }
+        watchlistKeywords = kept.joined(separator: "\n")
+    }
+
     /// Open notes in the OS default app (e.g. VS Code) instead of the in-app
     /// viewer. Applies wherever a note file is opened.
     var openNotesExternally: Bool {

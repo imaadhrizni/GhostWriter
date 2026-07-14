@@ -263,9 +263,13 @@ struct DashboardView: View {
     @State private var metrics = DashboardMetrics()
     @State private var loading = true
     // Filters
-    @State private var range: DashboardRange = .quarter
+    static let defaultRange: DashboardRange = .quarter
+    @State private var range: DashboardRange = DashboardView.defaultRange
     @State private var orgFilter = ""          // "" = all accounts
     @State private var pocAtRiskOnly = false
+
+    /// True when any filter differs from its default (drives the Reset button).
+    private var filtersActive: Bool { range != Self.defaultRange || !orgFilter.isEmpty }
 
     var body: some View {
         ScrollView {
@@ -317,6 +321,16 @@ struct DashboardView: View {
             .fixedSize()
 
             AccountFilterPicker(store: store, selection: $orgFilter)
+
+            if filtersActive {
+                Button {
+                    range = Self.defaultRange
+                    orgFilter = ""
+                } label: {
+                    Label("Reset", systemImage: "arrow.uturn.backward")
+                }
+                .help("Reset filters to default (\(Self.defaultRange.rawValue), all accounts)")
+            }
 
             Spacer()
 

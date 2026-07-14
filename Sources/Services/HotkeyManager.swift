@@ -34,7 +34,15 @@ final class HotkeyManager {
     /// Asked before swallowing Escape; return true only while dictation is recording.
     var shouldCaptureEscape: (() -> Bool)?
 
-    private var isPressed = false
+    /// How the PTT key behaves, read live from settings.
+    private var activation: PTTActivation { AppSettings.shared.pttActivation }
+
+    private var isPressed = false          // PTT modifier physically down
+    private var isLatched = false          // hands-free recording active (tapLock / toggle)
+    private var pressStart: Date?          // when the current press began (tapLock timing)
+    private var swallowNextUp = false      // release that follows a latch-stopping press
+    /// A press+release shorter than this counts as a "tap" in tap-to-lock mode.
+    private let tapThreshold: TimeInterval = 0.4
 
     private enum KeyCode {
         static let m: Int64      = 46
@@ -143,14 +151,62 @@ final class HotkeyManager {
 
             if isModifierPressed && !isPressed {
                 isPressed = true
-                onKeyDown?()
+                handlePTTDown()
             } else if !isModifierPressed && isPressed {
                 isPressed = false
-                onKeyUp?()
+                handlePTTUp()
             }
         }
 
         return Unmanaged.passRetained(event)
+    }
+
+    // MARK: - Push-to-talk state machine
+
+    private func handlePTTDown() {
+        switch activation {
+        case .hold:
+            onKeyDown?()
+        case .toggle:
+            if isLatched { isLatched = false; onKeyUp?() }
+            else { isLatched = true; onKeyDown?() }
+        case .tapLock:
+            if isLatched {
+                // Already latched hands-free — this press means "stop".
+                isLatched = false
+                swallowNextUp = true
+                onKeyUp?()
+            } else {
+                pressStart = Date()
+                onKeyDown?()
+            }
+        }
+    }
+
+    private func handlePTTUp() {
+        switch activation {
+        case .hold:
+            onKeyUp?()
+        case .toggle:
+            break   // toggling happens on press; ignore the release
+        case .tapLock:
+            if swallowNextUp { swallowNextUp = false; return }
+            let held = pressStart.map { Date().timeIntervalSince($0) } ?? .greatestFiniteMagnitude
+            pressStart = nil
+            if held < tapThreshold {
+                isLatched = true    // quick tap → latch hands-free, keep recording
+            } else {
+                onKeyUp?()          // deliberate hold → stop, classic push-to-talk
+            }
+        }
+    }
+
+    /// Reset the latch when recording ends by any other path (Esc-cancel,
+    /// completion, mode switch) so the next key press starts fresh.
+    func recordingDidEnd() {
+        isLatched = false
+        swallowNextUp = false
+        pressStart = nil
     }
 }
 

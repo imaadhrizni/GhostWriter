@@ -156,6 +156,7 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Prefer on-device AI", section: .ai, keywords: ["apple intelligence", "private", "local llm"]),
         // Dictation
         .init(label: "Dictation hotkey", section: .dictation, keywords: ["shortcut", "push to talk", "trigger", "default", "reset"]),
+        .init(label: "Activation (hold / tap-to-lock / toggle)", section: .dictation, keywords: ["hands-free", "hands free", "toggle", "tap to lock", "latch", "hold", "long dictation", "push to talk", "ptt"]),
         .init(label: "Auto-paste", section: .dictation, keywords: ["insert", "clipboard", "type out"]),
         .init(label: "Dictation sound feedback", section: .dictation, keywords: ["chime", "beep", "audio cue"]),
         // Writing styles
@@ -679,7 +680,25 @@ private struct DictationPane: View {
                         settings.pttKeyCode = AppSettings.Default.pttKeyCode
                     }
                 }
-                Text("Hold to record, release to transcribe and type at your cursor. Takes effect immediately.")
+                Divider()
+                HStack {
+                    Text("Activation")
+                    Spacer()
+                    Picker("", selection: $settings.pttActivation) {
+                        ForEach(PTTActivation.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 220)
+                    DefaultResetButton(isDefault: settings.pttActivation == .hold) {
+                        settings.pttActivation = .hold
+                    }
+                }
+                Text(settings.pttActivation.detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text("Applies immediately — no restart needed.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -1031,10 +1050,18 @@ private struct ShortcutsPane: View {
         (PTTKey(rawValue: settings.pttKeyCode) ?? .rightOption).displayName
     }
 
+    private var pttRow: (keys: String, detail: String) {
+        switch settings.pttActivation {
+        case .hold:    return ("Hold \(pttKeyName)", "Push-to-talk — record while held, type on release")
+        case .tapLock: return ("\(pttKeyName)", "Hold to talk, or tap to lock hands-free — tap again (or Esc) to stop")
+        case .toggle:  return ("\(pttKeyName)", "Press to start recording, press again to stop")
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Dictation") {
-                ShortcutRow(keys: "Hold \(pttKeyName)", detail: "Push-to-talk — record while held, type on release")
+                ShortcutRow(keys: pttRow.keys, detail: pttRow.detail)
                 ShortcutRow(keys: "Esc", detail: "Cancel an in-progress dictation (types nothing)")
                 ShortcutRow(keys: "⌃⌥V", detail: "Type the most recent dictation again")
                 ShortcutRow(keys: "⌃⌥J", detail: "Quick note — dictate into today's notes file (press again to save, Esc to cancel)")

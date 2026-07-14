@@ -1300,6 +1300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         audioBuffer = Data()
         pttStartTime = nil
         appState.recordingState = .idle
+        hotkeyManager.recordingDidEnd()
         if !appState.isMeetingMode { overlayPanel?.orderOut(nil) }
         Log.dictation.debug("🎤 Dictation cancelled (Esc)")
     }
@@ -1308,6 +1309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // PTT key-up fires even when key-down was refused (e.g. a quick note
         // owns the engine) — don't hijack the quick note's capture.
         guard !quickNoteActive else { return }
+        hotkeyManager.recordingDidEnd()
         audioCapture.stop()
         meetingDetector.suppressed = appState.isMeetingMode
         stopDictationTimer()

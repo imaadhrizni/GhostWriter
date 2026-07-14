@@ -30,6 +30,8 @@ A build-and-deploy script is provided:
 3. Speak naturally.
 4. Release the key. GhostWriter transcribes, polishes, and types the result at your cursor.
 
+> **Long dictations without holding:** Settings → Dictation → **Activation** offers two hands-free modes. **Tap to lock** keeps hold-to-talk for quick phrases but latches recording if you *tap* the key (tap again, or press Esc, to stop). **Press to toggle** drops holding entirely — press once to start, again to stop.
+
 ### Meeting Mode
 1. Choose **Start Meeting** in the menu (or press **⌃⌥M**) — a dialog asks what kind of meeting it is (**template**: Customer Call by default, plus Discovery Call, Solution Demo, Solution Scoping, Project Kickoff, Planning, Standup, 1:1, All-Hands, Brainstorm, Lecture / Webinar, and General, grouped into categories, plus any custom templates you've added), which shapes what the summary extracts, lets you optionally **link** the note to an organisation or opportunity (with a search box that narrows the list as your Catalog grows, plus quick-add entries), lets you type an optional **agenda** (comma-separated) that drives the live coverage checklist and the end-of-meeting check, and offers a **Show live brief** switch — a per-meeting toggle that defaults to your global setting, so you can turn the floating brief on or off for just this call (disabled when it couldn't run anyway, i.e. Local-only mode or no API key). When a conferencing app or browser call starts using your mic, GhostWriter offers to start on its own.
 2. GhostWriter listens to both your mic and the system audio and writes a live Markdown transcript, tagging each line as **You** or _Them_ (labels customizable; **Rename Speakers…** gives voices real names per meeting).
@@ -60,7 +62,7 @@ These work system-wide, from any app (they ride the same Accessibility event tap
 
 | Shortcut | Action |
 | --- | --- |
-| Hold **Right Option** (configurable) | Push-to-talk dictation |
+| Hold **Right Option** (configurable) | Push-to-talk dictation (or tap-to-lock / toggle — see Activation) |
 | **Esc** (while dictating) | Cancel the recording — nothing is typed |
 | **⌃⌥V** | Type the most recent dictation again |
 | **⌃⌥J** | Quick note — dictate into today's notes file (press again to save, Esc to cancel) |

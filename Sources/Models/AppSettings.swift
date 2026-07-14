@@ -21,6 +21,7 @@ final class AppSettings: ObservableObject {
         static let polishingModel         = "api.polishingModel"
         static let fastModel              = "api.fastModel"
         static let pttKeyCode             = "dictation.pttKeyCode"
+        static let pttActivation          = "dictation.pttActivation"
         static let preferBuiltInMic       = "audio.preferBuiltInMic"
         static let meetingMicThreshold    = "meeting.micThresholdDBFS"
         static let systemAudioThreshold   = "meeting.systemAudioThresholdDBFS"
@@ -111,6 +112,7 @@ final class AppSettings: ObservableObject {
         static let packetConfirmBeforeRun = "packet.confirmBeforeRun"
 
         static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
+                          pttActivation,
                           preferBuiltInMic,
                           meetingMicThreshold, systemAudioThreshold,
                           silenceDebounce, maxSegmentSeconds, echoGateWindow,
@@ -150,6 +152,7 @@ final class AppSettings: ObservableObject {
         static let polishingModel                  = "meta-llama/llama-4-scout-17b-16e-instruct"  // 500K TPD / 30K TPM — avoids the 70B daily cap
         static let fastModel                       = "llama-3.1-8b-instant"
         static let pttKeyCode: Int                 = 61     // Right Option
+        static let pttActivation                   = "hold" // hold | tapLock | toggle
         static let preferBuiltInMic                = false  // use the system default input
         static let meetingMicThreshold: Float      = -40.0
         static let systemAudioThreshold: Float     = -50.0
@@ -269,6 +272,13 @@ final class AppSettings: ObservableObject {
     var pttKeyCode: Int {
         get { int(Key.pttKeyCode, Default.pttKeyCode) }
         set { set(newValue, Key.pttKeyCode) }
+    }
+
+    /// How the push-to-talk key activates recording: hold-to-talk, tap-to-lock
+    /// (hold still works; a quick tap latches hands-free), or pure toggle.
+    var pttActivation: PTTActivation {
+        get { PTTActivation(rawValue: string(Key.pttActivation, Default.pttActivation)) ?? .hold }
+        set { set(newValue.rawValue, Key.pttActivation) }
     }
 
     /// Prefer the built-in Mac microphone over Bluetooth mics. Keeps AirPods in
@@ -1986,6 +1996,35 @@ enum MeetingOverlayMode: String, CaseIterable, Identifiable {
 // MARK: - Push-to-Talk Key Options
 
 /// Modifier keys usable as the push-to-talk hotkey (flagsChanged-based).
+/// How the push-to-talk key drives dictation recording.
+enum PTTActivation: String, CaseIterable, Identifiable {
+    /// Record only while the key is physically held; stop on release. (Classic push-to-talk.)
+    case hold
+    /// Hold-to-talk still works, but a quick tap latches recording hands-free
+    /// until the next tap. Best of both for short phrases and long dictations.
+    case tapLock
+    /// Press once to start, press again to stop — the key never needs holding.
+    case toggle
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .hold:    return "Hold to talk"
+        case .tapLock: return "Tap to lock (hybrid)"
+        case .toggle:  return "Press to toggle"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .hold:    return "Record while the key is held; transcribe and type on release."
+        case .tapLock: return "Hold for a quick phrase, or tap once to latch hands-free — tap again (or Esc) to stop."
+        case .toggle:  return "Press once to start recording, press again to stop. The key is never held."
+        }
+    }
+}
+
 enum PTTKey: Int, CaseIterable, Identifiable {
     case rightOption  = 61
     case leftOption   = 58

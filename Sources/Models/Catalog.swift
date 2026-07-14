@@ -675,6 +675,24 @@ final class CatalogStore: ObservableObject {
         mutate { $0.notes.removeAll { $0.id == id } }
     }
 
+    /// Move a note's Markdown file to the Trash, then drop its catalog row.
+    /// Recoverable (the file lands in Trash, not a hard delete). Returns whether
+    /// the file was trashed; the row is removed regardless so the Catalog never
+    /// keeps a row for a note the user asked to delete. Throws only if trashing
+    /// fails for a file that still exists (the caller can surface the error).
+    @discardableResult
+    func trashNote(_ id: String) throws -> Bool {
+        guard let note = note(id: id) else { return false }
+        var trashed = false
+        let fileURL = url(of: note)
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            try FileManager.default.trashItem(at: fileURL, resultingItemURL: nil)
+            trashed = true
+        }
+        deleteNote(id)
+        return trashed
+    }
+
     /// Remove every row whose file no longer exists on disk. Returns how many
     /// were pruned. Note files themselves are never written or deleted here.
     @discardableResult

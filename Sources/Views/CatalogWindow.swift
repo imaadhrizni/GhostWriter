@@ -1312,6 +1312,8 @@ private struct NotesList: View {
     var missingOnly: Bool = false
     @State private var semanticOrder: [String] = []
     @State private var hovered: String?
+    @State private var pendingTrash: CatalogNote?
+    @State private var trashError: String?
 
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
 
@@ -1377,13 +1379,32 @@ private struct NotesList: View {
                                 .buttonStyle(.borderless).foregroundStyle(.secondary)
                                 .help("Reveal in Finder")
                             }
-                            Button {
-                                if selID == n.id { selID = nil }
-                                store.deleteNote(n.id)
-                            } label: { Image(systemName: "trash") }
-                            .buttonStyle(.borderless).foregroundStyle(missing ? .red : .secondary)
-                            .help(missing ? "Remove this missing entry from the catalog"
-                                          : "Remove from catalog (note file is kept)")
+                            if missing {
+                                // File is already gone — the only action is to
+                                // drop the stale row.
+                                Button {
+                                    if selID == n.id { selID = nil }
+                                    store.deleteNote(n.id)
+                                } label: { Image(systemName: "trash") }
+                                .buttonStyle(.borderless).foregroundStyle(.red)
+                                .help("Remove this missing entry from the catalog")
+                            } else {
+                                Menu {
+                                    Button("Remove from Catalog (keep file)") {
+                                        if selID == n.id { selID = nil }
+                                        store.deleteNote(n.id)
+                                    }
+                                    Divider()
+                                    Button("Move Note to Trash…", role: .destructive) {
+                                        pendingTrash = n
+                                    }
+                                } label: { Image(systemName: "trash") }
+                                .menuStyle(.borderlessButton)
+                                .menuIndicator(.hidden)
+                                .fixedSize()
+                                .foregroundStyle(.secondary)
+                                .help("Remove from catalog, or move the note file to Trash")
+                            }
                         }
                     }
                     .padding(.vertical, 3)
@@ -1395,6 +1416,29 @@ private struct NotesList: View {
             }
         }
         .task(id: "\(scope)|\(trimmedQuery)") { await runSemantic() }
+        .confirmationDialog(
+            "Move this note to the Trash?",
+            isPresented: Binding(get: { pendingTrash != nil }, set: { if !$0 { pendingTrash = nil } }),
+            presenting: pendingTrash
+        ) { n in
+            Button("Move to Trash", role: .destructive) {
+                if selID == n.id { selID = nil }
+                do {
+                    try store.trashNote(n.id)
+                } catch {
+                    trashError = error.localizedDescription
+                }
+                pendingTrash = nil
+            }
+            Button("Cancel", role: .cancel) { pendingTrash = nil }
+        } message: { n in
+            Text("“\(n.title)” will be moved to the Trash and removed from the Catalog. You can recover it from the Trash.")
+        }
+        .alert("Couldn't delete the note", isPresented: Binding(get: { trashError != nil }, set: { if !$0 { trashError = nil } })) {
+            Button("OK", role: .cancel) { trashError = nil }
+        } message: {
+            Text(trashError ?? "")
+        }
     }
 
 

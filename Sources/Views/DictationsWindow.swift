@@ -213,42 +213,32 @@ private struct DictationsView: View {
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup {
             if selecting {
-                // Show text beside every icon so the actions read unambiguously.
-                Button { copySelected() } label: {
-                    Label("Copy\(selected.isEmpty ? "" : " (\(selected.count))")", systemImage: "doc.on.doc")
+                // Compact icon buttons; meaning lives in the tooltips.
+                let allSelected = !filtered.isEmpty && selected.count == filtered.count
+                Button { selected = Set(filtered.map { $0.url }) } label: {
+                    Image(systemName: "checklist.checked")
                 }
-                .labelStyle(.titleAndIcon)
-                .disabled(selected.isEmpty)
-                .help("Copy the selected dictations' text to the clipboard")
+                .disabled(allSelected)
+                .help("Select all \(filtered.count)")
 
-                Button(role: .destructive) { pendingBulk = .selected } label: {
-                    Label("Delete\(selected.isEmpty ? "" : " (\(selected.count))")", systemImage: "trash")
-                }
-                .labelStyle(.titleAndIcon)
-                .disabled(selected.isEmpty)
-                .help("Move the selected dictations to the Trash")
+                Button { selected = [] } label: { Image(systemName: "xmark.circle") }
+                    .disabled(selected.isEmpty)
+                    .help("Clear selection")
 
-                Button(role: .destructive) { pendingBulk = .all } label: {
-                    Label("Delete All", systemImage: "trash.fill")
-                }
-                .labelStyle(.titleAndIcon)
-                .disabled(filtered.isEmpty)
-                .help("Move every listed dictation to the Trash")
+                Button { copySelected() } label: { Image(systemName: "doc.on.doc") }
+                    .disabled(selected.isEmpty)
+                    .help("Copy \(selected.count) dictation\(selected.count == 1 ? "" : "s") to the clipboard")
 
-                // Clear the current tick selection (only while something is ticked).
-                if !selected.isEmpty {
-                    Button { selected = [] } label: {
-                        Label("Clear Selection", systemImage: "xmark.circle")
-                    }
-                    .labelStyle(.titleAndIcon)
-                    .help("Deselect all")
-                }
+                Button(role: .destructive) { pendingBulk = .selected } label: { Image(systemName: "trash") }
+                    .disabled(selected.isEmpty)
+                    .help("Move \(selected.count) selected to the Trash")
 
-                Button { selecting = false; selected = [] } label: {
-                    Label("Done", systemImage: "checkmark")
-                }
-                .labelStyle(.titleAndIcon)
-                .help("Exit selection mode")
+                Button(role: .destructive) { pendingBulk = .all } label: { Image(systemName: "trash.fill") }
+                    .disabled(filtered.isEmpty)
+                    .help("Move all \(filtered.count) listed to the Trash")
+
+                Button("Done") { selecting = false; selected = [] }
+                    .help("Exit selection mode")
             } else {
                 if !apps.isEmpty {
                     Menu {
@@ -260,30 +250,21 @@ private struct DictationsView: View {
                             }
                         }
                     } label: {
-                        Label(appFilter.isEmpty ? "All apps" : appFilter, systemImage: "line.3.horizontal.decrease.circle")
+                        Image(systemName: appFilter.isEmpty ? "line.3.horizontal.decrease.circle"
+                                                             : "line.3.horizontal.decrease.circle.fill")
                     }
-                    .help("Filter by app")
+                    .help(appFilter.isEmpty ? "Filter by app" : "Filtered: \(appFilter)")
                 }
-                Button { newestFirst.toggle() } label: {
-                    Label(newestFirst ? "Newest first" : "Oldest first",
-                          systemImage: "arrow.up.arrow.down")
-                }
-                .labelStyle(.titleAndIcon)
-                .help("Toggle sort order")
+                Button { newestFirst.toggle() } label: { Image(systemName: "arrow.up.arrow.down") }
+                    .help(newestFirst ? "Sorted newest first" : "Sorted oldest first")
 
-                Button { Task { await reload() } } label: {
-                    Label("Reload", systemImage: "arrow.clockwise")
-                }
-                .labelStyle(.titleAndIcon)
-                .help("Rescan the archive — drops any dictations deleted on disk")
-                .disabled(loading)
+                Button { Task { await reload() } } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Rescan the archive — drops any dictations deleted on disk")
+                    .disabled(loading)
 
-                Button { selecting = true } label: {
-                    Label("Select", systemImage: "checklist")
-                }
-                .labelStyle(.titleAndIcon)
-                .help("Select multiple to copy or delete")
-                .disabled(items.isEmpty)
+                Button { selecting = true } label: { Image(systemName: "checklist") }
+                    .help("Select multiple to copy or delete")
+                    .disabled(items.isEmpty)
             }
         }
     }

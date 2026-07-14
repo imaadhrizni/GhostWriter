@@ -18,6 +18,7 @@ struct DashboardMetrics {
     var weekTrend: [WeekBucket] = []
     var typeMix: [LabeledCount] = []
     var funnel: [LabeledCount] = []   // technical sales-cycle stages, in order
+    var recordedSeconds = 0           // summed meeting duration in the filtered set
     var openActions = 0
     var overdueActions = 0
     var unanswered: [OpenQuestion] = []
@@ -60,6 +61,11 @@ struct DashboardMetrics {
                 if weeks >= 0 && weeks < 6 { weekCounts[weeks, default: 0] += 1 }
             }
             guard let text = try? String(contentsOf: f.url, encoding: .utf8) else { continue }
+
+            // Recorded time — front-matter `duration: <n>s`.
+            if let dur = FrontMatter.field("duration", in: text) {
+                m.recordedSeconds += Int(dur.trimmingCharacters(in: CharacterSet(charactersIn: "s "))) ?? 0
+            }
 
             // Meeting-type mix (front-matter id → friendly name).
             if let typeID = FrontMatter.field("gw_meeting_type", in: text) {
@@ -375,16 +381,15 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: Activity — cadence and volume.
+    // MARK: Activity — cadence and volume (honors the range + account filters).
     private var activityCard: some View {
-        let stats = UsageStats.shared
-        return DashCard(title: "Activity", icon: "calendar", tint: .purple) {
-            HStack(spacing: 14) {
-                StatNumber("\(stats.meetingCount)", "Meetings", .purple)
-                StatNumber(UsageStats.hoursMinutes(stats.meetingSeconds), "Recorded", .secondary)
-            }
-            Text("Meetings — last 6 weeks").font(.caption).foregroundColor(.secondary)
+        DashCard(title: "Activity", icon: "calendar", tint: .purple) {
             if loading { DashLoading() } else {
+                HStack(spacing: 14) {
+                    StatNumber("\(metrics.meetingsScanned)", "Meetings", .purple)
+                    StatNumber(UsageStats.hoursMinutes(metrics.recordedSeconds), "Recorded", .secondary)
+                }
+                Text("Meetings — last 6 weeks").font(.caption).foregroundColor(.secondary)
                 Chart(metrics.weekTrend) { b in
                     BarMark(x: .value("Week", b.label), y: .value("Meetings", b.count))
                         .foregroundStyle(.purple.gradient)

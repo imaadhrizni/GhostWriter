@@ -178,6 +178,7 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Reset note prompts to default", section: .notes, keywords: ["default", "reset", "prompt", "restore"]),
         // Draft templates
         .init(label: "Draft templates", section: .draftTemplates, keywords: ["follow-up email", "reply", "message", "add", "delete", "reset to default"]),
+        .init(label: "Follow-Up Packet", section: .draftTemplates, keywords: ["packet", "bundle", "one-click", "poc plan", "action items", "follow-up email", "sections"]),
         // Digest
         .init(label: "Relationship digest", section: .digest, keywords: ["daily", "weekly", "summary email", "rollup", "default", "reset"]),
         // Privacy
@@ -1417,6 +1418,14 @@ private struct DraftTemplatesPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Follow-Up Packet") {
+                Text("The note viewer's one-click Follow-Up Packet assembles these sections into a single document, grounded in the meeting.")
+                    .font(.caption).foregroundColor(.secondary)
+                Toggle("Follow-up email", isOn: $settings.packetIncludeEmail)
+                Toggle("Updated POC plan (uses the linked opportunity's criteria)", isOn: $settings.packetIncludePOC)
+                Toggle("Action items", isOn: $settings.packetIncludeActions)
+            }
+
             SettingsGroup("Document Type") {
                 HStack {
                     Picker("Type", selection: $selectedID) {

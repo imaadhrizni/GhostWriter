@@ -359,21 +359,31 @@ private struct NotesViewerView: View {
     /// Classifies a generated draft from its window title so the header can
     /// show the right icon, tint, and label.
     private enum DraftKind {
-        case summary, followUp, generic
+        case summary, followUp, packet, generic
         var icon: String {
-            switch self { case .summary: return "sparkles"; case .followUp: return "envelope"; case .generic: return "doc.text" }
+            switch self {
+            case .summary: return "sparkles"; case .followUp: return "envelope"
+            case .packet: return "shippingbox.fill"; case .generic: return "doc.text"
+            }
         }
         var tint: Color {
-            switch self { case .summary: return .purple; case .followUp: return .blue; case .generic: return .gray }
+            switch self {
+            case .summary: return .purple; case .followUp: return .blue
+            case .packet: return .teal; case .generic: return .gray
+            }
         }
         var label: String {
-            switch self { case .summary: return "AI Summary"; case .followUp: return "Follow-up Draft"; case .generic: return "Draft" }
+            switch self {
+            case .summary: return "AI Summary"; case .followUp: return "Follow-up Draft"
+            case .packet: return "Follow-Up Packet"; case .generic: return "Draft"
+            }
         }
     }
 
     private var draftKind: DraftKind {
         let t = (documentTitle ?? "").lowercased()
         if t.hasPrefix("summary") { return .summary }
+        if t.hasPrefix("follow-up packet") { return .packet }
         if t.hasPrefix("follow-up") || t.hasPrefix("followup") { return .followUp }
         return .generic
     }
@@ -487,6 +497,11 @@ private struct NotesViewerView: View {
             }
             if canDraftFollowUp {
                 Menu {
+                    Section("One-click") {
+                        Button { generatePacket() } label: {
+                            Label("Follow-Up Packet", systemImage: "shippingbox.fill")
+                        }
+                    }
                     let suggested = suggestedDrafts(for: text)
                     if !suggested.isEmpty {
                         Section("Suggested") {
@@ -644,6 +659,25 @@ private struct NotesViewerView: View {
             } catch {
                 status = "Draft failed: \(error.localizedDescription)"
             }
+        }
+    }
+
+    /// One-click Follow-Up Packet: a client follow-up email, an updated POC
+    /// plan, and the action items, assembled into one document (respecting the
+    /// per-section toggles in Settings) and opened in its own viewer window.
+    private func generatePacket() {
+        guard let fileURL else { return }
+        let base = fileURL.deletingPathExtension().lastPathComponent
+        drafting = true
+        status = "Assembling packet…"
+        Task { @MainActor in
+            defer { drafting = false }
+            let packet = await FollowUpPacket.generate(fileURL: fileURL)
+            status = ""
+            NotesViewerWindowController.present(
+                draftTitle: "Follow-Up Packet — \(base)",
+                text: packet,
+                regenerate: { await FollowUpPacket.generate(fileURL: fileURL, forceRefresh: true) })
         }
     }
 

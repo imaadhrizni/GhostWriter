@@ -105,6 +105,9 @@ final class AppSettings: ObservableObject {
         static let webhookURL             = "integrations.webhookURL"
         static let scriptHookEnabled      = "integrations.scriptHookEnabled"
         static let scriptHookPath         = "integrations.scriptHookPath"
+        static let packetIncludeEmail     = "packet.includeEmail"
+        static let packetIncludePOC       = "packet.includePOC"
+        static let packetIncludeActions   = "packet.includeActions"
 
         static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
                           preferBuiltInMic,
@@ -134,7 +137,8 @@ final class AppSettings: ObservableObject {
                           saveDictations, dictationsFolderPath, dictationOrganization,
                           priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok,
                           monthlyBudgetUSD,
-                          webhookEnabled, webhookURL, scriptHookEnabled, scriptHookPath]
+                          webhookEnabled, webhookURL, scriptHookEnabled, scriptHookPath,
+                          packetIncludeEmail, packetIncludePOC, packetIncludeActions]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -225,6 +229,9 @@ final class AppSettings: ObservableObject {
         static let webhookURL                      = ""
         static let scriptHookEnabled               = false
         static let scriptHookPath                  = ""
+        static let packetIncludeEmail              = true
+        static let packetIncludePOC                = true
+        static let packetIncludeActions            = true
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -1196,6 +1203,22 @@ final class AppSettings: ObservableObject {
     var scriptHookPath: String {
         get { string(Key.scriptHookPath, Default.scriptHookPath) }
         set { set(newValue, Key.scriptHookPath) }
+    }
+
+    // MARK: - Follow-Up Packet
+    // Which sections the one-click Follow-Up Packet assembles from a meeting.
+
+    var packetIncludeEmail: Bool {
+        get { bool(Key.packetIncludeEmail, Default.packetIncludeEmail) }
+        set { set(newValue, Key.packetIncludeEmail) }
+    }
+    var packetIncludePOC: Bool {
+        get { bool(Key.packetIncludePOC, Default.packetIncludePOC) }
+        set { set(newValue, Key.packetIncludePOC) }
+    }
+    var packetIncludeActions: Bool {
+        get { bool(Key.packetIncludeActions, Default.packetIncludeActions) }
+        set { set(newValue, Key.packetIncludeActions) }
     }
 
     // MARK: - Transcription Quality

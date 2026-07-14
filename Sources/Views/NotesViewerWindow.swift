@@ -723,29 +723,9 @@ private struct NotesViewerView: View {
     private func pdfCatalogContext()
         -> (org: String?, opportunity: String?, project: String?, poc: [MarkdownPDF.POCItem]) {
         guard let fileURL else { return (nil, nil, nil, []) }
-        let store = CatalogStore.shared
-        guard let note = store.doc.notes.first(where: {
-            store.url(of: $0).standardizedFileURL == fileURL.standardizedFileURL
-        }) else { return (nil, nil, nil, []) }
-
-        var org: String?, opportunity: String?, project: String?
-        var poc: [MarkdownPDF.POCItem] = []
-
-        // Resolve the deepest link first, filling the chain upward from it.
-        if let oppID = note.opportunityIDs.first, let opp = store.opportunity(oppID) {
-            opportunity = opp.name
-            if let proj = opp.projectID.flatMap({ store.project($0) }) {
-                project = proj.name
-                org = proj.orgID.flatMap { store.org($0)?.name }
-            }
-            poc = opp.pocCriteria.map { .init(text: $0.text, status: $0.status.label) }
-        } else if let projID = note.projectIDs.first, let proj = store.project(projID) {
-            project = proj.name
-            org = proj.orgID.flatMap { store.org($0)?.name }
-        } else if let orgID = note.orgIDs.first {
-            org = store.org(orgID)?.name
-        }
-        return (org, opportunity, project, poc)
+        let c = CatalogStore.shared.linkChain(forFileURL: fileURL)
+        return (c.org, c.opportunity, c.project,
+                c.criteria.map { .init(text: $0.text, status: $0.status.label) })
     }
 
     /// Render the current Markdown to a paginated PDF and let the user save it.

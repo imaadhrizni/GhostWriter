@@ -554,7 +554,6 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.streamChunkSeconds) }
     }
 
-    /// Maximum distinct remote speakers the diarizer will label.
     /// Voice-separation sensitivity for diarization — the distance threshold
     /// above which a voice is treated as a new speaker. Lower = splits more
     /// eagerly (risks over-splitting one voice); higher = merges similar voices.
@@ -577,6 +576,7 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.aiCacheLimit) }
     }
 
+    /// Maximum distinct remote speakers the diarizer will label in a meeting.
     var maxSpeakers: Int {
         get { int(Key.maxSpeakers, Default.maxSpeakers) }
         set { set(newValue, Key.maxSpeakers) }

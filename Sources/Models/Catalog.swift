@@ -83,6 +83,12 @@ struct CatalogOpportunity: Codable, Identifiable, Hashable {
     /// so a hand-rolled `init(from:)` is what actually lets older catalogs
     /// (written before this field) still decode.
     var pocCriteria: [PocCriterion] = []
+
+    /// A POC is "at risk" when it has a failing criterion, or nothing has passed
+    /// yet. Only meaningful once criteria exist.
+    var isPocAtRisk: Bool {
+        pocCriteria.contains { $0.status == .fail } || !pocCriteria.contains { $0.status == .pass }
+    }
 }
 
 extension CatalogOpportunity {
@@ -432,6 +438,30 @@ final class CatalogStore: ObservableObject {
     /// Notes assigned to an opportunity.
     func notes(forOpportunity o: CatalogOpportunity) -> [CatalogNote] {
         doc.notes.filter { $0.opportunityIDs.contains(o.id) }
+    }
+
+    /// The catalog link chain for a note file — its linked opportunity / project
+    /// / organisation names (resolved as one consistent chain, deepest link
+    /// first) plus the opportunity's POC criteria. Shared by the notes-viewer
+    /// PDF export and the Follow-Up Packet so the resolution lives in one place.
+    func linkChain(forFileURL fileURL: URL)
+        -> (org: String?, project: String?, opportunity: String?, criteria: [PocCriterion]) {
+        guard let note = doc.notes.first(where: {
+            url(of: $0).standardizedFileURL == fileURL.standardizedFileURL
+        }) else { return (nil, nil, nil, []) }
+
+        if let oppID = note.opportunityIDs.first, let opp = opportunity(oppID) {
+            let proj = opp.projectID.flatMap { project($0) }
+            let org = proj?.orgID.flatMap { self.org($0)?.name }
+            return (org, proj?.name, opp.name, opp.pocCriteria)
+        }
+        if let projID = note.projectIDs.first, let proj = project(projID) {
+            return (proj.orgID.flatMap { org($0)?.name }, proj.name, nil, [])
+        }
+        if let orgID = note.orgIDs.first {
+            return (org(orgID)?.name, nil, nil, [])
+        }
+        return (nil, nil, nil, [])
     }
     /// Notes assigned *directly* to an org (internal notes with no opportunity).
     func notes(directlyOnOrg id: String) -> [CatalogNote] {

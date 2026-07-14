@@ -73,7 +73,7 @@ struct DashboardMetrics {
             if let typeID = FrontMatter.field("gw_meeting_type", in: text) {
                 let name = typeNames[typeID] ?? typeID
                 typeCounts[name, default: 0] += 1
-                if let stage = Self.funnelStage(for: typeID) { funnelCounts[stage.label, default: 0] += 1 }
+                if let stage = Self.funnelStage(for: typeID) { funnelCounts[stage, default: 0] += 1 }
             }
 
             // Action items — open + overdue.
@@ -116,14 +116,15 @@ struct DashboardMetrics {
     /// The technical sales cycle, in order — used to render the meeting-type funnel.
     static let funnelOrder = ["Discovery", "Demo", "Scoping", "Kickoff"]
 
-    /// Map a `MeetingType` raw id to its funnel stage, or nil for non-cycle
-    /// meeting types (standups, 1:1s, all-hands, general, etc.).
-    static func funnelStage(for typeID: String) -> (order: Int, label: String)? {
+    /// Map a `MeetingType` raw id to its funnel-stage label, or nil for
+    /// non-cycle meeting types (standups, 1:1s, all-hands, general, etc.).
+    /// Stage order is owned by `funnelOrder`.
+    static func funnelStage(for typeID: String) -> String? {
         switch typeID {
-        case "discovery":       return (0, "Discovery")
-        case "solutionDemo":    return (1, "Demo")
-        case "solutionScoping": return (2, "Scoping")
-        case "kickoff":         return (3, "Kickoff")
+        case "discovery":       return "Discovery"
+        case "solutionDemo":    return "Demo"
+        case "solutionScoping": return "Scoping"
+        case "kickoff":         return "Kickoff"
         default:                return nil
         }
     }
@@ -363,11 +364,7 @@ struct DashboardView: View {
         let passed = all.filter { $0.status == .pass }.count
         let failed = all.filter { $0.status == .fail }.count
         let pending = all.filter { $0.status == .pending }.count
-        // At-risk: has a failing criterion, or nothing passed yet.
-        let atRisk = opps.filter { o in
-            o.pocCriteria.contains { $0.status == .fail } ||
-            !o.pocCriteria.contains { $0.status == .pass }
-        }
+        let atRisk = opps.filter { $0.isPocAtRisk }
         return DashCard(title: "POC Command Center", icon: "flask.fill", tint: .cyan) {
             if all.isEmpty {
                 DashEmpty("No POC criteria yet. Add them in the POC Tracker.")
@@ -394,7 +391,7 @@ struct DashboardView: View {
                 } else {
                     ForEach(shown.prefix(6), id: \.id) { o in
                         let p = o.pocCriteria.filter { $0.status == .pass }.count
-                        let risky = o.pocCriteria.contains { $0.status == .fail } || !o.pocCriteria.contains { $0.status == .pass }
+                        let risky = o.isPocAtRisk
                         HStack {
                             Image(systemName: risky ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                                 .foregroundColor(risky ? .orange : .green).font(.caption2)

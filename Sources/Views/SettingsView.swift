@@ -165,7 +165,8 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Quick note hotkey", section: .quickNotes, keywords: ["shortcut", "capture", "default", "reset"]),
         // Recording
         .init(label: "Meeting audio source", section: .meeting, keywords: ["microphone", "system audio", "input device", "default", "reset"]),
-        .init(label: "Live brief", section: .meeting, keywords: ["real-time", "assistant", "coaching", "agenda coverage"]),
+        .init(label: "Live brief", section: .meeting, keywords: ["real-time", "assistant", "coaching", "agenda coverage", "refresh interval", "during the meeting"]),
+        .init(label: "Prep card on start", section: .meeting, keywords: ["prep", "recent notes", "linked", "org", "opportunity", "during the meeting"]),
         .init(label: "Meeting templates", section: .meetingTemplates, keywords: ["agenda", "type", "prep", "add", "delete", "default", "sections", "follow-up"]),
         .init(label: "Import / export templates", section: .meetingTemplates, keywords: ["backup", "share", "bundle", "json", "house style", "merge", "replace"]),
         .init(label: "Per-app recording overrides", section: .meeting, keywords: ["app", "override", "delete", "remove", "default", "unrecognized"]),
@@ -262,7 +263,7 @@ struct SettingsView: View {
         NavigationSplitView {
             List(selection: $selection) {
                 if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
-                    ForEach(SettingsSection.sidebarGroups, id: \.sections.first!.id) { group in
+                    ForEach(SettingsSection.sidebarGroups, id: \.title) { group in
                         Section {
                             ForEach(group.sections) { section in
                                 sidebarRow(section)
@@ -1112,6 +1113,32 @@ private struct MeetingPane: View {
                 }
             }
 
+            SettingsGroup("During the Meeting") {
+                Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
+                Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.liveAssistantEnabled {
+                    HStack {
+                        Text("Refresh every")
+                        Spacer()
+                        Picker("", selection: $settings.liveBriefInterval) {
+                            ForEach([15, 25, 45, 60, 90], id: \.self) { Text("\($0)s").tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 90)
+                        DefaultResetButton(isDefault: settings.liveBriefInterval == AppSettings.Default.liveBriefInterval) {
+                            settings.liveBriefInterval = AppSettings.Default.liveBriefInterval
+                        }
+                    }
+                    Text("How often the brief updates. Longer intervals mean fewer AI calls — lower cost, less frequent refreshes.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                Divider()
+                Toggle("Show prep card on start", isOn: $settings.meetingPrepCard)
+                Text("When a meeting is linked to an organisation or opportunity, a floating panel of that entity's recent notes appears as the meeting starts. This is the default for the per-meeting switch in the start dialog.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
             SettingsGroup("Echo Suppression") {
                 Toggle("Suppress speaker echo (built-in speaker mode)", isOn: $settings.echoSuppressionEnabled)
                 if settings.echoSuppressionEnabled {
@@ -1324,32 +1351,6 @@ private struct MeetingNotesPane: View {
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Notify when notes are saved", isOn: $settings.notifyOnMeetingEnd)
-            }
-
-            SettingsGroup("During the Meeting") {
-                Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
-                Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
-                    .font(.caption).foregroundColor(.secondary)
-                if settings.liveAssistantEnabled {
-                    HStack {
-                        Text("Refresh every")
-                        Spacer()
-                        Picker("", selection: $settings.liveBriefInterval) {
-                            ForEach([15, 25, 45, 60, 90], id: \.self) { Text("\($0)s").tag($0) }
-                        }
-                        .labelsHidden()
-                        .frame(width: 90)
-                        DefaultResetButton(isDefault: settings.liveBriefInterval == AppSettings.Default.liveBriefInterval) {
-                            settings.liveBriefInterval = AppSettings.Default.liveBriefInterval
-                        }
-                    }
-                    Text("How often the brief updates. Longer intervals mean fewer AI calls — lower cost, less frequent refreshes.")
-                        .font(.caption).foregroundColor(.secondary)
-                }
-                Divider()
-                Toggle("Show prep card on start", isOn: $settings.meetingPrepCard)
-                Text("When a meeting is linked to an organisation or opportunity, a floating panel of that entity's recent notes appears as the meeting starts. This is the default for the per-meeting switch in the start dialog.")
-                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Catalog Search") {

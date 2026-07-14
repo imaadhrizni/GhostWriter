@@ -9,7 +9,7 @@ import Foundation
 /// Everything is grounded strictly in the note; the three AI sections run
 /// concurrently, and any one failing degrades to an inline note rather than
 /// sinking the whole packet. Which sections are included is user-configurable
-/// (Settings → Drafts & Follow-ups → Follow-Up Packet).
+/// (Settings → Meetings → Draft Templates → Follow-Up Packet).
 enum FollowUpPacket {
 
     /// Resolve Catalog context on the main actor, then generate the enabled
@@ -39,7 +39,7 @@ enum FollowUpPacket {
 
         // Fire the AI sections concurrently.
         async let emailSection: String? = wantEmail
-            ? section(title: "✉️ Follow-Up Email", icon: nil) {
+            ? section(title: "✉️ Follow-Up Email") {
                 try await polisher.draftFollowUp(transcript: text, template: template, forceRefresh: forceRefresh)
             } : nil
 
@@ -58,7 +58,7 @@ enum FollowUpPacket {
             out += "\n\n" + part
         }
         if !wantEmail && !wantPOC && !wantActions {
-            out += "\n\n_No packet sections are enabled. Turn some on in Settings → Drafts & Follow-ups._"
+            out += "\n\n_No packet sections are enabled. Turn some on in Settings → Meetings → Draft Templates._"
         }
         return out
     }
@@ -67,7 +67,7 @@ enum FollowUpPacket {
 
     /// Wrap an async producer in a "## title" section, degrading to an inline
     /// note if it throws so one failure doesn't sink the packet.
-    private static func section(title: String, icon: String?,
+    private static func section(title: String,
                                 _ produce: () async throws -> String) async -> String {
         do {
             let body = try await produce().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -93,7 +93,7 @@ enum FollowUpPacket {
             guidance += "\n\nThe opportunity already has these POC success criteria and statuses:\n\(list)\n"
                 + "Reflect them in the plan: keep the passed ones, and focus Timeline & Next Steps on advancing the pending or failed ones."
         }
-        return await section(title: "🧪 POC Plan", icon: nil) {
+        return await section(title: "🧪 POC Plan") {
             let plan = try await polisher.draftDocument(transcript: text, guidance: guidance, forceRefresh: forceRefresh)
             return snapshot + plan
         }
@@ -107,7 +107,7 @@ enum FollowUpPacket {
             let list = existing.map { "- [\($0.done ? "x" : " ")] \($0.text)" }.joined(separator: "\n")
             return "## ✅ Action Items\n\n" + list
         }
-        return await section(title: "✅ Action Items", icon: nil) {
+        return await section(title: "✅ Action Items") {
             try await polisher.draftDocument(
                 transcript: text,
                 guidance: AppSettings.shared.draftGuidance(for: .actionItemList),
@@ -129,21 +129,12 @@ enum FollowUpPacket {
     }
 
     /// Resolve the note's linked opportunity + account and its POC criteria,
-    /// mirroring the notes-viewer PDF context.
+    /// via the shared `CatalogStore.linkChain` resolver.
     @MainActor
     private static func catalogContext(for fileURL: URL)
         -> (org: String?, opportunity: String?, criteria: [(text: String, status: String)]) {
-        let store = CatalogStore.shared
-        guard let note = store.doc.notes.first(where: {
-            store.url(of: $0).standardizedFileURL == fileURL.standardizedFileURL
-        }) else { return (nil, nil, []) }
-
-        if let oppID = note.opportunityIDs.first, let opp = store.opportunity(oppID) {
-            let org = opp.projectID.flatMap { store.project($0)?.orgID }.flatMap { store.org($0)?.name }
-            return (org, opp.name, opp.pocCriteria.map { ($0.text, $0.status.label) })
-        }
-        if let orgID = note.orgIDs.first { return (store.org(orgID)?.name, nil, []) }
-        return (nil, nil, [])
+        let c = CatalogStore.shared.linkChain(forFileURL: fileURL)
+        return (c.org, c.opportunity, c.criteria.map { ($0.text, $0.status.label) })
     }
 
     /// A checklist glyph for a POC status label.

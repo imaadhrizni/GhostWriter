@@ -109,6 +109,9 @@ private struct DictationsView: View {
     @State private var items: [DictationItem] = []
     @State private var query = ""
     @State private var loading = false
+    @State private var pendingTrash: DictationItem?
+    @State private var trashError: String?
+    @State private var hovered: URL?
 
     private var filtered: [DictationItem] {
         guard !query.isEmpty else { return items }
@@ -159,33 +162,42 @@ private struct DictationsView: View {
                                 Text("App").frame(maxWidth: .infinity, alignment: .leading)
                                 Text("Style").frame(width: 110, alignment: .leading)
                                 Text("Duration").frame(width: 64, alignment: .trailing)
-                                Spacer().frame(width: 22)
+                                Spacer().frame(width: 48)
                             }
                             .font(.caption2.bold()).foregroundColor(.secondary)
                             ForEach(group.items) { item in
-                                Button {
-                                    NotesViewerWindowController.present(fileURL: item.url)
-                                } label: {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            Text(item.app.isEmpty ? "—" : item.app).lineLimit(1)
-                                            Text(item.time)
-                                                .font(.caption2).foregroundColor(.secondary).monospacedDigit()
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        Text(item.style)
-                                            .frame(width: 110, alignment: .leading)
-                                            .foregroundColor(.secondary).lineLimit(1)
-                                        Text(item.durationText)
-                                            .frame(width: 64, alignment: .trailing)
-                                            .monospacedDigit().foregroundColor(.secondary)
-                                        Image(systemName: "arrow.up.forward.square")
-                                            .foregroundColor(.secondary).frame(width: 22)
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(item.app.isEmpty ? "—" : item.app).lineLimit(1)
+                                        Text(item.time)
+                                            .font(.caption2).foregroundColor(.secondary).monospacedDigit()
                                     }
-                                    .font(.callout)
-                                    .contentShape(Rectangle())
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    Text(item.style)
+                                        .frame(width: 110, alignment: .leading)
+                                        .foregroundColor(.secondary).lineLimit(1)
+                                    Text(item.durationText)
+                                        .frame(width: 64, alignment: .trailing)
+                                        .monospacedDigit().foregroundColor(.secondary)
+                                    // Row actions: revealed on hover to keep the list clean.
+                                    HStack(spacing: 8) {
+                                        if hovered == item.url {
+                                            Button {
+                                                NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                                            } label: { Image(systemName: "folder") }
+                                            .buttonStyle(.borderless).foregroundColor(.secondary).help("Reveal in Finder")
+                                            Button { pendingTrash = item } label: { Image(systemName: "trash") }
+                                            .buttonStyle(.borderless).foregroundColor(.secondary).help("Move to Trash")
+                                        } else {
+                                            Image(systemName: "arrow.up.forward.square").foregroundColor(.secondary)
+                                        }
+                                    }
+                                    .frame(width: 48, alignment: .trailing)
                                 }
-                                .buttonStyle(.plain)
+                                .font(.callout)
+                                .contentShape(Rectangle())
+                                .onTapGesture { NotesViewerWindowController.present(fileURL: item.url) }
+                                .onHover { hovered = $0 ? item.url : (hovered == item.url ? nil : hovered) }
                             }
                         }
                     }
@@ -193,6 +205,27 @@ private struct DictationsView: View {
             }
         }
         .frame(minWidth: 480, minHeight: 360)
+        .confirmationDialog(
+            "Move this dictation to the Trash?",
+            isPresented: Binding(get: { pendingTrash != nil }, set: { if !$0 { pendingTrash = nil } }),
+            presenting: pendingTrash
+        ) { item in
+            Button("Move to Trash", role: .destructive) {
+                do {
+                    try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
+                    items.removeAll { $0.id == item.id }
+                } catch {
+                    trashError = error.localizedDescription
+                }
+                pendingTrash = nil
+            }
+            Button("Cancel", role: .cancel) { pendingTrash = nil }
+        } message: { _ in
+            Text("The dictation file will be moved to the Trash. You can recover it from there.")
+        }
+        .alert("Couldn't delete the dictation", isPresented: Binding(get: { trashError != nil }, set: { if !$0 { trashError = nil } })) {
+            Button("OK", role: .cancel) { trashError = nil }
+        } message: { Text(trashError ?? "") }
         // Enumerating + parsing files is I/O — do it off the main thread so a
         // large archive doesn't freeze the window on open.
         .task { await reload() }

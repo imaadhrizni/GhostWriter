@@ -7,8 +7,8 @@ import UniformTypeIdentifiers
 // A three-column browser over the catalog: sections → items → editor.
 // Organisations form an unlimited hierarchy and their *relationship* is a
 // property of the root (descendants inherit it). Projects belong to orgs;
-// opportunities belong to projects. Notes link directly only to organisations,
-// projects and tags — their people and opportunities are inherited through the
+// projects are hierarchical (sub-projects). Notes link to a project or an
+// org; people and tags attach per note. The rest is inherited through the
 // hierarchy, and a note's tags can be promoted into any entity.
 
 final class CatalogWindowController: NSWindowController {
@@ -39,24 +39,24 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
     case map           = "Map"
     case organisations = "Organisations"
     case projects      = "Projects"
-    case opportunities = "Opportunities"
     case people        = "People"
     case tags          = "Tags"
     case poc           = "POC Tracker"
     case radar         = "Keyword Radar"
+    case questions     = "Open Questions"
     var id: String { rawValue }
 
     /// Sidebar layout: the two ways to look at the catalog on top (Notes is the
     /// primary document list; Map is the graph explorer), then the records with
-    /// the deal-flow chain kept contiguous (org → project → opportunity) to
+    /// the deal-flow chain kept contiguous (org → project) to
     /// match the Map tree, with People — a cross-cutting per-note entity like
     /// Tags — sitting last.
     static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
         ("Overview", [.dashboard]),
         ("Browse",   [.notes, .map]),
-        ("Records",  [.organisations, .projects, .opportunities, .people]),
+        ("Records",  [.organisations, .projects, .people]),
         ("Labels",   [.tags]),
-        ("Tools",    [.poc, .radar]),
+        ("Tools",    [.poc, .radar, .questions]),
     ]
 
     var singular: String {
@@ -66,11 +66,11 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .organisations: return "Organisation"
         case .people:        return "Person"
         case .projects:      return "Project"
-        case .opportunities: return "Opportunity"
         case .tags:          return "Tag"
         case .notes:         return "Note"
         case .poc:           return "POC"
         case .radar:         return "Term"
+        case .questions:     return "Question"
         }
     }
     var icon: String {
@@ -80,11 +80,11 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .organisations: return "building.2"
         case .people:        return "person.2"
         case .projects:      return "folder"
-        case .opportunities: return "chart.line.uptrend.xyaxis"
         case .tags:          return "tag"
         case .notes:         return "doc.text"
         case .poc:           return "flask"
         case .radar:         return "dot.radiowaves.left.and.right"
+        case .questions:     return "questionmark.circle"
         }
     }
     var tint: Color {
@@ -94,11 +94,11 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .organisations: return .blue
         case .people:        return .teal
         case .projects:      return .orange
-        case .opportunities: return .green
         case .tags:          return .pink
         case .notes:         return .indigo
         case .poc:           return .cyan
         case .radar:         return .pink
+        case .questions:     return .orange
         }
     }
 }
@@ -121,14 +121,13 @@ private struct CatalogView: View {
     @State private var query = ""
     @State private var fOrg = ""
     @State private var fProject = ""
-    @State private var fOpp = ""
     @State private var fTag = ""
     @State private var fPerson = ""
     @State private var fUnassigned = false
     @State private var fMissing = false
     @State private var scope: NoteSearchScope = .text
     @State private var askNonce = 0
-    private var anyFilter: Bool { !(fOrg.isEmpty && fProject.isEmpty && fOpp.isEmpty && fTag.isEmpty && fPerson.isEmpty) || fUnassigned || fMissing }
+    private var anyFilter: Bool { !(fOrg.isEmpty && fProject.isEmpty && fTag.isEmpty && fPerson.isEmpty) || fUnassigned || fMissing }
     private var canAsk: Bool { !AppSettings.shared.localOnlyMode && KeychainService.groqAPIKey() != nil }
 
     /// Notes matching the active facet filters (ignoring the query — in Ask mode
@@ -137,7 +136,6 @@ private struct CatalogView: View {
         store.doc.notes.filter { n in
             (fOrg.isEmpty || store.effectiveOrgIDs(of: n).contains(fOrg))
             && (fProject.isEmpty || store.effectiveProjectIDs(of: n).contains(fProject))
-            && (fOpp.isEmpty || n.opportunityIDs.contains(fOpp))
             && (fTag.isEmpty || n.tagIDs.contains(fTag))
             && (fPerson.isEmpty || n.personIDs.contains(fPerson))
             && (!fUnassigned || store.isUnassigned(n))
@@ -148,7 +146,6 @@ private struct CatalogView: View {
         var parts: [String] = []
         if let o = store.org(fOrg) { parts.append(o.name) }
         if let p = store.project(fProject) { parts.append(p.name) }
-        if let o = store.opportunity(fOpp) { parts.append(o.name) }
         if let t = store.tag(fTag) { parts.append("#\(t.name)") }
         if let p = store.person(fPerson) { parts.append(p.name) }
         return parts.isEmpty ? "all \(store.doc.notes.count) notes" : parts.joined(separator: " · ")
@@ -161,13 +158,16 @@ private struct CatalogView: View {
         case .organisations: return store.doc.orgs.count
         case .people:        return store.doc.people.count
         case .projects:      return store.doc.projects.count
-        case .opportunities: return store.doc.opportunities.count
         case .tags:          return store.doc.tags.count
         case .notes:         return store.doc.notes.count
-        case .poc:           return store.doc.opportunities.filter { !$0.pocCriteria.isEmpty }.count
+        case .poc:           return store.projectsWithPOC.count
         case .radar:         return 0
+        case .questions:     return 0
         }
     }
+
+    /// Sections that fill the content column and want no detail pane.
+    private var wideCanvas: Bool { section == .dashboard || section == .questions }
 
     var body: some View {
         NavigationSplitView {
@@ -195,18 +195,18 @@ private struct CatalogView: View {
             .safeAreaInset(edge: .bottom) { importFooter }
         } content: {
             contentColumn
-                // The Dashboard is a wide canvas (cards fill this column); every
-                // other section is a normal master list, so cap it narrower.
+                // The Dashboard and Open Questions are wide canvases (they fill
+                // this column); every other section is a normal master list, so
+                // cap it narrower.
                 .navigationSplitViewColumnWidth(
-                    min: section == .dashboard ? 460 : 240,
-                    ideal: section == .dashboard ? 640 : 285,
-                    max: section == .dashboard ? 5000 : 400)
+                    min: wideCanvas ? 460 : 240,
+                    ideal: wideCanvas ? 640 : 285,
+                    max: wideCanvas ? 5000 : 400)
                 .navigationTitle(section.rawValue)
         } detail: {
-            if section == .dashboard {
-                // The dashboard is self-contained (KPIs + cards all live in the
-                // content column), so collapse the detail column away — no blank
-                // pane on the right.
+            if wideCanvas {
+                // Self-contained full-width sections — collapse the detail column
+                // away so there's no blank pane on the right.
                 Color.clear.frame(width: 0).navigationSplitViewColumnWidth(0)
             } else if section == .map {
                 if let sec = mapSection, let id = mapID {
@@ -218,7 +218,7 @@ private struct CatalogView: View {
                                            description: Text("Expand the tree and pick any item to open it here."))
                 }
             } else if section == .poc {
-                PocDetail(store: store, oppID: selID)
+                PocDetail(store: store, projID: selID)
                     .frame(minWidth: 360)
             } else if section == .radar {
                 RadarTermDetail(model: radarModel, term: selID)
@@ -235,7 +235,7 @@ private struct CatalogView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Deletes every organisation, person, project, opportunity, tag and note link. Your Markdown note files are not touched. This cannot be undone.")
+            Text("Deletes every organisation, person, project, tag and note link. Your Markdown note files are not touched. This cannot be undone.")
         }
         .confirmationDialog("Import catalog", isPresented: $showImportChoice, titleVisibility: .visible) {
             Button("Merge into current") { runImport(.merge) }
@@ -254,7 +254,9 @@ private struct CatalogView: View {
         } else if section == .map {
             MapTree(store: store) { sec, id in mapSection = sec; mapID = id }
         } else if section == .poc {
-            PocOpportunityList(store: store, selID: $selID)
+            PocProjectList(store: store, selID: $selID)
+        } else if section == .questions {
+            OpenQuestionsList(store: store)
         } else if section == .notes {
             VStack(spacing: 0) {
                 notesSearchHeader
@@ -266,7 +268,7 @@ private struct CatalogView: View {
                                     files: askFiles, filterSummary: filterSummary) { selID = $0 }
                     } else {
                         NotesList(store: store, selID: $selID, query: query, scope: scope,
-                                  fOrg: fOrg, fProject: fProject, fOpp: fOpp, fTag: fTag, fPerson: fPerson,
+                                  fOrg: fOrg, fProject: fProject, fTag: fTag, fPerson: fPerson,
                                   unassignedOnly: fUnassigned, missingOnly: fMissing)
                     }
                 }
@@ -325,12 +327,12 @@ private struct CatalogView: View {
 
     /// Number of active filters, for the toolbar badge.
     private var activeFilterCount: Int {
-        [fOrg, fProject, fOpp, fPerson, fTag].filter { !$0.isEmpty }.count
+        [fOrg, fProject, fPerson, fTag].filter { !$0.isEmpty }.count
             + (fUnassigned ? 1 : 0) + (fMissing ? 1 : 0)
     }
 
     private func clearFilters() {
-        fOrg = ""; fProject = ""; fOpp = ""; fTag = ""; fPerson = ""
+        fOrg = ""; fProject = ""; fTag = ""; fPerson = ""
         fUnassigned = false; fMissing = false
     }
 
@@ -354,8 +356,7 @@ private struct CatalogView: View {
             }
             Divider()
             facetSubmenu("Org", "building.2", $fOrg, store.orgsSorted.map { ($0.id, store.orgPath(of: $0.id)) })
-            facetSubmenu("Project", "folder", $fProject, store.doc.projects.sortedByName.map { ($0.id, $0.name) })
-            facetSubmenu("Opportunity", "chart.line.uptrend.xyaxis", $fOpp, store.doc.opportunities.sortedByName.map { ($0.id, $0.name) })
+            facetSubmenu("Project", "folder", $fProject, store.doc.projects.sortedByName.map { ($0.id, store.projectPath(of: $0.id)) })
             facetSubmenu("Person", "person", $fPerson, store.doc.people.sortedByName.map { ($0.id, $0.name) })
             facetSubmenu("Tag", "tag", $fTag, store.tagsSorted.map { ($0.id, $0.name) })
             if anyFilter {
@@ -396,7 +397,6 @@ private struct CatalogView: View {
                 HStack(spacing: 6) {
                     if let o = store.org(fOrg)         { filterChip(o.name, .blue)      { fOrg = "" } }
                     if let p = store.project(fProject) { filterChip(p.name, .teal)      { fProject = "" } }
-                    if let o = store.opportunity(fOpp) { filterChip(o.name, .green)     { fOpp = "" } }
                     if let p = store.person(fPerson)   { filterChip(p.name, .purple)    { fPerson = "" } }
                     if let t = store.tag(fTag)         { filterChip("#\(t.name)", .pink) { fTag = "" } }
                     if fUnassigned { filterChip("Unassigned", .orange) { fUnassigned = false } }
@@ -436,7 +436,7 @@ private struct CatalogView: View {
                 Label("Quick add…", systemImage: "plus.rectangle.on.rectangle").frame(maxWidth: .infinity)
             }
             .controlSize(.small)
-            .help("Create an organisation → project → opportunity → people → tags in one go")
+            .help("Create an organisation → project → people → tags in one go")
             Button {
                 let n = store.indexNotesFolder()
                 store.refresh()   // also re-checks existing rows against disk
@@ -527,7 +527,7 @@ private struct CatalogView: View {
 
 struct QuickAddSheet: View {
     @ObservedObject var store: CatalogStore
-    /// When set, called on finish with the resolved opportunity id (or nil) —
+    /// When set, called on finish with the resolved project id (or nil) —
     /// used by the Start Meeting flow. Otherwise the sheet just dismisses.
     var onComplete: ((String?) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
@@ -539,11 +539,9 @@ struct QuickAddSheet: View {
     @State private var orgName = ""
     @State private var parentID = ""
     @State private var relationship: OrgRelationship = .customer
-    // Project / Opportunity: "" (none), an existing id, or "__new__".
+    // Project: "" (none), an existing id, or "__new__".
     @State private var projSel = ""
     @State private var projName = ""
-    @State private var oppSel = ""
-    @State private var oppName = ""
     // People / Tags: existing selections + new comma-separated names.
     @State private var selectedPeople: Set<String> = []
     @State private var newPeople = ""
@@ -557,11 +555,11 @@ struct QuickAddSheet: View {
 
     private var projectsForOrg: [CatalogProject] {
         guard let id = existingOrgID else { return [] }
-        return store.projects(forOrg: id).sortedByName
-    }
-    private var oppsForProject: [CatalogOpportunity] {
-        guard projSel != Self.new, !projSel.isEmpty else { return [] }
-        return store.opportunities(forProject: projSel).sortedByName
+        // Every project under this org, including sub-projects, so the whole
+        // hierarchy is pickable.
+        return store.doc.projects
+            .filter { store.org(forProject: $0.id)?.id == id }
+            .sortedByName
     }
 
     var body: some View {
@@ -587,20 +585,11 @@ struct QuickAddSheet: View {
                 Section("Project") {
                     Picker("Project", selection: $projSel) {
                         Text("None").tag("")
-                        ForEach(projectsForOrg) { Text($0.name).tag($0.id) }
+                        ForEach(projectsForOrg) { Text(store.projectPath(of: $0.id)).tag($0.id) }
                         Divider()
                         Text("＋ New project").tag(Self.new)
                     }
                     if projSel == Self.new { TextField("New name", text: $projName) }
-                }
-                Section("Opportunity") {
-                    Picker("Opportunity", selection: $oppSel) {
-                        Text("None").tag("")
-                        ForEach(oppsForProject) { Text($0.name).tag($0.id) }
-                        Divider()
-                        Text("＋ New opportunity").tag(Self.new)
-                    }
-                    if oppSel == Self.new { TextField("New name", text: $oppName) }
                 }
                 Section("People") {
                     pickExisting(store.doc.people.sortedByName.map { ($0.id, $0.name) }, $selectedPeople)
@@ -612,8 +601,7 @@ struct QuickAddSheet: View {
                 }
             }
             .formStyle(.grouped)
-            .onChange(of: orgSel) { _, _ in projSel = ""; oppSel = "" }
-            .onChange(of: projSel) { _, _ in oppSel = "" }
+            .onChange(of: orgSel) { _, _ in projSel = "" }
             Divider()
             HStack {
                 Text("Pick existing entries or type new ones; links them together.")
@@ -669,15 +657,6 @@ struct QuickAddSheet: View {
             projectID = projSel
         }
 
-        // Opportunity — existing, new (under the project), or none.
-        var resolvedOppID: String?
-        if oppSel == Self.new {
-            let name = oppName.trimmingCharacters(in: .whitespaces)
-            if !name.isEmpty { resolvedOppID = store.addOpportunity(name: name, projectID: projectID).id }
-        } else if !oppSel.isEmpty {
-            resolvedOppID = oppSel
-        }
-
         // People are org-independent — existing selections already exist; just
         // create any new names so they're available to pick on notes.
         for name in splitList(newPeople) { _ = store.addPerson(name: name) }
@@ -685,11 +664,11 @@ struct QuickAddSheet: View {
         // Tags — existing selections already exist; just create the new ones.
         for name in splitList(newTags) { _ = store.addTag(name: name) }
 
-        finish(resolvedOppID)
+        finish(projectID)
     }
 
-    private func finish(_ oppID: String?) {
-        if let onComplete { onComplete(oppID) } else { dismiss() }
+    private func finish(_ projectID: String?) {
+        if let onComplete { onComplete(projectID) } else { dismiss() }
     }
 }
 
@@ -867,11 +846,10 @@ private struct EntityList: View {
             Divider()
             Group {
                 switch section {
-                case .dashboard, .map, .notes, .poc, .radar: EmptyView()   // handled by CatalogView
+                case .dashboard, .map, .notes, .poc, .radar, .questions: EmptyView()   // handled by CatalogView
                 case .organisations: orgList
                 case .people:        peopleList
                 case .projects:      projectList
-                case .opportunities: oppList
                 case .tags:          tagList
                 }
             }
@@ -917,8 +895,15 @@ private struct EntityList: View {
     }
 
     /// Projects grouped by their organisation, then by project name.
-    private var sortedProjects: [CatalogProject] {
-        store.doc.projects.sorted { a, b in
+    /// Projects laid out as a hierarchy: each root project (grouped by its org)
+    /// followed by its sub-projects, depth-first, tagged with a depth for
+    /// indentation.
+    private var sortedProjects: [(project: CatalogProject, depth: Int)] {
+        func children(of parent: String?) -> [CatalogProject] {
+            store.doc.projects.filter { $0.parentID == parent }
+        }
+        // Roots (no parent) sorted by org path then name.
+        let roots = children(of: nil).sorted { a, b in
             let oa = store.org(a.orgID).map { store.orgPath(of: $0.id) } ?? "~"
             let ob = store.org(b.orgID).map { store.orgPath(of: $0.id) } ?? "~"
             if oa.caseInsensitiveCompare(ob) != .orderedSame {
@@ -926,33 +911,32 @@ private struct EntityList: View {
             }
             return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
         }
+        var out: [(CatalogProject, Int)] = []
+        func walk(_ p: CatalogProject, _ depth: Int) {
+            out.append((p, depth))
+            for c in children(of: p.id).sortedByName { walk(c, depth + 1) }
+        }
+        for r in roots { walk(r, 0) }
+        return out.map { (project: $0.0, depth: $0.1) }
     }
 
     private var projectList: some View {
-        List(sortedProjects.filter { matches($0.name) }, selection: $selID) { p in
-            VStack(alignment: .leading, spacing: 2) {
-                Text(p.name).lineLimit(1)
-                Text(store.org(p.orgID).map { store.orgPath(of: $0.id) } ?? "No organisation")
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        List(sortedProjects.filter { matches($0.project.name) }, id: \.project.id, selection: $selID) { row in
+            let p = row.project
+            HStack(spacing: 6) {
+                if row.depth > 0 {
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .padding(.leading, CGFloat(row.depth - 1) * 14)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(p.name).lineLimit(1)
+                    Text(store.org(forProject: p.id).map { store.orgPath(of: $0.id) } ?? "No organisation")
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
             }
             .padding(.vertical, 3)
             .tag(p.id)
-        }
-    }
-
-    private var oppList: some View {
-        List(store.doc.opportunities.sortedByName.filter { matches($0.name) }, selection: $selID) { o in
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(o.name).lineLimit(1)
-                    Text(store.project(o.projectID)?.name ?? "Unassigned")
-                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                StageBadge(o.stage)
-            }
-            .padding(.vertical, 3)
-            .tag(o.id)
         }
     }
 
@@ -972,7 +956,6 @@ private struct EntityList: View {
         case .organisations: selID = store.addOrg(name: "New Organisation").id
         case .people:        selID = store.addPerson(name: "New Person").id
         case .projects:      selID = store.addProject(name: "New Project").id
-        case .opportunities: selID = store.addOpportunity(name: "New Opportunity").id
         case .tags:
             // addTag folds by name, so pick a name that doesn't already exist —
             // otherwise "+" would just re-select the existing "New Tag".
@@ -980,7 +963,7 @@ private struct EntityList: View {
             var name = "New Tag", n = 2
             while existing.contains(name.lowercased()) { name = "New Tag \(n)"; n += 1 }
             selID = store.addTag(name: name).id
-        case .dashboard, .notes, .poc, .radar:   break
+        case .dashboard, .notes, .poc, .radar, .questions:   break
         }
     }
 }
@@ -1014,15 +997,13 @@ private struct EntityEditorView: View {
 
     var body: some View {
         switch section {
-        case .dashboard, .map, .poc, .radar: EmptyView()
+        case .dashboard, .map, .poc, .radar, .questions: EmptyView()
         case .organisations:
             if let o = store.org(id) { OrgEditor(store: store, org: o, onDelete: onDelete) } else { missing }
         case .people:
             if let p = store.person(id) { PersonEditor(store: store, person: p, onDelete: onDelete) } else { missing }
         case .projects:
             if let p = store.project(id) { ProjectEditor(store: store, project: p, onDelete: onDelete) } else { missing }
-        case .opportunities:
-            if let o = store.opportunity(id) { OpportunityEditor(store: store, opp: o, onDelete: onDelete) } else { missing }
         case .tags:
             if let t = store.tag(id) { TagEditor(store: store, tag: t, onDelete: onDelete) } else { missing }
         case .notes:
@@ -1190,42 +1171,6 @@ private struct ProjectEditor: View {
     }
     private func commit() { store.update(draft) }
 
-    var body: some View {
-        Form {
-            Section {
-                TextField("Name", text: $draft.name).onSubmit(commit)
-                Picker("Organisation", selection: Binding(
-                    get: { draft.orgID ?? "" },
-                    set: { draft.orgID = $0.isEmpty ? nil : $0; commit() })) {
-                    Text("None").tag("")
-                    ForEach(store.orgsSorted) { Text(store.orgPath(of: $0.id)).tag($0.id) }
-                }
-                Toggle("Archived", isOn: Binding(get: { draft.archived }, set: { draft.archived = $0; commit() }))
-            }
-            let opps = store.opportunities(forProject: draft.id)
-            if !opps.isEmpty {
-                Section("Opportunities") { ForEach(opps) { o in HStack { Text(o.name); Spacer(); StageBadge(o.stage) } } }
-            }
-            Section { Button("Delete Project", role: .destructive) { store.deleteProject(draft.id); onDelete() } }
-        }
-        .formStyle(.grouped)
-        .navigationTitle(draft.name.isEmpty ? "Project" : draft.name)
-        .onDisappear(perform: commit)
-    }
-}
-
-// MARK: Opportunity editor (project-only; org derived)
-
-private struct OpportunityEditor: View {
-    @ObservedObject var store: CatalogStore
-    @State private var draft: CatalogOpportunity
-    var onDelete: () -> Void
-
-    init(store: CatalogStore, opp: CatalogOpportunity, onDelete: @escaping () -> Void) {
-        self.store = store; _draft = State(initialValue: opp); self.onDelete = onDelete
-    }
-    private func commit() { store.update(draft) }
-
     private var dollars: Binding<String> {
         Binding(get: { draft.valueCents.map { String(format: "%.2f", Double($0) / 100) } ?? "" },
                 set: { draft.valueCents = Double($0).map { Int(($0 * 100).rounded()) } })
@@ -1235,27 +1180,42 @@ private struct OpportunityEditor: View {
         Form {
             Section {
                 TextField("Name", text: $draft.name).onSubmit(commit)
-                Picker("Project", selection: Binding(
-                    get: { draft.projectID ?? "" },
-                    set: { draft.projectID = $0.isEmpty ? nil : $0; commit() })) {
-                    Text("Unassigned").tag("")
-                    ForEach(store.doc.projects.sortedByName) { Text($0.name).tag($0.id) }
+                // A project sits under an org OR under a parent project.
+                Picker("Parent project", selection: Binding(
+                    get: { draft.parentID ?? "" },
+                    set: { draft.parentID = $0.isEmpty ? nil : $0; if !$0.isEmpty { draft.orgID = nil }; commit() })) {
+                    Text("None (top level)").tag("")
+                    ForEach(store.parentProjectChoices(for: draft.id)) { Text(store.projectPath(of: $0.id)).tag($0.id) }
                 }
-                LabeledContent("Organisation", value: store.org(forOpportunity: draft).map { store.orgPath(of: $0.id) } ?? "—")
+                if draft.parentID == nil {
+                    Picker("Organisation", selection: Binding(
+                        get: { draft.orgID ?? "" },
+                        set: { draft.orgID = $0.isEmpty ? nil : $0; commit() })) {
+                        Text("None").tag("")
+                        ForEach(store.orgsSorted) { Text(store.orgPath(of: $0.id)).tag($0.id) }
+                    }
+                } else {
+                    LabeledContent("Organisation", value: store.org(forProject: draft.id).map { store.orgPath(of: $0.id) } ?? "—")
+                }
                 Picker("Stage", selection: Binding(get: { draft.stage }, set: { draft.stage = $0; commit() })) {
                     ForEach(OppStage.allCases) { Text($0.label).tag($0) }
                 }
                 TextField("Value (\(draft.currency))", text: dollars).onSubmit(commit)
+                Toggle("Archived", isOn: Binding(get: { draft.archived }, set: { draft.archived = $0; commit() }))
             }
-            let notes = store.notes(forOpportunity: draft)
+            let subs = store.childProjects(of: draft.id)
+            if !subs.isEmpty {
+                Section("Sub-projects") { ForEach(subs) { p in HStack { Text(p.name); Spacer(); StageBadge(p.stage) } } }
+            }
+            let notes = store.notes(forProject: draft.id)
             if !notes.isEmpty {
                 Section("Relationship") { RelationshipSummaryButton(store: store, entityName: draft.name, notes: notes) }
                 Section("Timeline") { RelationshipTimeline(notes: notes) }
             }
-            Section { Button("Delete Opportunity", role: .destructive) { store.deleteOpportunity(draft.id); onDelete() } }
+            Section { Button("Delete Project", role: .destructive) { store.deleteProject(draft.id); onDelete() } }
         }
         .formStyle(.grouped)
-        .navigationTitle(draft.name.isEmpty ? "Opportunity" : draft.name)
+        .navigationTitle(draft.name.isEmpty ? "Project" : draft.name)
         .onDisappear(perform: commit)
     }
 }
@@ -1307,13 +1267,15 @@ private struct NotesList: View {
     @Binding var selID: String?
     let query: String
     let scope: NoteSearchScope
-    let fOrg: String, fProject: String, fOpp: String, fTag: String, fPerson: String
+    let fOrg: String, fProject: String, fTag: String, fPerson: String
     var unassignedOnly: Bool = false
     var missingOnly: Bool = false
     @State private var semanticOrder: [String] = []
     @State private var hovered: String?
     @State private var pendingTrash: CatalogNote?
+    @State private var pendingDictation: CatalogNote?
     @State private var trashError: String?
+    @State private var dropTargeted = false
 
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
 
@@ -1321,7 +1283,6 @@ private struct NotesList: View {
         var ns = notes
         if !fOrg.isEmpty { ns = ns.filter { store.effectiveOrgIDs(of: $0).contains(fOrg) } }
         if !fProject.isEmpty { ns = ns.filter { store.effectiveProjectIDs(of: $0).contains(fProject) } }
-        if !fOpp.isEmpty { ns = ns.filter { $0.opportunityIDs.contains(fOpp) } }
         if !fTag.isEmpty { ns = ns.filter { $0.tagIDs.contains(fTag) } }
         if !fPerson.isEmpty { ns = ns.filter { $0.personIDs.contains(fPerson) } }
         if unassignedOnly { ns = ns.filter(store.isUnassigned) }
@@ -1394,7 +1355,6 @@ private struct NotesList: View {
                                         if selID == n.id { selID = nil }
                                         store.deleteNote(n.id)
                                     }
-                                    Divider()
                                     Button("Move Note to Trash…", role: .destructive) {
                                         pendingTrash = n
                                     }
@@ -1410,12 +1370,58 @@ private struct NotesList: View {
                     .padding(.vertical, 3)
                     .contentShape(Rectangle())
                     .onHover { hovered = $0 ? n.id : (hovered == n.id ? nil : hovered) }
+                    .contextMenu {
+                        if !missing {
+                            Button("Open") { selID = n.id }
+                            Button("Reveal in Finder") {
+                                NSWorkspace.shared.activateFileViewerSelecting([store.url(of: n)])
+                            }
+                            Divider()
+                            Button("Move to Dictation…") { pendingDictation = n }
+                        }
+                        Button("Remove from Catalog") {
+                            if selID == n.id { selID = nil }
+                            store.deleteNote(n.id)
+                        }
+                        if !missing {
+                            Button("Move to Trash…", role: .destructive) { pendingTrash = n }
+                        }
+                    }
                     .tag(n.id)
                 }
                 .overlay { if filtered.isEmpty { ContentUnavailableView.search } }
             }
         }
         .task(id: "\(scope)|\(trimmedQuery)") { await runSemantic() }
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in handleDrop(providers) }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6]))
+                    .background(Color.accentColor.opacity(0.06))
+                    .overlay(Label("Drop audio to transcribe", systemImage: "waveform.badge.plus")
+                        .font(.headline).foregroundStyle(.secondary))
+                    .allowsHitTesting(false)
+            }
+        }
+        .confirmationDialog(
+            "Move this note to Dictation?",
+            isPresented: Binding(get: { pendingDictation != nil }, set: { if !$0 { pendingDictation = nil } }),
+            presenting: pendingDictation
+        ) { n in
+            Button("Move to Dictation") {
+                if selID == n.id { selID = nil }
+                do {
+                    try store.moveNoteToDictation(n.id)
+                } catch {
+                    trashError = error.localizedDescription
+                }
+                pendingDictation = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDictation = nil }
+        } message: { n in
+            Text("“\(n.title)” will be saved to the dictation archive and removed from the Catalog. Its meeting summary (if any) is not carried over.")
+        }
         .confirmationDialog(
             "Move this note to the Trash?",
             isPresented: Binding(get: { pendingTrash != nil }, set: { if !$0 { pendingTrash = nil } }),
@@ -1441,6 +1447,30 @@ private struct NotesList: View {
         }
     }
 
+
+    /// Accept dropped audio files → hand them to the importer, which transcribes
+    /// each into a meeting note and adds a Catalog row. Non-audio drops are
+    /// ignored (returns false so the system shows the "no" cursor).
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !fileProviders.isEmpty else { return false }
+        var urls: [URL] = []
+        let group = DispatchGroup()
+        for p in fileProviders {
+            group.enter()
+            _ = p.loadObject(ofClass: URL.self) { url, _ in
+                DispatchQueue.main.async {
+                    if let url, AudioFileImporter.isAccepted(url) { urls.append(url) }
+                    group.leave()
+                }
+            }
+        }
+        group.notify(queue: .main) {
+            guard !urls.isEmpty else { return }
+            (NSApp.delegate as? AppDelegate)?.showAudioImport(urls: urls)
+        }
+        return true
+    }
 
     private func runSemantic() async {
         guard scope == .meaning, !trimmedQuery.isEmpty else { semanticOrder = []; return }
@@ -1566,17 +1596,17 @@ private struct NoteLinkEditor: View {
                 if let d = note.date { LabeledContent("Date") { Text(d.formatted(date: .abbreviated, time: .shortened)) } }
             }
 
-            // Single "Filed under": the note's opportunity OR org, as removable
+            // Single "Filed under": the note's project OR org, as removable
             // chips. One Assign… control handles both (mutually exclusive).
             Section("Filed under") {
-                let opps = store.doc.opportunities.filter { current.opportunityIDs.contains($0.id) }
+                let projs = store.doc.projects.filter { current.projectIDs.contains($0.id) }
                 let orgsDirect = store.orgsSorted.filter { current.orgIDs.contains($0.id) }
-                if opps.isEmpty && orgsDirect.isEmpty {
+                if projs.isEmpty && orgsDirect.isEmpty {
                     Text("Unassigned").font(.caption).foregroundStyle(.secondary)
                 } else {
                     FlowChips {
-                        ForEach(opps) { o in
-                            Chip(text: o.name, color: .green) { store.setOpportunity(o.id, on: note.id, false) }
+                        ForEach(projs) { p in
+                            Chip(text: store.projectPath(of: p.id), color: .teal) { store.setProject(p.id, on: note.id, false) }
                         }
                         ForEach(orgsDirect) { o in
                             Chip(text: store.orgPath(of: o.id), color: .blue) { store.setOrg(o.id, on: note.id, false) }
@@ -1588,17 +1618,12 @@ private struct NoteLinkEditor: View {
                     .popover(isPresented: $showAssign) {
                         AssignPopover(store: store, noteID: note.id, show: $showAssign)
                     }
-                // Inherited context (read-only).
-                let viaOpp = store.effectiveOrgIDs(of: current).subtracting(current.orgIDs)
-                if !viaOpp.isEmpty {
-                    Text("Org via opportunity: " + store.orgsSorted.filter { viaOpp.contains($0.id) }
+                // Inherited context (read-only): the org resolved up the
+                // project hierarchy, when not directly assigned.
+                let viaProject = store.effectiveOrgIDs(of: current).subtracting(current.orgIDs)
+                if !viaProject.isEmpty {
+                    Text("Org via project: " + store.orgsSorted.filter { viaProject.contains($0.id) }
                         .map { store.orgPath(of: $0.id) }.joined(separator: ", "))
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                let projIDs = store.effectiveProjectIDs(of: current)
-                if !projIDs.isEmpty {
-                    Text("Projects: " + store.doc.projects.filter { projIDs.contains($0.id) }
-                        .map { $0.name }.joined(separator: ", "))
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
@@ -1654,7 +1679,7 @@ private struct NoteLinkEditor: View {
                 } header: {
                     Text("From this note")
                 } footer: {
-                    Text("Words pulled from the note — tap one to add it as a tag, person, opportunity, organisation, or project.")
+                    Text("Words pulled from the note — tap one to add it as a tag, person, project, or organisation.")
                         .font(.caption2)
                 }
             }
@@ -1737,35 +1762,35 @@ private struct AddChipButton: View {
     }
 }
 
-/// The Assign… picker: choose an opportunity OR an organisation (mutually
+/// The Assign… picker: choose a project OR an organisation (mutually
 /// exclusive). Assigning clears the other side via the store helpers.
 private struct AssignPopover: View {
     @ObservedObject var store: CatalogStore
     let noteID: String
     @Binding var show: Bool
-    @State private var mode = 0   // 0 = opportunity, 1 = organisation
+    @State private var mode = 0   // 0 = project, 1 = organisation
     @State private var query = ""
 
     var body: some View {
         VStack(spacing: 8) {
             Picker("", selection: $mode) {
-                Text("Opportunity").tag(0)
+                Text("Project").tag(0)
                 Text("Organisation").tag(1)
             }
             .pickerStyle(.segmented).labelsHidden()
-            EntitySearchBar(text: $query, placeholder: mode == 0 ? "Search opportunities" : "Search organisations")
+            EntitySearchBar(text: $query, placeholder: mode == 0 ? "Search projects" : "Search organisations")
             let q = query.trimmingCharacters(in: .whitespaces)
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     if mode == 0 {
-                        let opps = store.doc.opportunities.sortedByName
-                            .filter { q.isEmpty || $0.name.localizedCaseInsensitiveContains(q) }
-                        if opps.isEmpty { Text("No opportunities").font(.caption).foregroundStyle(.secondary) }
-                        ForEach(opps) { o in
-                            Button { store.setOpportunity(o.id, on: noteID, true); show = false } label: {
+                        let projs = store.projectsSorted
+                            .filter { q.isEmpty || store.projectPath(of: $0.id).localizedCaseInsensitiveContains(q) }
+                        if projs.isEmpty { Text("No projects").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(projs) { p in
+                            Button { store.setProject(p.id, on: noteID, true); show = false } label: {
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(o.name)
-                                    if let path = oppPath(o) { Text(path).font(.caption2).foregroundStyle(.secondary) }
+                                    Text(p.name)
+                                    Text(store.projectPath(of: p.id)).font(.caption2).foregroundStyle(.secondary)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
@@ -1791,13 +1816,6 @@ private struct AssignPopover: View {
         .padding(10).frame(width: 280)
     }
 
-    private func oppPath(_ o: CatalogOpportunity) -> String? {
-        guard let p = store.project(o.projectID) else { return nil }
-        var parts: [String] = []
-        if let org = store.org(p.orgID) { parts.append(store.orgPath(of: org.id)) }
-        parts.append(p.name)
-        return parts.joined(separator: " › ")
-    }
 }
 
 /// Action items parsed from the note file, with tick + export-to-Reminders,
@@ -1859,7 +1877,7 @@ private struct NoteActionItemsSection: View {
 }
 
 /// "Add as ▾" menu that turns a token into any catalog entity and wires it into
-/// the note's hierarchy (people attach to the note's orgs; opps to its project).
+/// the note's hierarchy (people attach to the note; a project files the note under it).
 private struct PromoteMenu: View {
     @ObservedObject var store: CatalogStore
     let noteID: String
@@ -1875,13 +1893,11 @@ private struct PromoteMenu: View {
             Button { let t = store.addTag(name: token); store.setTag(t.id, on: noteID, true); onDone() }
                 label: { Label("Tag", systemImage: "tag") }
             Button(action: addPerson) { Label("Person", systemImage: "person") }
-            Button(action: addOpportunity) { Label("Opportunity", systemImage: "chart.line.uptrend.xyaxis") }
+            Button(action: addProject) { Label("Project", systemImage: "folder") }
             Divider()
-            // Created only — assign them yourself:
+            // Created only — assign it yourself:
             Button { _ = store.addOrg(name: token); onDone() }
                 label: { Label("Organisation (create only)", systemImage: "building.2") }
-            Button { _ = store.addProject(name: token); onDone() }
-                label: { Label("Project (create only)", systemImage: "folder") }
         } label: {
             if asChip {
                 HStack(spacing: 4) {
@@ -1904,10 +1920,11 @@ private struct PromoteMenu: View {
         store.setPerson(p.id, on: noteID, true)   // attach directly to the note, like tags
         onDone()
     }
-    private func addOpportunity() {
-        let projectID = note?.projectIDs.first
-        let o = store.addOpportunity(name: token, projectID: projectID)
-        store.setOpportunity(o.id, on: noteID, true)                        // assign to the note
+    private func addProject() {
+        // New project inherits the note's current org (if any), then files the note under it.
+        let orgID = note.flatMap { store.effectiveOrgIDs(of: $0).first }
+        let p = store.addProject(name: token, orgID: orgID)
+        store.setProject(p.id, on: noteID, true)
         onDone()
     }
 }
@@ -1939,7 +1956,6 @@ private struct MapTree: View {
     private var allNodeIDs: Set<String> {
         Set(store.doc.orgs.map(\.id))
             .union(store.doc.projects.map(\.id))
-            .union(store.doc.opportunities.map(\.id))
             .union(store.doc.notes.map { "note:" + $0.id })
             .union(store.doc.notes.map { "note-people:" + $0.id })
             .union(store.doc.notes.map { "note-tags:" + $0.id })
@@ -2029,8 +2045,11 @@ private struct OrgMapNode: View {
     var body: some View {
         DisclosureGroup(isExpanded: exp.binding(org.id)) {
             ForEach(store.childOrgs(of: org.id)) { OrgMapNode(store: store, org: $0, exp: exp, onPick: onPick) }
-            ForEach(store.projects(forOrg: org.id)) { ProjectMapNode(store: store, project: $0, exp: exp, onPick: onPick) }
-            // Internal notes attached directly to this org (no opportunity).
+            // Only this org's TOP-LEVEL projects hang off it directly; sub-projects
+            // appear nested under their parent (inheriting the org through it), so
+            // the tree stays a true hierarchy with no duplicates.
+            ForEach(store.rootProjects(forOrg: org.id)) { ProjectMapNode(store: store, project: $0, exp: exp, onPick: onPick) }
+            // Internal notes attached directly to this org (no project).
             ForEach(store.notes(directlyOnOrg: org.id).sortedByDateDescending) { NoteMapNode(store: store, note: $0, exp: exp, onPick: onPick) }
         } label: {
             MapRow(icon: "building.2", tint: .blue, title: org.name,
@@ -2046,28 +2065,14 @@ private struct ProjectMapNode: View {
     let onPick: MapPick
     var body: some View {
         DisclosureGroup(isExpanded: exp.binding(project.id)) {
-            let opps = store.opportunities(forProject: project.id)
-            if opps.isEmpty { Text("No opportunities").font(.caption2).foregroundStyle(.secondary) }
-            ForEach(opps) { OppMapNode(store: store, opp: $0, exp: exp, onPick: onPick) }
-        } label: {
-            MapRow(icon: "folder", tint: .orange, title: project.name) { onPick(.projects, project.id) }
-        }
-    }
-}
-
-private struct OppMapNode: View {
-    @ObservedObject var store: CatalogStore
-    let opp: CatalogOpportunity
-    @ObservedObject var exp: MapExpansion
-    let onPick: MapPick
-    var body: some View {
-        DisclosureGroup(isExpanded: exp.binding(opp.id)) {
-            let notes = store.notes(forOpportunity: opp).sortedByDateDescending
-            if notes.isEmpty { Text("No notes").font(.caption2).foregroundStyle(.secondary) }
+            let subs = store.childProjects(of: project.id)
+            ForEach(subs) { ProjectMapNode(store: store, project: $0, exp: exp, onPick: onPick) }
+            let notes = store.doc.notes.filter { $0.projectIDs.contains(project.id) }.sortedByDateDescending
+            if subs.isEmpty && notes.isEmpty { Text("No notes").font(.caption2).foregroundStyle(.secondary) }
             ForEach(notes) { NoteMapNode(store: store, note: $0, exp: exp, onPick: onPick) }
         } label: {
-            MapRow(icon: "chart.line.uptrend.xyaxis", tint: .green, title: opp.name,
-                   trailing: AnyView(StageBadge(opp.stage))) { onPick(.opportunities, opp.id) }
+            MapRow(icon: "folder", tint: .orange, title: project.name,
+                   trailing: AnyView(StageBadge(project.stage))) { onPick(.projects, project.id) }
         }
     }
 }
@@ -2114,31 +2119,161 @@ private struct NoteMapNode: View {
 
 // MARK: - POC Tracker (Catalog section)
 //
-// POC success criteria hang off a Catalog opportunity (`pocCriteria`), so the
-// tracker lives here rather than in a standalone window: pick an opportunity in
+// POC success criteria hang off a Catalog project (`pocCriteria`), so the
+// tracker lives here rather than in a standalone window: pick a project in
 // the middle column, edit its criteria in the detail pane. The detail pane can
-// also seed criteria from the opportunity's linked meetings (the "bridge").
+// also seed criteria from the project's linked meetings (the "bridge").
 
-/// Middle column: opportunities, each showing POC progress at a glance.
-private struct PocOpportunityList: View {
+/// Middle column: projects, each showing POC progress at a glance.
+/// A cross-meeting list of every open technical/unanswered question, pulled
+/// from the `## Unanswered Questions` section of each meeting note, with
+/// search + org/project filters. The dashboard card is a 5-item teaser of
+/// this. Click a question to open its source note.
+private struct OpenQuestionsList: View {
+    @ObservedObject var store: CatalogStore
+    @State private var items: [QItem] = []
+    @State private var loading = false
+    @State private var query = ""
+    @State private var fOrg = ""
+    @State private var fProj = ""
+
+    struct QItem: Identifiable {
+        let id = UUID()
+        let question: String
+        let title: String
+        let date: Date?
+        let url: URL
+        let orgIDs: Set<String>
+        let projIDs: Set<String>
+    }
+
+    private var filtered: [QItem] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return items.filter { item in
+            (q.isEmpty || item.question.lowercased().contains(q) || item.title.lowercased().contains(q))
+            && (fOrg.isEmpty || item.orgIDs.contains(fOrg))
+            && (fProj.isEmpty || item.projIDs.contains(fProj))
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            Group {
+                if loading && items.isEmpty {
+                    ProgressView("Scanning notes…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if filtered.isEmpty {
+                    ContentUnavailableView("No open questions", systemImage: "checkmark.circle",
+                        description: Text("Questions collect here from meeting notes that have an “Unanswered Questions” section (enable it in Settings → Meetings)."))
+                } else {
+                    List {
+                        ForEach(filtered) { q in
+                            Button { NotesViewerWindowController.present(fileURL: q.url) } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(q.question).lineLimit(3)
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "doc.text").font(.caption2)
+                                        Text(q.title).lineLimit(1)
+                                        if let d = q.date { Text("· \(d.formatted(date: .abbreviated, time: .omitted))") }
+                                    }
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.vertical, 2)
+                        }
+                    }
+                }
+            }
+        }
+        .task { await scan() }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("\(filtered.count) open").font(.headline)
+            Spacer()
+            EntitySearchBar(text: $query, placeholder: "Search questions").frame(width: 180)
+            Menu(orgLabel) {
+                Button("All organizations") { fOrg = "" }
+                ForEach(store.orgsSorted) { o in Button(o.name) { fOrg = o.id; fProj = "" } }
+            }.fixedSize()
+            Menu(projLabel) {
+                Button("All projects") { fProj = "" }
+                ForEach(store.projectsSorted) { o in
+                    Button(store.projectPath(of: o.id)) { fProj = o.id; fOrg = "" }
+                }
+            }.fixedSize()
+            Button { Task { await scan() } } label: { Image(systemName: "arrow.clockwise") }
+                .help("Rescan notes")
+        }
+        .padding(8)
+    }
+
+    private var orgLabel: String { fOrg.isEmpty ? "All orgs" : (store.org(fOrg)?.name ?? "Org") }
+    private var projLabel: String { fProj.isEmpty ? "All projects" : (store.project(fProj)?.name ?? "Project") }
+
+    private func scan() async {
+        loading = true
+        defer { loading = false }
+        let root = AppSettings.shared.notesFolder.path + "/"
+        var result: [QItem] = []
+        for f in NotesLibrary.meetingFiles(limit: AppSettings.shared.searchDepth) {
+            guard let text = try? String(contentsOf: f.url, encoding: .utf8) else { continue }
+            let qs = Self.unanswered(in: text)
+            guard !qs.isEmpty else { continue }
+            let title = FrontMatter.title(in: text) ?? f.displayName
+            let rel = f.url.path.replacingOccurrences(of: root, with: "")
+            let note = store.doc.notes.first { $0.filePath == rel }
+            let orgIDs = Set(note.map { store.effectiveOrgIDs(of: $0) } ?? [])
+            let projIDs = note.map { store.effectiveProjectIDs(of: $0) } ?? []
+            let date = DateDisplay.posixDay.date(from: f.day)
+            for q in qs {
+                result.append(QItem(question: q, title: title, date: date, url: f.url, orgIDs: orgIDs, projIDs: projIDs))
+            }
+        }
+        items = result
+    }
+
+    /// Bullet questions under a "## Unanswered Questions" heading.
+    private static func unanswered(in text: String) -> [String] {
+        guard let range = text.range(of: "## Unanswered Questions") else { return [] }
+        var out: [String] = []
+        for raw in text[range.upperBound...].split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("## ") || line.hasPrefix("# ") { break }
+            if line.hasPrefix("- ") || line.hasPrefix("* ") {
+                let q = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                if !q.isEmpty { out.append(q) }
+            }
+        }
+        return out
+    }
+}
+
+private struct PocProjectList: View {
     @ObservedObject var store: CatalogStore
     @Binding var selID: String?
 
-    private func label(_ o: CatalogOpportunity) -> String {
-        if let pid = o.projectID, let proj = store.project(pid) {
-            if let oid = proj.orgID, let org = store.org(oid) { return org.name }
-            return proj.name
-        }
-        return "—"
+    private func label(_ o: CatalogProject) -> String {
+        // Ancestor context (org › parent projects), excluding the project's own
+        // name — that's already on the line above.
+        var parts: [String] = []
+        if let org = store.org(forProject: o.id) { parts.append(store.orgPath(of: org.id)) }
+        parts.append(contentsOf: store.projectLineage(of: o.id).dropFirst().reversed().compactMap { store.project($0)?.name })
+        return parts.isEmpty ? "—" : parts.joined(separator: " › ")
     }
 
     var body: some View {
         Group {
-            if store.doc.opportunities.isEmpty {
-                ContentUnavailableView("No opportunities", systemImage: "chart.line.uptrend.xyaxis",
-                    description: Text("Add an opportunity under Records, then track its POC here."))
+            if store.doc.projects.isEmpty {
+                ContentUnavailableView("No projects", systemImage: "flask",
+                    description: Text("Add a project under Records, then track its POC here."))
             } else {
-                List(store.doc.opportunities.sortedByName, selection: $selID) { o in
+                List(store.doc.projects.sortedByName, selection: $selID) { o in
                     let total = o.pocCriteria.count
                     let passed = o.pocCriteria.filter { $0.status == .pass }.count
                     HStack(spacing: 10) {
@@ -2163,22 +2298,22 @@ private struct PocOpportunityList: View {
     }
 }
 
-/// Detail pane: the selected opportunity's POC criteria — add, cycle status,
+/// Detail pane: the selected project's POC criteria — add, cycle status,
 /// remove, and seed from linked meetings.
 private struct PocDetail: View {
     @ObservedObject var store: CatalogStore
-    let oppID: String?
+    let projID: String?
     @State private var newCriterion = ""
     @State private var suggesting = false
     @State private var status = ""
 
-    private var opp: CatalogOpportunity? { oppID.flatMap { store.opportunity($0) } }
+    private var opp: CatalogProject? { projID.flatMap { store.project($0) } }
 
-    /// The bridge can run only when cloud AI is available and the opportunity
+    /// The bridge can run only when cloud AI is available and the project
     /// has at least one linked meeting to read.
     private var canSuggest: Bool {
         guard let opp else { return false }
-        return !AppSettings.shared.localOnlyMode && !store.notes(forOpportunity: opp).isEmpty
+        return !AppSettings.shared.localOnlyMode && !store.notes(forProject: opp.id).isEmpty
     }
 
     var body: some View {
@@ -2187,7 +2322,7 @@ private struct PocDetail: View {
                 header(opp)
                 if opp.pocCriteria.isEmpty {
                     ContentUnavailableView("No success criteria yet", systemImage: "checklist",
-                        description: Text("Add the measurable outcomes this POC must prove — or seed them from the opportunity's meetings."))
+                        description: Text("Add the measurable outcomes this POC must prove — or seed them from the project's meetings."))
                         .frame(maxHeight: .infinity)
                 } else {
                     criteriaList(opp)
@@ -2197,12 +2332,12 @@ private struct PocDetail: View {
             .padding(18)
             .animation(.default, value: status)
         } else {
-            ContentUnavailableView("Select an opportunity", systemImage: "flask",
-                description: Text("Pick an opportunity to track its proof-of-concept criteria."))
+            ContentUnavailableView("Select a project", systemImage: "flask",
+                description: Text("Pick a project to track its proof-of-concept criteria."))
         }
     }
 
-    @ViewBuilder private func header(_ opp: CatalogOpportunity) -> some View {
+    @ViewBuilder private func header(_ opp: CatalogProject) -> some View {
         let total = opp.pocCriteria.count
         let passed = opp.pocCriteria.filter { $0.status == .pass }.count
         let failed = opp.pocCriteria.filter { $0.status == .fail }.count
@@ -2219,8 +2354,8 @@ private struct PocDetail: View {
                 }
                 .disabled(!canSuggest || suggesting)
                 .help(canSuggest
-                      ? "Read this opportunity's linked meetings and add the success criteria they mention"
-                      : "Needs cloud AI (not Local-only) and at least one meeting linked to this opportunity")
+                      ? "Read this project's linked meetings and add the success criteria they mention"
+                      : "Needs cloud AI (not Local-only) and at least one meeting linked to this project")
             }
             if total > 0 {
                 HStack(spacing: 12) {
@@ -2241,12 +2376,12 @@ private struct PocDetail: View {
         }
     }
 
-    private func criteriaList(_ opp: CatalogOpportunity) -> some View {
+    private func criteriaList(_ opp: CatalogProject) -> some View {
         ScrollView {
             VStack(spacing: 0) {
                 ForEach(opp.pocCriteria) { c in
                     HStack(alignment: .top, spacing: 10) {
-                        Button { store.setPocStatus(c.status.next, criterionID: c.id, oppID: opp.id) } label: {
+                        Button { store.setPocStatus(c.status.next, criterionID: c.id, projID: opp.id) } label: {
                             Image(systemName: statusIcon(c.status)).foregroundStyle(statusColor(c.status))
                                 .font(.system(size: 16))
                         }
@@ -2270,7 +2405,7 @@ private struct PocDetail: View {
         .frame(maxHeight: .infinity)
     }
 
-    private func addBar(_ opp: CatalogOpportunity) -> some View {
+    private func addBar(_ opp: CatalogProject) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top, spacing: 8) {
                 // Multi-line so you can paste a whole list at once — one
@@ -2299,7 +2434,7 @@ private struct PocDetail: View {
             .filter { !$0.isEmpty }
     }
 
-    private func commitAdd(_ opp: CatalogOpportunity) {
+    private func commitAdd(_ opp: CatalogProject) {
         let items = splitCriteria(newCriterion)
         guard !items.isEmpty else { return }
         let added = store.addPocCriteriaTexts(items, to: opp.id)
@@ -2312,16 +2447,16 @@ private struct PocDetail: View {
         }
     }
 
-    /// Bridge: read the opportunity's linked meeting notes, extract POC success
+    /// Bridge: read the project's linked meeting notes, extract POC success
     /// criteria, and add the new ones (deduped). Non-destructive — everything
     /// added is editable/removable like a hand-typed criterion.
-    private func suggestFromMeetings(_ opp: CatalogOpportunity) {
-        let notes = store.notes(forOpportunity: opp)
+    private func suggestFromMeetings(_ opp: CatalogProject) {
+        let notes = store.notes(forProject: opp.id)
         let transcripts = notes.compactMap { try? String(contentsOf: store.url(of: $0), encoding: .utf8) }
-        guard !transcripts.isEmpty else { status = "No readable meetings linked to this opportunity."; return }
-        // Cap the combined text so a busy opportunity doesn't blow the context.
+        guard !transcripts.isEmpty else { status = "No readable meetings linked to this project."; return }
+        // Cap the combined text so a busy project doesn't blow the context.
         let combined = String(transcripts.joined(separator: "\n\n---\n\n").prefix(40_000))
-        let oppID = opp.id
+        let projID = opp.id
         suggesting = true
         status = "Reading \(transcripts.count) meeting\(transcripts.count == 1 ? "" : "s")…"
         Task { @MainActor in
@@ -2329,7 +2464,7 @@ private struct PocDetail: View {
             do {
                 let criteria = try await TextPolisher().extractPocCriteria(transcript: combined)
                 guard !criteria.isEmpty else { status = "No success criteria found in the linked meetings."; return }
-                let added = store.addPocCriteriaTexts(criteria, to: oppID)
+                let added = store.addPocCriteriaTexts(criteria, to: projID)
                 status = added == 0
                     ? "Found \(criteria.count) — all already tracked."
                     : "Added \(added) criteri\(added == 1 ? "on" : "a") from \(transcripts.count) meeting\(transcripts.count == 1 ? "" : "s")."

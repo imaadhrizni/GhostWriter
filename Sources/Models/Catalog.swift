@@ -55,33 +55,27 @@ struct CatalogPerson: Codable, Identifiable, Hashable {
     var email: String?
 }
 
-struct CatalogProject: Codable, Identifiable, Hashable {
-    var id = UUID().uuidString
-    var name: String
-    var orgID: String?
-    var archived = false
-}
-
 enum OppStage: String, Codable, CaseIterable, Identifiable {
     case open, won, lost
     var id: String { rawValue }
     var label: String { rawValue.capitalized }
 }
 
-struct CatalogOpportunity: Codable, Identifiable, Hashable {
+/// A project — the unit a note is filed under (besides a direct org link).
+/// Projects form an unlimited hierarchy via `parentID` (like orgs); a
+/// top-level project carries an `orgID`, sub-projects inherit their org from an
+/// ancestor. Proof-of-concept success criteria hang off the project.
+struct CatalogProject: Codable, Identifiable, Hashable {
     var id = UUID().uuidString
     var name: String
-    /// Owning project (project → opportunities is one-to-many). The org is
-    /// derived from the project — opportunities are never assigned an org
-    /// directly, since the project already carries it.
-    var projectID: String?
+    var orgID: String?
+    /// Parent project — nil for a top-level project. Enables sub-projects.
+    var parentID: String?
     var stage: OppStage = .open
     var valueCents: Int?
     var currency = "USD"
-    /// Proof-of-concept success criteria tracked across meetings. See the
-    /// custom decoder below — Swift's synthesized decoding ignores the default,
-    /// so a hand-rolled `init(from:)` is what actually lets older catalogs
-    /// (written before this field) still decode.
+    var archived = false
+    /// Proof-of-concept success criteria tracked across meetings.
     var pocCriteria: [PocCriterion] = []
 
     /// A POC is "at risk" when it has a failing criterion, or nothing has passed
@@ -91,19 +85,22 @@ struct CatalogOpportunity: Codable, Identifiable, Hashable {
     }
 }
 
-extension CatalogOpportunity {
-    /// Tolerant decoder: fields added after v1 (currently `pocCriteria`) are
-    /// optional on the wire, so catalogs exported before they existed still
-    /// load instead of failing the whole document. Declared in an extension so
-    /// the memberwise initializer and synthesized encoder are preserved.
+extension CatalogProject {
+    /// Tolerant decoder: fields added after v1 (`parentID`, `stage`,
+    /// `valueCents`, `currency`, `pocCriteria`) are optional on the wire, so
+    /// catalogs exported before they existed still load. Any legacy
+    /// `opportunities` array in the JSON is simply ignored (dropped) — notes
+    /// once filed under an opportunity become unassigned.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
         name = try c.decode(String.self, forKey: .name)
-        projectID = try c.decodeIfPresent(String.self, forKey: .projectID)
+        orgID = try c.decodeIfPresent(String.self, forKey: .orgID)
+        parentID = try c.decodeIfPresent(String.self, forKey: .parentID)
         stage = try c.decodeIfPresent(OppStage.self, forKey: .stage) ?? .open
         valueCents = try c.decodeIfPresent(Int.self, forKey: .valueCents)
         currency = try c.decodeIfPresent(String.self, forKey: .currency) ?? "USD"
+        archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
         pocCriteria = try c.decodeIfPresent([PocCriterion].self, forKey: .pocCriteria) ?? []
     }
 }
@@ -120,7 +117,7 @@ enum PocStatus: String, Codable, CaseIterable {
     }
 }
 
-/// A single measurable success criterion for an opportunity's proof-of-concept.
+/// A single measurable success criterion for a project's proof-of-concept.
 struct PocCriterion: Codable, Identifiable, Hashable {
     var id = UUID().uuidString
     var text: String
@@ -142,11 +139,10 @@ struct CatalogNote: Codable, Identifiable, Hashable {
     var title: String
     var date: Date?
     var kind: String = "meeting"
-    /// Notes are assigned to opportunities (and/or projects) and tags. The rest
-    /// of the chain — project → org → people — is inherited automatically.
-    /// `orgIDs` holds a direct org assignment for internal notes with no
-    /// opportunity (mutually exclusive with `opportunityIDs`).
-    var opportunityIDs: [String] = []
+    /// A note is filed under a project *or* a direct org (mutually exclusive).
+    /// The rest of the chain — project → parent projects → org → people — is
+    /// inherited automatically. `orgIDs` holds a direct org assignment for
+    /// internal notes with no project.
     var projectIDs: [String] = []
     var orgIDs: [String] = []
     var tagIDs: [String] = []
@@ -161,7 +157,6 @@ protocol Named { var name: String { get } }
 extension CatalogOrg: Named {}
 extension CatalogPerson: Named {}
 extension CatalogProject: Named {}
-extension CatalogOpportunity: Named {}
 extension CatalogTag: Named {}
 
 extension Sequence where Element: Named {
@@ -186,7 +181,6 @@ struct CatalogDocument: Codable {
     var orgs: [CatalogOrg] = []
     var people: [CatalogPerson] = []
     var projects: [CatalogProject] = []
-    var opportunities: [CatalogOpportunity] = []
     var tags: [CatalogTag] = []
     var notes: [CatalogNote] = []
 }
@@ -243,7 +237,7 @@ final class CatalogStore: ObservableObject {
     /// True when there's nothing to export — disables the Export button.
     var isEmpty: Bool {
         doc.orgs.isEmpty && doc.people.isEmpty && doc.projects.isEmpty
-            && doc.opportunities.isEmpty && doc.tags.isEmpty && doc.notes.isEmpty
+            && doc.tags.isEmpty && doc.notes.isEmpty
     }
 
     /// Encode the whole catalog for export — identical format to the on-disk
@@ -271,13 +265,12 @@ final class CatalogStore: ObservableObject {
                 Self.upsert(&doc.orgs, incoming.orgs)
                 Self.upsert(&doc.people, incoming.people)
                 Self.upsert(&doc.projects, incoming.projects)
-                Self.upsert(&doc.opportunities, incoming.opportunities)
                 Self.upsert(&doc.tags, incoming.tags)
                 Self.upsert(&doc.notes, incoming.notes)
             }
         }
         return incoming.orgs.count + incoming.people.count + incoming.projects.count
-             + incoming.opportunities.count + incoming.tags.count + incoming.notes.count
+             + incoming.tags.count + incoming.notes.count
     }
 
     /// Merge `incoming` into `base` by id: existing entries with a matching id
@@ -296,26 +289,26 @@ final class CatalogStore: ObservableObject {
 
     // MARK: POC success criteria
 
-    /// Opportunities that have at least one POC criterion, most-progressed first.
-    var opportunitiesWithPOC: [CatalogOpportunity] {
-        doc.opportunities.filter { !$0.pocCriteria.isEmpty }
+    /// Projects that have at least one POC criterion, by name.
+    var projectsWithPOC: [CatalogProject] {
+        doc.projects.filter { !$0.pocCriteria.isEmpty }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     /// Bulk-add criteria (e.g. AI-extracted from meetings), skipping any whose
-    /// text already exists on the opportunity (case-insensitive). Returns how
-    /// many were actually added.
+    /// text already exists on the project (case-insensitive). Returns how many
+    /// were actually added.
     @discardableResult
-    func addPocCriteriaTexts(_ texts: [String], to oppID: String) -> Int {
+    func addPocCriteriaTexts(_ texts: [String], to projID: String) -> Int {
         var added = 0
         mutate { doc in
-            guard let i = doc.opportunities.firstIndex(where: { $0.id == oppID }) else { return }
-            var existing = Set(doc.opportunities[i].pocCriteria.map { $0.text.lowercased() })
+            guard let i = doc.projects.firstIndex(where: { $0.id == projID }) else { return }
+            var existing = Set(doc.projects[i].pocCriteria.map { $0.text.lowercased() })
             for raw in texts {
                 let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 let key = t.lowercased()
                 guard !t.isEmpty, !existing.contains(key) else { continue }
-                doc.opportunities[i].pocCriteria.append(PocCriterion(text: t))
+                doc.projects[i].pocCriteria.append(PocCriterion(text: t))
                 existing.insert(key)
                 added += 1
             }
@@ -323,18 +316,18 @@ final class CatalogStore: ObservableObject {
         return added
     }
 
-    func setPocStatus(_ status: PocStatus, criterionID: String, oppID: String) {
+    func setPocStatus(_ status: PocStatus, criterionID: String, projID: String) {
         mutate { doc in
-            guard let oi = doc.opportunities.firstIndex(where: { $0.id == oppID }),
-                  let ci = doc.opportunities[oi].pocCriteria.firstIndex(where: { $0.id == criterionID }) else { return }
-            doc.opportunities[oi].pocCriteria[ci].status = status
+            guard let pi = doc.projects.firstIndex(where: { $0.id == projID }),
+                  let ci = doc.projects[pi].pocCriteria.firstIndex(where: { $0.id == criterionID }) else { return }
+            doc.projects[pi].pocCriteria[ci].status = status
         }
     }
 
-    func removePocCriterion(_ criterionID: String, from oppID: String) {
+    func removePocCriterion(_ criterionID: String, from projID: String) {
         mutate { doc in
-            if let oi = doc.opportunities.firstIndex(where: { $0.id == oppID }) {
-                doc.opportunities[oi].pocCriteria.removeAll { $0.id == criterionID }
+            if let pi = doc.projects.firstIndex(where: { $0.id == projID }) {
+                doc.projects[pi].pocCriteria.removeAll { $0.id == criterionID }
             }
         }
     }
@@ -381,8 +374,6 @@ final class CatalogStore: ObservableObject {
     func tag(_ id: String?) -> CatalogTag? { doc.tags.first { $0.id == id } }
     func person(_ id: String?) -> CatalogPerson? { doc.people.first { $0.id == id } }
 
-    func opportunity(_ id: String?) -> CatalogOpportunity? { doc.opportunities.first { $0.id == id } }
-
     var orgsSorted: [CatalogOrg] { doc.orgs.sortedByName }
     var tagsSorted: [CatalogTag] { doc.tags.sortedByName }
 
@@ -415,55 +406,89 @@ final class CatalogStore: ObservableObject {
         orgLineage(of: id).reversed().compactMap { org($0)?.name }.joined(separator: " › ")
     }
 
-    /// A note's projects: directly assigned plus those from its opportunities.
+    // Project hierarchy (unlimited depth), mirroring orgs.
+    var projectsSorted: [CatalogProject] { doc.projects.sortedByName }
+    var rootProjects: [CatalogProject] { projectsSorted.filter { $0.parentID == nil || project($0.parentID) == nil } }
+    func childProjects(of id: String) -> [CatalogProject] { projectsSorted.filter { $0.parentID == id } }
+    /// `id` plus every ancestor project, nearest first. Cycle-safe.
+    func projectLineage(of id: String) -> [String] {
+        var chain: [String] = [], cur: String? = id, seen = Set<String>()
+        while let c = cur, seen.insert(c).inserted, project(c) != nil {
+            chain.append(c); cur = project(c)?.parentID
+        }
+        return chain
+    }
+    /// `id` plus all descendant projects.
+    func projectSubtree(of id: String) -> Set<String> {
+        var out: Set<String> = [id], stack = [id]
+        while let cur = stack.popLast() {
+            for child in childProjects(of: cur) where out.insert(child.id).inserted { stack.append(child.id) }
+        }
+        return out
+    }
+    /// A project's org, resolved by walking up the project hierarchy to the
+    /// first ancestor that carries an orgID.
+    func org(forProject id: String) -> CatalogOrg? {
+        for pid in projectLineage(of: id) { if let o = project(pid)?.orgID { return org(o) } }
+        return nil
+    }
+    /// "Acme › Platform › Phase 2" — org path then the project lineage.
+    func projectPath(of id: String) -> String {
+        let projNames = projectLineage(of: id).reversed().compactMap { project($0)?.name }
+        let orgPart = org(forProject: id).map { orgPath(of: $0.id) }
+        return ([orgPart].compactMap { $0 } + projNames).joined(separator: " › ")
+    }
+    /// Valid parent projects: everything except itself and its descendants.
+    func parentProjectChoices(for id: String) -> [CatalogProject] {
+        let banned = projectSubtree(of: id)
+        return projectsSorted.filter { !banned.contains($0.id) }
+    }
+
+    /// A note's projects: those directly assigned plus their ancestor projects.
     func effectiveProjectIDs(of note: CatalogNote) -> Set<String> {
-        var s = Set(note.projectIDs)
-        for oid in note.opportunityIDs { if let p = opportunity(oid)?.projectID { s.insert(p) } }
+        var s = Set<String>()
+        for pid in note.projectIDs { s.formUnion(projectLineage(of: pid)) }
         return s
     }
-    /// A note's orgs, derived up the chain (opportunity → project → org).
+    /// A note's orgs, derived up the chain (project → parent projects → org).
     func effectiveOrgIDs(of note: CatalogNote) -> Set<String> {
         var s = Set(note.orgIDs)
         for pid in effectiveProjectIDs(of: note) { if let o = project(pid)?.orgID { s.insert(o) } }
         return s
     }
-    /// A note with no link at all — not on any opportunity and not directly on
-    /// any org, so it doesn't surface anywhere in the map. These are the ones
-    /// worth triaging into an opportunity or an org.
+    /// A note with no link at all — not on any project and not directly on any
+    /// org, so it doesn't surface anywhere in the map. These are the ones worth
+    /// triaging into a project or an org.
     func isUnassigned(_ note: CatalogNote) -> Bool {
-        note.opportunityIDs.isEmpty && effectiveOrgIDs(of: note).isEmpty
+        note.projectIDs.isEmpty && note.orgIDs.isEmpty
     }
     var unassignedNotes: [CatalogNote] { doc.notes.filter(isUnassigned) }
 
-    /// Notes assigned to an opportunity.
-    func notes(forOpportunity o: CatalogOpportunity) -> [CatalogNote] {
-        doc.notes.filter { $0.opportunityIDs.contains(o.id) }
+    /// Notes filed under a project (directly or under a descendant project).
+    func notes(forProject id: String) -> [CatalogNote] {
+        let subtree = projectSubtree(of: id)
+        return doc.notes.filter { !effectiveProjectIDs(of: $0).isDisjoint(with: subtree) }
     }
 
-    /// The catalog link chain for a note file — its linked opportunity / project
-    /// / organisation names (resolved as one consistent chain, deepest link
-    /// first) plus the opportunity's POC criteria. Shared by the notes-viewer
-    /// PDF export and the Follow-Up Packet so the resolution lives in one place.
+    /// The catalog link chain for a note file — its linked project / org names
+    /// (resolved as one consistent chain, deepest link first) plus the project's
+    /// POC criteria. Shared by the notes-viewer PDF export and the Follow-Up
+    /// Packet so the resolution lives in one place.
     func linkChain(forFileURL fileURL: URL)
-        -> (org: String?, project: String?, opportunity: String?, criteria: [PocCriterion]) {
+        -> (org: String?, project: String?, criteria: [PocCriterion]) {
         guard let note = doc.notes.first(where: {
             url(of: $0).standardizedFileURL == fileURL.standardizedFileURL
-        }) else { return (nil, nil, nil, []) }
+        }) else { return (nil, nil, []) }
 
-        if let oppID = note.opportunityIDs.first, let opp = opportunity(oppID) {
-            let proj = opp.projectID.flatMap { project($0) }
-            let org = proj?.orgID.flatMap { self.org($0)?.name }
-            return (org, proj?.name, opp.name, opp.pocCriteria)
-        }
         if let projID = note.projectIDs.first, let proj = project(projID) {
-            return (proj.orgID.flatMap { org($0)?.name }, proj.name, nil, [])
+            return (org(forProject: proj.id)?.name, proj.name, proj.pocCriteria)
         }
         if let orgID = note.orgIDs.first {
-            return (org(orgID)?.name, nil, nil, [])
+            return (org(orgID)?.name, nil, [])
         }
-        return (nil, nil, nil, [])
+        return (nil, nil, [])
     }
-    /// Notes assigned *directly* to an org (internal notes with no opportunity).
+    /// Notes assigned *directly* to an org (internal notes with no project).
     func notes(directlyOnOrg id: String) -> [CatalogNote] {
         doc.notes.filter { $0.orgIDs.contains(id) }
     }
@@ -478,16 +503,11 @@ final class CatalogStore: ObservableObject {
     func projects(forOrg id: String) -> [CatalogProject] {
         doc.projects.filter { $0.orgID == id }
     }
-    func opportunities(forProject id: String) -> [CatalogOpportunity] {
-        doc.opportunities.filter { $0.projectID == id }
-    }
-    func opportunities(forOrg id: String) -> [CatalogOpportunity] {
-        let projs = Set(projects(forOrg: id).map { $0.id })
-        return doc.opportunities.filter { $0.projectID.map { projs.contains($0) } ?? false }
-    }
-    /// An opportunity's org, resolved through its project.
-    func org(forOpportunity o: CatalogOpportunity) -> CatalogOrg? {
-        project(o.projectID).flatMap { org($0.orgID) }
+    /// An org's **top-level** projects (no parent project) — its roots in the
+    /// project hierarchy. Sub-projects inherit the org through their parent and
+    /// are reached via `childProjects`, so they aren't listed here.
+    func rootProjects(forOrg id: String) -> [CatalogProject] {
+        doc.projects.filter { $0.parentID == nil && $0.orgID == id }.sortedByName
     }
     /// People are independent of orgs; an org's people are simply whoever
     /// appears on its notes. An org with no notes contributes nobody, mirroring
@@ -530,16 +550,20 @@ final class CatalogStore: ObservableObject {
     }
     func deleteOrg(_ id: String) {
         mutate { doc in
-            let projIDs = Set(doc.projects.filter { $0.orgID == id }.map { $0.id })
-            let oppIDs = Set(doc.opportunities.filter { projIDs.contains($0.projectID ?? "") }.map { $0.id })
+            // Every project rooted at this org, plus their sub-project subtrees.
+            var projIDs = Set(doc.projects.filter { $0.orgID == id }.map { $0.id })
+            var frontier = projIDs
+            while !frontier.isEmpty {
+                let children = Set(doc.projects.filter { $0.parentID.map { frontier.contains($0) } ?? false }.map { $0.id })
+                frontier = children.subtracting(projIDs)
+                projIDs.formUnion(children)
+            }
             doc.orgs.removeAll { $0.id == id }
             for i in doc.orgs.indices where doc.orgs[i].parentID == id { doc.orgs[i].parentID = nil } // reparent to root
             doc.projects.removeAll { projIDs.contains($0.id) }          // cascade projects
-            doc.opportunities.removeAll { oppIDs.contains($0.id) }      // …and their opps
             for i in doc.notes.indices {
                 doc.notes[i].orgIDs.removeAll { $0 == id }
                 doc.notes[i].projectIDs.removeAll { projIDs.contains($0) }
-                doc.notes[i].opportunityIDs.removeAll { oppIDs.contains($0) }
             }
         }
     }
@@ -568,39 +592,23 @@ final class CatalogStore: ObservableObject {
     }
 
     @discardableResult
-    func addProject(name: String, orgID: String? = nil) -> CatalogProject {
-        let p = CatalogProject(name: name, orgID: orgID)
+    func addProject(name: String, orgID: String? = nil, parentID: String? = nil) -> CatalogProject {
+        var p = CatalogProject(name: name, orgID: orgID)
+        p.parentID = parentID
         mutate { $0.projects.append(p) }
         return p
     }
     func update(_ p: CatalogProject) {
-        mutate { doc in if let i = doc.projects.firstIndex(where: { $0.id == p.id }) { doc.projects[i] = p } }
+        var proj = p
+        // Reject a parent that would create a cycle (self or a descendant).
+        if let parent = proj.parentID, projectSubtree(of: proj.id).contains(parent) { proj.parentID = nil }
+        mutate { doc in if let i = doc.projects.firstIndex(where: { $0.id == proj.id }) { doc.projects[i] = proj } }
     }
     func deleteProject(_ id: String) {
+        let gone = projectSubtree(of: id)   // the project and all its sub-projects
         mutate { doc in
-            let oppIDs = Set(doc.opportunities.filter { $0.projectID == id }.map { $0.id })
-            doc.projects.removeAll { $0.id == id }
-            doc.opportunities.removeAll { oppIDs.contains($0.id) }   // cascade opps
-            for i in doc.notes.indices {
-                doc.notes[i].projectIDs.removeAll { $0 == id }
-                doc.notes[i].opportunityIDs.removeAll { oppIDs.contains($0) }
-            }
-        }
-    }
-
-    @discardableResult
-    func addOpportunity(name: String, projectID: String? = nil) -> CatalogOpportunity {
-        let o = CatalogOpportunity(name: name, projectID: projectID)
-        mutate { $0.opportunities.append(o) }
-        return o
-    }
-    func update(_ o: CatalogOpportunity) {
-        mutate { doc in if let i = doc.opportunities.firstIndex(where: { $0.id == o.id }) { doc.opportunities[i] = o } }
-    }
-    func deleteOpportunity(_ id: String) {
-        mutate { doc in
-            doc.opportunities.removeAll { $0.id == id }
-            for i in doc.notes.indices { doc.notes[i].opportunityIDs.removeAll { $0 == id } }
+            doc.projects.removeAll { gone.contains($0.id) }
+            for i in doc.notes.indices { doc.notes[i].projectIDs.removeAll { gone.contains($0) } }
         }
     }
 
@@ -655,6 +663,12 @@ final class CatalogStore: ObservableObject {
     func update(_ n: CatalogNote) {
         mutate { doc in if let i = doc.notes.firstIndex(where: { $0.filePath == n.filePath }) { doc.notes[i] = n } }
     }
+    /// Update a row's display title (e.g. once an AI title is generated).
+    func renameNote(relativePath: String, to title: String) {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        mutate { doc in if let i = doc.notes.firstIndex(where: { $0.filePath == relativePath }) { doc.notes[i].title = t } }
+    }
     func note(id: String) -> CatalogNote? { doc.notes.first { $0.id == id } }
 
     /// Whether a note's backing Markdown file still exists on disk. Catalog rows
@@ -693,6 +707,48 @@ final class CatalogStore: ObservableObject {
         return trashed
     }
 
+    /// Reclassify a note as a dictation: write its transcript into the dictation
+    /// archive (which is outside the Catalog), then trash the meeting file and
+    /// drop the catalog row. For an imported clip that turned out not to be a
+    /// meeting. Returns the new dictation file URL, or nil if the note/file is
+    /// gone. Throws if trashing the original fails.
+    @discardableResult
+    func moveNoteToDictation(_ id: String) throws -> URL? {
+        guard let note = note(id: id) else { return nil }
+        let fileURL = url(of: note)
+        guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
+
+        // Strip YAML front-matter, then take the body after the FIRST content
+        // divider (the "---" that follows the note's title/header block). Using
+        // the first divider — not the last — keeps the whole transcript for a
+        // regular meeting note, whose footer is itself a "---" divider.
+        var body = content
+        if body.hasPrefix("---\n"), let close = body.range(of: "\n---\n", range: body.index(body.startIndex, offsetBy: 3)..<body.endIndex) {
+            body = String(body[close.upperBound...])
+        }
+        if let divider = body.range(of: "\n---\n") {
+            body = String(body[divider.upperBound...])
+        }
+        let transcript = body.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Duration from the note's front-matter, if present.
+        var seconds = 0
+        if let m = content.range(of: #"gw_duration:\s*(\d+)"#, options: .regularExpression) {
+            seconds = Int(content[m].components(separatedBy: .whitespaces).last ?? "0") ?? 0
+        }
+        let words = transcript.split(whereSeparator: { $0.isWhitespace }).count
+        let source = note.title
+
+        let dictURL = MeetingNotesWriter.saveDictation(
+            text: transcript, app: "Imported", host: source, style: "import",
+            seconds: seconds, words: words)
+
+        // Only remove the original once the dictation copy is safely written.
+        guard dictURL != nil else { return nil }
+        try trashNote(id)
+        return dictURL
+    }
+
     /// Remove every row whose file no longer exists on disk. Returns how many
     /// were pruned. Note files themselves are never written or deleted here.
     @discardableResult
@@ -718,27 +774,27 @@ final class CatalogStore: ObservableObject {
         }
     }
     /// Directly assign a note to an org (for internal notes with no opportunity).
-    /// A note is assigned to *either* an opportunity *or* an org — assigning an
-    /// org clears any opportunity links, and vice-versa.
+    /// A note is filed under *either* a project *or* a direct org — assigning
+    /// one clears the other.
     func setOrg(_ orgID: String, on noteID: String, _ on: Bool) {
         mutate { doc in
             guard let i = doc.notes.firstIndex(where: { $0.id == noteID }) else { return }
             if on {
-                doc.notes[i].opportunityIDs.removeAll()          // mutually exclusive
+                doc.notes[i].projectIDs.removeAll()              // mutually exclusive
                 if !doc.notes[i].orgIDs.contains(orgID) { doc.notes[i].orgIDs.append(orgID) }
             } else {
                 doc.notes[i].orgIDs.removeAll { $0 == orgID }
             }
         }
     }
-    func setOpportunity(_ oppID: String, on noteID: String, _ on: Bool) {
+    func setProject(_ projID: String, on noteID: String, _ on: Bool) {
         mutate { doc in
             guard let i = doc.notes.firstIndex(where: { $0.id == noteID }) else { return }
             if on {
                 doc.notes[i].orgIDs.removeAll()                  // mutually exclusive with a direct org
-                if !doc.notes[i].opportunityIDs.contains(oppID) { doc.notes[i].opportunityIDs.append(oppID) }
+                doc.notes[i].projectIDs = [projID]               // a note sits in one project
             } else {
-                doc.notes[i].opportunityIDs.removeAll { $0 == oppID }
+                doc.notes[i].projectIDs.removeAll { $0 == projID }
             }
         }
     }
@@ -766,11 +822,35 @@ final class CatalogStore: ObservableObject {
             let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
             let date = values?.creationDate ?? values?.contentModificationDate
             newRows.append(CatalogNote(filePath: rel,
-                                       title: url.deletingPathExtension().lastPathComponent,
+                                       title: Self.displayTitle(for: url),
                                        date: date))
         }
         if !newRows.isEmpty { mutate { $0.notes.append(contentsOf: newRows) } }
+        backfillTitles()
         return newRows.count
+    }
+
+    /// Prefer a note's front-matter `title:` over its filename for display.
+    static func displayTitle(for url: URL) -> String {
+        let fallback = url.deletingPathExtension().lastPathComponent
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return fallback }
+        return FrontMatter.title(in: text) ?? fallback
+    }
+
+    /// One-time-per-scan repair: rows still titled with the raw `Meeting_…`
+    /// filename get their front-matter title, so meetings and imports read the
+    /// same way. Only touches filename-titled rows whose file still exists.
+    private func backfillTitles() {
+        let root = AppSettings.shared.notesFolder
+        var changed = false
+        var notes = doc.notes
+        for i in notes.indices where notes[i].title.hasPrefix("Meeting_") {
+            let url = root.appendingPathComponent(notes[i].filePath)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            let title = Self.displayTitle(for: url)
+            if title != notes[i].title { notes[i].title = title; changed = true }
+        }
+        if changed { mutate { $0.notes = notes } }
     }
 
     /// Full text of a note file (cached lightly by path+mtime would be nicer;

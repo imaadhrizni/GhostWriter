@@ -721,14 +721,14 @@ private struct NotesViewerView: View {
         }
     }
 
-    /// Catalog context for the PDF — the note's linked organisation / project /
-    /// opportunity (resolved as one chain so they stay consistent) and the
-    /// opportunity's POC criteria (which live on the opportunity, not the note).
+    /// Catalog context for the PDF — the note's linked organisation / project
+    /// (resolved as one chain so they stay consistent) and the project's POC
+    /// criteria (which live on the project, not the note).
     private func pdfCatalogContext()
-        -> (org: String?, opportunity: String?, project: String?, poc: [MarkdownPDF.POCItem]) {
-        guard let fileURL else { return (nil, nil, nil, []) }
+        -> (org: String?, project: String?, poc: [MarkdownPDF.POCItem]) {
+        guard let fileURL else { return (nil, nil, []) }
         let c = CatalogStore.shared.linkChain(forFileURL: fileURL)
-        return (c.org, c.opportunity, c.project,
+        return (c.org, c.project,
                 c.criteria.map { .init(text: $0.text, status: $0.status.label) })
     }
 
@@ -737,7 +737,7 @@ private struct NotesViewerView: View {
         let base = fileURL?.deletingPathExtension().lastPathComponent ?? "Note"
         let ctx = pdfCatalogContext()
         guard let pdf = MarkdownPDF.data(from: text, title: base,
-                                         org: ctx.org, opportunity: ctx.opportunity,
+                                         org: ctx.org,
                                          project: ctx.project, poc: ctx.poc) else {
             status = "Export failed: could not render PDF"; return
         }

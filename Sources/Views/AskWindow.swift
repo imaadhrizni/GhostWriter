@@ -55,7 +55,7 @@ private enum AskScope: Equatable {
     case all
     case meetings(Set<URL>)
     case org(String)
-    case opportunity(String)
+    case project(String)
 }
 
 private struct AskView: View {
@@ -122,10 +122,10 @@ private struct AskView: View {
                 Button("All meetings") { scope = .all }
                 Button("Choose meetings…") { showMeetingPicker = true }
                 let store = CatalogStore.shared
-                if !store.doc.opportunities.isEmpty {
-                    Menu("By opportunity") {
-                        ForEach(store.doc.opportunities.sortedByName) { opp in
-                            Button(opp.name) { scope = .opportunity(opp.id) }
+                if !store.doc.projects.isEmpty {
+                    Menu("By project") {
+                        ForEach(store.projectsSorted) { proj in
+                            Button(store.projectPath(of: proj.id)) { scope = .project(proj.id) }
                         }
                     }
                 }
@@ -151,7 +151,7 @@ private struct AskView: View {
         case .all: return "All meetings"
         case .meetings(let urls): return urls.isEmpty ? "All meetings" : "\(urls.count) meeting\(urls.count == 1 ? "" : "s")"
         case .org(let id): return CatalogStore.shared.doc.orgs.first { $0.id == id }?.name ?? "Organisation"
-        case .opportunity(let id): return CatalogStore.shared.opportunity(id)?.name ?? "Opportunity"
+        case .project(let id): return CatalogStore.shared.project(id)?.name ?? "Project"
         }
     }
 
@@ -193,9 +193,8 @@ private struct AskView: View {
         case .org(let id):
             return store.notes(forOrg: id, includingDescendants: true)
                 .map { NotesLibrary.MeetingFile(url: store.url(of: $0)) }
-        case .opportunity(let id):
-            guard let opp = store.opportunity(id) else { return [] }
-            return store.notes(forOpportunity: opp)
+        case .project(let id):
+            return store.notes(forProject: id)
                 .map { NotesLibrary.MeetingFile(url: store.url(of: $0)) }
         }
     }

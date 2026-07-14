@@ -100,6 +100,7 @@ final class AppSettings: ObservableObject {
         static let saveDictations         = "dictation.saveToFiles"
         static let dictationsFolderPath   = "dictation.folderPath"
         static let dictationOrganization  = "dictation.organization"
+        static let audioImportMaxMB       = "import.maxMB"
         static let priceAudioPerHour      = "cost.audioPerHour"
         static let priceInputPerMTok      = "cost.inputPerMTok"
         static let priceOutputPerMTok     = "cost.outputPerMTok"
@@ -141,7 +142,7 @@ final class AppSettings: ObservableObject {
                           localOnlyMode, redactionEnabled, redactEmails, redactPhones, redactNumbers,
                           autoTagging, errorNotifications, uiDateFormat,
                           browserTabDetection, domainStyleRules,
-                          saveDictations, dictationsFolderPath, dictationOrganization,
+                          saveDictations, dictationsFolderPath, dictationOrganization, audioImportMaxMB,
                           priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok,
                           monthlyBudgetUSD,
                           webhookEnabled, webhookURL, scriptHookEnabled, scriptHookPath,
@@ -156,7 +157,7 @@ final class AppSettings: ObservableObject {
         static let polishingModel                  = "meta-llama/llama-4-scout-17b-16e-instruct"  // 500K TPD / 30K TPM — avoids the 70B daily cap
         static let fastModel                       = "llama-3.1-8b-instant"
         static let pttKeyCode: Int                 = 61     // Right Option
-        static let pttActivation                   = "hold" // hold | tapLock | toggle
+        static let pttActivation                   = "toggle" // hold | tapLock | toggle
         static let preferBuiltInMic                = false  // use the system default input
         static let meetingMicThreshold: Float      = -40.0
         static let systemAudioThreshold: Float     = -50.0
@@ -194,6 +195,7 @@ final class AppSettings: ObservableObject {
         static let retryIntervalSeconds: Double    = 20.0
         static let notesOrganization               = NotesOrganization.byDay
         static let dictationOrganization           = NotesOrganization.byMonth
+        static let audioImportMaxMB: Int           = 50
         static let meetingAutoDetect               = true
         static let voiceCommandsEnabled            = true
         static let voiceCommandRules = """
@@ -516,6 +518,13 @@ final class AppSettings: ObservableObject {
             return mode
         }
         set { set(newValue.rawValue, Key.dictationOrganization) }
+    }
+
+    /// Largest audio file (MB) accepted by "Transcribe Audio File". Guards
+    /// against oversized uploads; Groq caps request size regardless.
+    var audioImportMaxMB: Int {
+        get { let v = int(Key.audioImportMaxMB, Default.audioImportMaxMB); return v > 0 ? v : Default.audioImportMaxMB }
+        set { set(max(1, newValue), Key.audioImportMaxMB) }
     }
 
     /// Apply the folder-organization setting to any base folder for a given

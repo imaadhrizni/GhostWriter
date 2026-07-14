@@ -112,7 +112,7 @@ enum FollowUpPacket {
                 + criteria.map { "- \(glyph($0.status)) \($0.text) — _\($0.status)_" }.joined(separator: "\n")
                 + "\n\n"
             let list = criteria.map { "- [\($0.status)] \($0.text)" }.joined(separator: "\n")
-            guidance += "\n\nThe opportunity already has these POC success criteria and statuses:\n\(list)\n"
+            guidance += "\n\nThe project already has these POC success criteria and statuses:\n\(list)\n"
                 + "Reflect them in the plan: keep the passed ones, and focus Timeline & Next Steps on advancing the pending or failed ones."
         }
         return await section(title: "🧪 POC Plan") {
@@ -140,23 +140,23 @@ enum FollowUpPacket {
     // MARK: - Header & Catalog
 
     private static func header(base: String,
-                               ctx: (org: String?, opportunity: String?, criteria: [(text: String, status: String)]),
+                               ctx: (org: String?, project: String?, criteria: [(text: String, status: String)]),
                                text: String) -> String {
         var meta: [String] = []
-        if let opp = ctx.opportunity { meta.append("**Opportunity:** \(opp)") }
+        if let proj = ctx.project { meta.append("**Project:** \(proj)") }
         if let org = ctx.org { meta.append("**Account:** \(org)") }
         if let title = FrontMatter.title(in: text) { meta.append("**Meeting:** \(title)") }
         let sub = meta.isEmpty ? "" : "\n\n" + meta.joined(separator: " · ")
         return "# Follow-Up Packet\n\n_Generated from \(base)._" + sub
     }
 
-    /// Resolve the note's linked opportunity + account and its POC criteria,
+    /// Resolve the note's linked project + account and its POC criteria,
     /// via the shared `CatalogStore.linkChain` resolver.
     @MainActor
     private static func catalogContext(for fileURL: URL)
-        -> (org: String?, opportunity: String?, criteria: [(text: String, status: String)]) {
+        -> (org: String?, project: String?, criteria: [(text: String, status: String)]) {
         let c = CatalogStore.shared.linkChain(forFileURL: fileURL)
-        return (c.org, c.opportunity, c.criteria.map { ($0.text, $0.status.label) })
+        return (c.org, c.project, c.criteria.map { ($0.text, $0.status.label) })
     }
 
     /// A checklist glyph for a POC status label.

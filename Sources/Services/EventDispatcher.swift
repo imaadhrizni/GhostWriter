@@ -32,7 +32,6 @@ enum EventDispatcher {
         var durationSeconds: Int
         var meetingType: String?
         var organisation: String?
-        var opportunity: String?
         var project: String?
         var tags: [String]
     }
@@ -65,7 +64,6 @@ enum EventDispatcher {
         var out = p
         out.title = Redactor.redact(p.title)
         out.organisation = p.organisation.map(Redactor.redact)
-        out.opportunity = p.opportunity.map(Redactor.redact)
         out.project = p.project.map(Redactor.redact)
         out.tags = p.tags.map(Redactor.redact)
         return out

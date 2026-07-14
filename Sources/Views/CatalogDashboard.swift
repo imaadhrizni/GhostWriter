@@ -64,10 +64,10 @@ struct DashboardMetrics {
             }
             guard let text = try? String(contentsOf: f.url, encoding: .utf8) else { continue }
 
-            // Recorded time — front-matter `duration: <n>s`.
-            if let dur = FrontMatter.field("duration", in: text) {
-                m.recordedSeconds += Int(dur.trimmingCharacters(in: CharacterSet(charactersIn: "s "))) ?? 0
-            }
+            // Recorded time. Live meetings write it as a body footer
+            // (*Meeting duration: M:SS*); imports write front-matter `gw_duration: <n>`;
+            // legacy/dictation notes use `duration: <n>s`. Count whichever is present.
+            m.recordedSeconds += Self.recordedSeconds(in: text)
 
             // Meeting-type mix (front-matter id → friendly name).
             if let typeID = FrontMatter.field("gw_meeting_type", in: text) {
@@ -129,6 +129,27 @@ struct DashboardMetrics {
         }
     }
 
+    /// Seconds recorded for a note, from whichever marker the writer used:
+    /// front-matter `gw_duration: <n>` / `duration: <n>s`, or the body footer
+    /// `*Meeting duration: M:SS*` that live meetings emit.
+    static func recordedSeconds(in text: String) -> Int {
+        if let dur = FrontMatter.field("gw_duration", in: text),
+           let secs = Int(dur.trimmingCharacters(in: CharacterSet(charactersIn: "s "))) {
+            return secs
+        }
+        if let dur = FrontMatter.field("duration", in: text),
+           let secs = Int(dur.trimmingCharacters(in: CharacterSet(charactersIn: "s "))) {
+            return secs
+        }
+        // Footer: "*Meeting duration: 12:34*"
+        if let r = text.range(of: #"Meeting duration:\s*(\d+):(\d{2})"#, options: .regularExpression) {
+            let comps = text[r].components(separatedBy: ":")
+            if comps.count >= 3, let m = Int(comps[1].trimmingCharacters(in: .whitespaces)),
+               let s = Int(comps[2].prefix(2)) { return m * 60 + s }
+        }
+        return 0
+    }
+
     /// Extract the bullet questions under a "## Unanswered Questions" heading.
     private static func unansweredQuestions(in text: String) -> [String] {
         guard let range = text.range(of: "## Unanswered Questions") else { return [] }
@@ -158,11 +179,11 @@ private struct KPIStrip: View {
     var scannedURLs: Set<URL> = []
     var filtered: Bool = false
 
-    /// Opportunities in scope — those with a linked note in the filtered set.
-    private var opps: [CatalogOpportunity] {
-        guard filtered else { return store.doc.opportunities }
-        return store.doc.opportunities.filter { o in
-            store.notes(forOpportunity: o).contains { scannedURLs.contains(store.url(of: $0)) }
+    /// Projects in scope — those with a linked note in the filtered set.
+    private var opps: [CatalogProject] {
+        guard filtered else { return store.doc.projects }
+        return store.doc.projects.filter { o in
+            store.notes(forProject: o.id).contains { scannedURLs.contains(store.url(of: $0)) }
         }
     }
     /// Distinct organisations touched by a filtered note.
@@ -202,7 +223,7 @@ private struct KPIStrip: View {
                 KPITile(icon: "building.2.fill", tint: .blue,
                         value: "\(orgCount)", label: "Organisations")
                 KPITile(icon: "chart.line.uptrend.xyaxis", tint: .green,
-                        value: "\(openOpps)", label: "Open opportunities")
+                        value: "\(openOpps)", label: "Open projects")
                 KPITile(icon: "flask.fill", tint: .cyan,
                         value: "\(activePOCs)", label: "Active POCs")
                 if activePOCs > 0 {
@@ -348,16 +369,16 @@ struct DashboardView: View {
     // customer's POCs; when a time range is set, limited to POCs with meeting
     // activity in that window (criteria themselves aren't time-stamped).
     private var pocCard: some View {
-        var opps = store.doc.opportunities.filter { !$0.pocCriteria.isEmpty }
+        var opps = store.doc.projects.filter { !$0.pocCriteria.isEmpty }
         if !orgFilter.isEmpty {
-            let allowed = Set(store.opportunities(forOrg: orgFilter).map { $0.id })
-            opps = opps.filter { allowed.contains($0.id) }
+            let subtree = store.orgSubtree(of: orgFilter)
+            opps = opps.filter { store.org(forProject: $0.id).map { subtree.contains($0.id) } ?? false }
         }
         // Range: keep POCs touched by a meeting in the filtered set ("All time" = no
         // limit). Skip while the scan is in flight so the hero doesn't flash empty.
         if range.days != nil && !loading {
             opps = opps.filter { o in
-                store.notes(forOpportunity: o).contains { metrics.scannedURLs.contains(store.url(of: $0)) }
+                store.notes(forProject: o.id).contains { metrics.scannedURLs.contains(store.url(of: $0)) }
             }
         }
         let all = opps.flatMap { $0.pocCriteria }
@@ -429,7 +450,7 @@ struct DashboardView: View {
         return DashCard(title: "Relationships", icon: "person.2.fill", tint: .teal) {
             if loading { DashLoading() }
             else if topOrgs.isEmpty && stale.isEmpty {
-                DashEmpty("No linked meetings in this range. Link meetings to organisations and opportunities to see relationship activity here.")
+                DashEmpty("No linked meetings in this range. Link meetings to organisations and projects to see relationship activity here.")
             } else {
                 if !topOrgs.isEmpty {
                     Text("Most-engaged accounts").font(.caption.bold()).foregroundColor(.secondary)

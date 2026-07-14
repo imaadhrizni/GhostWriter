@@ -7,7 +7,7 @@ import CoreText
 // small: we handle the subset the app actually emits — headings, bullet/checkbox
 // lists, blank-line spacing, and inline **bold** — rather than pulling in a full
 // Markdown engine. The document opens with a title block (title + date / org /
-// opportunity pulled from the YAML front-matter) and, when the note has two or
+// project pulled from the YAML front-matter) and, when the note has two or
 // more headings, an auto-generated Table of Contents with page numbers.
 //
 // All ink is set to explicit dark colors (never the dynamic textColor, which is
@@ -30,15 +30,15 @@ enum MarkdownPDF {
     private static var textWidth: CGFloat { pageSize.width - margin * 2 }
 
     /// One proof-of-concept criterion for the POC section (resolved from the
-    /// Catalog by the caller, since criteria live on the opportunity).
+    /// Catalog by the caller, since criteria live on the project).
     struct POCItem { let text: String; let status: String }
 
     /// Paginated PDF data for the given Markdown, or nil if a PDF context
-    /// couldn't be created. `org` / `opportunity` / `project` / `poc` come from
+    /// couldn't be created. `org` / `project` / `poc` come from
     /// the Catalog (resolved as one chain so they stay consistent) and override
     /// the note's own front-matter for those fields.
     static func data(from markdown: String, title: String,
-                     org: String? = nil, opportunity: String? = nil,
+                     org: String? = nil,
                      project: String? = nil, poc: [POCItem] = []) -> Data? {
         let body = FrontMatter.body(markdown)
         // Prefer the note's own front-matter title (the AI-generated one) over
@@ -50,7 +50,7 @@ enum MarkdownPDF {
         // Fixed prefix (never affected by TOC paging): title + Properties box.
         let prefix = NSMutableAttributedString()
         prefix.append(buildHeader(title: displayTitle))
-        prefix.append(buildProperties(markdown, org: org, opportunity: opportunity, project: project))
+        prefix.append(buildProperties(markdown, org: org, project: project))
 
         // Content = body, then the POC section as a trailing section so it reads
         // last and earns its own Table-of-Contents entry.
@@ -211,10 +211,10 @@ enum MarkdownPDF {
     // MARK: - Properties box
 
     /// A label/value list of the note's metadata — meeting type, date, the
-    /// linked organisation / opportunity / project, attendees, and tags — so the
+    /// linked organisation / project, attendees, and tags — so the
     /// PDF carries the same context the in-app viewer shows in its Properties box.
     private static func buildProperties(_ markdown: String,
-                                        org: String?, opportunity: String?, project: String?) -> NSAttributedString {
+                                        org: String?, project: String?) -> NSAttributedString {
         func fm(_ key: String) -> String? {
             FrontMatter.field(key, in: markdown)?
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
@@ -228,7 +228,6 @@ enum MarkdownPDF {
         }
         // Prefer the Catalog-resolved chain; fall back to the note's front-matter.
         if let v = org?.nilIfEmpty ?? fm("gw_org") { rows.append(("Organisation", v)) }
-        if let v = opportunity?.nilIfEmpty ?? fm("gw_opportunity") { rows.append(("Opportunity", v)) }
         if let p = project?.nilIfEmpty { rows.append(("Project", p)) }
         for key in ["attendees", "people"] {
             let people = listField(key, in: markdown)

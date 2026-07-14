@@ -50,6 +50,14 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
              sound: .default)
     }
 
+    /// "Audio imported" — clicking opens the newly-created note.
+    func notifyAudioImported(count: Int, fileURL: URL) {
+        post(title: count == 1 ? "Audio imported" : "\(count) audio files imported",
+             body: "Transcribed and filed as a meeting — click to open.",
+             fileURL: fileURL,
+             sound: .default)
+    }
+
     /// "Quick note saved" — clicking opens today's QuickNotes file.
     /// Silent by design: quick notes are frequent and low-stakes.
     func notifyQuickNoteSaved(preview: String, fileURL: URL) {

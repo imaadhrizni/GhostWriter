@@ -238,6 +238,69 @@ final class MeetingNotesWriter {
         return labels
     }
 
+    /// Write a completed meeting note from an imported audio file's transcript.
+    /// Dates and duration come from the source file's own metadata so the note
+    /// is filed under when it was *recorded*, not when it was imported. Returns
+    /// the file URL (nil on write failure). The caller links it into the Catalog.
+    static func importAudioNote(transcript: String, recordedAt: Date,
+                                sourceFilename: String, duration: TimeInterval?,
+                                title: String? = nil) -> URL? {
+        let noteTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? sourceFilename
+        let folder = AppSettings.shared.meetingDestinationFolder(for: recordedAt)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            Log.meeting.error("❌ Could not create notes folder for import: \(error.localizedDescription)")
+            return nil
+        }
+
+        let stamp = fileNameFormatter.string(from: recordedAt)
+        let fileURL = folder.appendingPathComponent("Meeting_\(stamp).md")
+
+        let displayFormatter = DateFormatter()
+        displayFormatter.dateStyle = .long
+        displayFormatter.timeStyle = .short
+        let displayDate = displayFormatter.string(from: recordedAt)
+
+        let secs = duration.map { Int($0.rounded()) }
+        let durationText = secs.map { String(format: "%d:%02d", $0 / 60, $0 % 60) }
+
+        func yaml(_ s: String) -> String {
+            "\"\(s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
+        }
+
+        var content = ""
+        if AppSettings.shared.frontMatterEnabled {
+            let iso = ISO8601DateFormatter().string(from: recordedAt)
+            var fm = ["---",
+                      "title: \(yaml(noteTitle))",
+                      "date: \(iso)",
+                      "gw_meeting_type: general",
+                      "gw_source: import",
+                      "gw_source_file: \(yaml(sourceFilename))"]
+            if let secs { fm.append("gw_duration: \(secs)") }
+            fm.append("tags: [meeting, ghostwriter, imported]")
+            fm.append("---")
+            fm.append("")
+            content += fm.joined(separator: "\n") + "\n"
+        }
+        content += "# Meeting Notes\n**\(displayDate)**\n\n"
+        let sourceLine = durationText.map { "*Imported from `\(sourceFilename)` · \($0)*" }
+            ?? "*Imported from `\(sourceFilename)`*"
+        content += "\(sourceLine)\n\n---\n\n"
+        content += transcript.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
+
+        do {
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            Log.meeting.error("❌ Could not write imported note: \(error.localizedDescription)")
+            return nil
+        }
+        Self.invalidateFileCache()
+        Log.meeting.info("📝 Imported audio note → \(fileURL.path)")
+        return fileURL
+    }
+
     // MARK: - Session Lifecycle
 
     /// Call when meeting mode starts. Creates the notes file and writes the header.

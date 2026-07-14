@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - App Delegate
 
@@ -240,6 +241,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictationsWindowController?.bringToFront()
     }
 
+    // MARK: - Audio File Import
+
+    private var importWindowController: ImportAudioWindowController?
+
+    /// Menu action / drag-drop entry: open the Import Audio window, optionally
+    /// pre-loading dropped files. Transcription, note-writing and Catalog
+    /// linking all run inside the window via AudioImportService.
+    @objc private func importAudioFile() { showAudioImport() }
+
+    func showAudioImport(urls: [URL] = []) {
+        MainActor.assumeIsolated {
+            if importWindowController == nil {
+                importWindowController = ImportAudioWindowController()
+            }
+            if !urls.isEmpty { AudioImportService.shared.add(urls) }
+            importWindowController?.bringToFront()
+        }
+    }
+
     private var catalogWindowController: CatalogWindowController?
 
     /// Open the Catalog — organisations, people, projects, tags over the notes.
@@ -431,6 +451,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictationsItem.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)
         dictationsItem.target = self
         menu.addItem(dictationsItem)
+
+        let importItem = NSMenuItem(title: "Transcribe Audio File…", action: #selector(importAudioFile), keyEquivalent: "")
+        importItem.image = NSImage(systemSymbolName: "waveform.badge.plus", accessibilityDescription: nil)
+        importItem.target = self
+        menu.addItem(importItem)
 
         // AI-over-notes actions, set apart from the raw browse/archive items above.
         menu.addItem(NSMenuItem.separator())
@@ -833,7 +858,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task { [weak self] in
             guard let self else { return }
 
-            // Link the note into the Catalog under the opportunity/org chosen at
+            // Link the note into the Catalog under the project/org chosen at
             // start (if any), creating its catalog row from the file path.
             await MainActor.run {
                 guard let target = catalogTarget else { return }
@@ -843,7 +868,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let note = store.note(forRelativePath: rel,
                                       title: fileURL.deletingPathExtension().lastPathComponent,
                                       date: start)
-                if target.kind == "opp" { store.setOpportunity(target.id, on: note.id, true) }
+                if target.kind == "project" { store.setProject(target.id, on: note.id, true) }
                 else if target.kind == "org" { store.setOrg(target.id, on: note.id, true) }
 
                 // Mirror the link into the note's front-matter so the file
@@ -851,11 +876,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // survives independently of the Catalog database).
                 if AppSettings.shared.frontMatterEnabled {
                     var fields: [(key: String, value: String)] = []
-                    if target.kind == "opp", let opp = store.opportunity(target.id) {
-                        fields.append(("opportunity", opp.name))
-                        // Org sits above the opportunity via its project.
-                        if let pid = opp.projectID, let oid = store.project(pid)?.orgID,
-                           let org = store.org(oid) {
+                    if target.kind == "project", let proj = store.project(target.id) {
+                        fields.append(("project", proj.name))
+                        // Org sits above the project (walking the hierarchy).
+                        if let org = store.org(forProject: proj.id) {
                             fields.append(("org", org.name))
                         }
                     } else if target.kind == "org", let org = store.org(target.id) {
@@ -929,6 +953,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if self.settings.frontMatterEnabled {
                     if let title = try? await self.textPolisher.meetingTitle(transcript: transcript) {
                         MeetingNotesWriter.setFrontMatterTitle(title, to: fileURL)
+                        // Keep the Catalog row's display title in step with the note.
+                        await MainActor.run {
+                            let root = AppSettings.shared.notesFolder.path + "/"
+                            CatalogStore.shared.renameNote(relativePath: fileURL.path.replacingOccurrences(of: root, with: ""), to: title)
+                        }
                     }
                 }
 
@@ -1046,21 +1075,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             AppSettings.shared.allTemplates.first { $0.id == id }?.displayName
         } ?? typeID
 
-        // Resolve the org / opportunity / project chain from the Catalog link.
-        var org: String?, opportunity: String?, project: String?
+        // Resolve the org / project chain from the Catalog link.
+        var org: String?, project: String?
         let store = CatalogStore.shared
         let root = s.notesFolder.path + "/"
         let rel = fileURL.path.replacingOccurrences(of: root, with: "")
         if let note = store.doc.notes.first(where: { $0.filePath == rel }) {
-            if let oppID = note.opportunityIDs.first, let opp = store.opportunity(oppID) {
-                opportunity = opp.name
-                if let pid = opp.projectID, let proj = store.project(pid) {
-                    project = proj.name
-                    org = proj.orgID.flatMap { store.org($0)?.name }
-                }
-            } else if let projID = note.projectIDs.first, let proj = store.project(projID) {
+            if let projID = note.projectIDs.first, let proj = store.project(projID) {
                 project = proj.name
-                org = proj.orgID.flatMap { store.org($0)?.name }
+                org = store.org(forProject: proj.id)?.name
             } else if let orgID = note.orgIDs.first {
                 org = store.org(orgID)?.name
             }
@@ -1073,7 +1096,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             durationSeconds: durationSeconds,
             meetingType: meetingType,
             organisation: org,
-            opportunity: opportunity,
             project: project,
             tags: tags)
         EventDispatcher.dispatch(payload)
@@ -1111,7 +1133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Guard against low-confidence `customer` guesses from entity extraction.
-    /// Accepts a name that matches a known Catalog org/opportunity (or alias);
+    /// Accepts a name that matches a known Catalog org/project (or alias);
     /// otherwise drops a lone short token or an all-caps acronym — almost always
     /// transcript noise (e.g. a mis-heard "Wwe") rather than a real customer.
     /// Multi-word names pass through so genuinely new customers aren't lost.
@@ -1120,7 +1142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let name = raw?.trimmingCharacters(in: .whitespaces), !name.isEmpty else { return nil }
         let store = CatalogStore.shared
         let known = store.doc.orgs.flatMap { [$0.name] + $0.aliases }
-            + store.doc.opportunities.map(\.name)
+            + store.doc.projects.map(\.name)
         if known.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) { return name }
         let tokens = name.split(whereSeparator: { $0 == " " })
         if tokens.count == 1 {
@@ -1472,7 +1494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: declineTitle)
         alert.alertStyle = .informational
 
-        // Inline controls: a catalog link (opportunity/org to file the note
+        // Inline controls: a catalog link (project/org to file the note
         // under), the template (shapes the summary), an optional agenda, and the
         // per-meeting live-brief switch.
         let accessory = Self.makeStartAccessory(selectedID: settings.selectedTemplateID,
@@ -1502,20 +1524,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Build the start-dialog catalog picker options: opportunities, orgs, and
-    /// two quick-add entries. Runs on the main actor (CatalogStore is isolated).
+    /// Build the start-dialog catalog picker options: projects, orgs, and two
+    /// quick-add entries. Runs on the main actor (CatalogStore is isolated).
     private static func catalogLinkOptions() -> [(title: String, repr: String)] {
         MainActor.assumeIsolated {
             let store = CatalogStore.shared
             var opts: [(String, String)] = [("No link", "")]
-            let opps = store.doc.opportunities.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            let projs = store.projectsSorted
             let orgs = store.orgsSorted
-            if !opps.isEmpty { opts.append(("__sep__", "__sep__")) }
-            for o in opps { opts.append(("◆ \(o.name)", "opp:\(o.id)")) }
+            if !projs.isEmpty { opts.append(("__sep__", "__sep__")) }
+            for p in projs { opts.append(("◆ \(store.projectPath(of: p.id))", "project:\(p.id)")) }
             if !orgs.isEmpty { opts.append(("__sep__", "__sep__")) }
             for o in orgs { opts.append(("🏢 \(store.orgPath(of: o.id))", "org:\(o.id)")) }
             opts.append(("__sep__", "__sep__"))
-            opts.append(("➕ New Opportunity…", "new:opp"))
+            opts.append(("➕ New Project…", "new:project"))
             opts.append(("➕ New Organisation…", "new:org"))
             return opts.map { (title: $0.0, repr: $0.1) }
         }
@@ -1525,9 +1547,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// quick-add entries by prompting for a name and creating the entity.
     private func resolveCatalogTarget(_ repr: String?) -> (kind: String, id: String)? {
         guard let repr, !repr.isEmpty else { return nil }
-        // A new opportunity gets the full Quick Add (org → project → opp → …).
-        if repr == "new:opp" {
-            return runQuickAddForOpportunity().map { ("opp", $0) }
+        // A new project gets the full Quick Add (org → project → …).
+        if repr == "new:project" {
+            return runQuickAddForProject().map { ("project", $0) }
         }
         if repr == "new:org" {
             guard let name = promptNewCatalogName("New Organisation") else { return nil }
@@ -1539,7 +1561,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Proper-noun glossary for the meeting in progress — the linked entity
-    /// (opportunity / project / org), the people on its recent notes, and the
+    /// (project / org), the people on its recent notes, and the
     /// voice identities taught so far — capped and formatted for the Whisper
     /// prompt. CatalogStore is main-actor isolated, so this is too.
     @MainActor
@@ -1549,11 +1571,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var scope: [CatalogNote] = []
 
         if let target {
-            if target.kind == "opp", let opp = store.opportunity(target.id) {
-                terms.append(opp.name)
-                if let proj = store.project(opp.projectID) { terms.append(proj.name) }
-                if let org = store.org(forOpportunity: opp) { terms.append(org.name) }
-                scope = store.notes(forOpportunity: opp)
+            if target.kind == "project", let proj = store.project(target.id) {
+                terms.append(proj.name)
+                if let org = store.org(forProject: proj.id) { terms.append(org.name) }
+                scope = store.notes(forProject: proj.id)
             } else if target.kind == "org", let org = store.org(target.id) {
                 terms.append(org.name)
                 scope = store.notes(forOrg: org.id, includingDescendants: true)
@@ -1579,7 +1600,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Meeting prep card: a quick, non-editable recap of recent context for the
-    /// org/opportunity chosen in the Start dialog, shown just before recording.
+    /// org/project chosen in the Start dialog, shown just before recording.
     /// Reuses the catalog's relationship timeline (recent notes). Skipped when
     /// there's no prior history to show.
     private func showMeetingPrepCard(for target: (kind: String, id: String)) {
@@ -1587,8 +1608,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let store = CatalogStore.shared
             let name: String
             let notes: [CatalogNote]
-            if target.kind == "opp", let o = store.opportunity(target.id) {
-                name = o.name; notes = store.notes(forOpportunity: o)
+            if target.kind == "project", let o = store.project(target.id) {
+                name = o.name; notes = store.notes(forProject: o.id)
             } else if target.kind == "org", let o = store.org(target.id) {
                 name = store.orgPath(of: o.id); notes = store.notes(forOrg: o.id, includingDescendants: true)
             } else { return nil }
@@ -1600,13 +1621,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MeetingPrepWindowController.present(entityName: prep.name, notes: prep.notes)
     }
 
-    /// Present the Quick Add sheet modally and return the created opportunity's
-    /// id (nil if cancelled or no opportunity was named).
-    private func runQuickAddForOpportunity() -> String? {
+    /// Present the Quick Add sheet modally and return the created project's id
+    /// (nil if cancelled or no project was named).
+    private func runQuickAddForProject() -> String? {
         MainActor.assumeIsolated {
             var result: String?
-            let controller = NSHostingController(rootView: QuickAddSheet(store: CatalogStore.shared) { oppID in
-                result = oppID
+            let controller = NSHostingController(rootView: QuickAddSheet(store: CatalogStore.shared) { projID in
+                result = projID
                 NSApp.stopModal()
             })
             let window = NSWindow(contentViewController: controller)
@@ -1650,7 +1671,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var allOptions: [(title: String, repr: String)] = []
 
         /// Repopulate the link popup, keeping "No link" and the quick-add rows
-        /// while narrowing the org/opportunity rows to those matching `filter`.
+        /// while narrowing the org/project rows to those matching `filter`.
         func rebuildCatalogMenu(filter: String) {
             let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
             let prevRepr = catalog.selectedItem?.representedObject as? String
@@ -1685,7 +1706,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         @objc func searchChanged() { rebuildCatalogMenu(filter: search.stringValue) }
 
         /// The prep card only makes sense with a catalog link — enable the
-        /// switch (and un-dim its label) only when an org/opportunity is chosen.
+        /// switch (and un-dim its label) only when an org/project is chosen.
         @objc func catalogChanged() {
             let repr = catalog.selectedItem?.representedObject as? String ?? ""
             let linked = !repr.isEmpty && repr != "__sep__"
@@ -1695,7 +1716,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// The catalog entity to link the resulting note to (chosen at start).
-    /// kind is "opp" or "org".
+    /// kind is "project" or "org".
     private var meetingCatalogTarget: (kind: String, id: String)?
 
     /// Build the start-dialog accessory. An accessory view without explicit
@@ -1731,12 +1752,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             top += capGap
         }
 
-        // Catalog link (top) — file this meeting's note under an opportunity or
+        // Catalog link (top) — file this meeting's note under a project or
         // org. A search field narrows the list as the Catalog grows.
         caption("Link to (optional)")
         let search = container.search
         search.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
-        search.placeholderString = "Search organisations & opportunities…"
+        search.placeholderString = "Search organisations & projects…"
         search.sendsWholeSearchString = false
         search.target = container
         search.action = #selector(StartAccessory.searchChanged)
@@ -1839,7 +1860,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         prepLabel.frame = NSRect(x: 0, y: prepRowY + (rowH - 16) / 2,
                                  width: width - prep.frame.width - 8, height: 16)
         prepLabel.font = .systemFont(ofSize: 12)
-        let prepTip = "When linked to an org/opportunity, pops a panel of its recent notes as the meeting starts. Applies to this meeting only."
+        let prepTip = "When linked to an org/project, pops a panel of its recent notes as the meeting starts. Applies to this meeting only."
         prep.toolTip = prepTip
         prepLabel.toolTip = prepTip
         container.addSubview(prepLabel)

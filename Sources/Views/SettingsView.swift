@@ -163,6 +163,7 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Dictation hotkey", section: .dictation, keywords: ["shortcut", "push to talk", "trigger", "default", "reset"]),
         .init(label: "Activation (hold / tap-to-lock / toggle)", section: .dictation, keywords: ["hands-free", "hands free", "toggle", "tap to lock", "latch", "hold", "long dictation", "push to talk", "ptt"]),
         .init(label: "Skip silent recordings", section: .dictation, keywords: ["silence", "silent", "vad", "voice activity", "threshold", "dbfs", "noise gate", "skip", "save api", "hallucination"]),
+        .init(label: "Audio import (max size)", section: .dictation, keywords: ["import", "transcribe file", "audio file", "wav", "mp3", "ogg", "opus", "m4a", "drag drop", "voice note", "chat"]),
         .init(label: "Voice commands", section: .styles, keywords: ["dictation commands", "new paragraph", "scratch that", "phrase", "effect", "rules"]),
         .init(label: "Per-app style overrides", section: .styles, keywords: ["app", "bundle id", "override", "force style", "slack", "vscode", "per app"]),
         // Writing styles
@@ -173,7 +174,7 @@ fileprivate enum SettingsSearchIndex {
         // Recording
         .init(label: "Meeting audio source", section: .meeting, keywords: ["microphone", "system audio", "input device", "default", "reset"]),
         .init(label: "Live brief", section: .meeting, keywords: ["real-time", "assistant", "coaching", "agenda coverage", "refresh interval", "during the meeting"]),
-        .init(label: "Prep card on start", section: .meeting, keywords: ["prep", "recent notes", "linked", "org", "opportunity", "during the meeting"]),
+        .init(label: "Prep card on start", section: .meeting, keywords: ["prep", "recent notes", "linked", "org", "project", "during the meeting"]),
         .init(label: "Meeting templates", section: .meetingTemplates, keywords: ["agenda", "type", "prep", "add", "delete", "default", "sections", "follow-up"]),
         .init(label: "Import / export templates", section: .meetingTemplates, keywords: ["backup", "share", "bundle", "json", "house style", "merge", "replace"]),
         .init(label: "Per-app recording overrides", section: .meeting, keywords: ["app", "override", "delete", "remove", "default", "unrecognized"]),
@@ -885,6 +886,14 @@ private struct DictationPane: View {
                         defaultValue: AppSettings.Default.dictationSilenceThreshold,
                         help: "Audio quieter than this the whole time counts as silence. Lower = uploads quieter speech; higher = skips more aggressively.")
                 }
+            }
+
+            SettingsGroup("Audio Import") {
+                Stepper(value: $settings.audioImportMaxMB, in: 5...200, step: 5) {
+                    Text("Max import size: \(settings.audioImportMaxMB) MB")
+                }
+                Text("“Transcribe Audio File…” (menu bar) and dropping an audio file onto the Catalog transcribe it into a meeting note, filed under the file's own date. Larger files are rejected before upload. Formats: wav, mp3, m4a, ogg/opus, flac, webm.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Accuracy") {
@@ -1613,7 +1622,7 @@ private struct MeetingPane: View {
                 }
                 Divider()
                 Toggle("Show prep card on start", isOn: $settings.meetingPrepCard)
-                Text("When a meeting is linked to an organisation or opportunity, a floating panel of that entity's recent notes appears as the meeting starts. This is the default for the per-meeting switch in the start dialog.")
+                Text("When a meeting is linked to an organisation or project, a floating panel of that entity's recent notes appears as the meeting starts. This is the default for the per-meeting switch in the start dialog.")
                     .font(.caption).foregroundColor(.secondary)
             }
 
@@ -2058,7 +2067,7 @@ private struct PacketSectionsEditor: View {
     /// A one-line hint for the sections that get bespoke grounding.
     private func groundingNote(for id: String) -> String? {
         switch id {
-        case "pocPlan":        return "Grounded in the linked opportunity's success criteria."
+        case "pocPlan":        return "Grounded in the linked project's success criteria."
         case "actionItemList": return "Reuses the note's own checklist when it has one."
         case "followUpEmail":  return "Shaped by the meeting type."
         default:               return nil
@@ -2289,7 +2298,7 @@ private struct IntegrationsPane: View {
             }
 
             SettingsGroup("When a Meeting Finishes") {
-                Text("Fire an event the moment a meeting is saved, carrying the note's metadata (title, date, meeting type, linked org/opportunity, tags) — never the audio. Free-text fields are run through your redaction settings first. Use these to post into Notion, Slack, Zapier, or your own scripts.")
+                Text("Fire an event the moment a meeting is saved, carrying the note's metadata (title, date, meeting type, linked org/project, tags) — never the audio. Free-text fields are run through your redaction settings first. Use these to post into Notion, Slack, Zapier, or your own scripts.")
                     .font(.caption).foregroundColor(.secondary)
             }
 
@@ -2335,7 +2344,7 @@ private struct IntegrationsPane: View {
                   "durationSeconds": 1830,
                   "meetingType": "Solution Scoping",
                   "organisation": "Acme",
-                  "opportunity": "SSO Migration",
+                  "project": "SSO Migration",
                   "project": "Platform",
                   "tags": ["meeting", "sso"]
                 }
@@ -2432,7 +2441,7 @@ private struct DigestPane: View {
                     }
                     .labelsHidden().frame(width: 110)
                 }
-                Text("An open opportunity with no note in this window is surfaced under \u{201C}Quiet Relationships\u{201D} in the digest.")
+                Text("An open project with no note in this window is surfaced under \u{201C}Quiet Relationships\u{201D} in the digest.")
                     .font(.caption).foregroundColor(.secondary)
             }
             .disabled(!settings.digestEnabled)

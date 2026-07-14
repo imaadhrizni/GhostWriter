@@ -133,12 +133,10 @@ enum DigestService {
         guard let note = store.doc.notes.first(where: { $0.filePath == rel }) else {
             return Rel(key: "unfiled", title: "Unfiled", detail: nil, tint: "unfiled")
         }
-        if let oppID = note.opportunityIDs.first, let opp = store.opportunity(oppID) {
-            let org = store.org(forOpportunity: opp)
-            let proj = store.project(opp.projectID)
-            let detail = [proj?.name, opp.name].compactMap { $0 }.joined(separator: " › ")
-            return Rel(key: "opp:\(oppID)", title: org?.name ?? opp.name,
-                       detail: detail.isEmpty ? nil : detail, tint: "org")
+        if let projID = note.projectIDs.first, let proj = store.project(projID) {
+            let org = store.org(forProject: proj.id)
+            return Rel(key: "project:\(projID)", title: org?.name ?? proj.name,
+                       detail: proj.name, tint: "org")
         }
         if let orgID = note.orgIDs.first, let org = store.org(orgID) {
             return Rel(key: "org:\(orgID)", title: org.name, detail: "Direct", tint: "org")
@@ -197,10 +195,10 @@ enum DigestService {
         guard let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: now) else { return [] }
 
         var out: [StaleRelationship] = []
-        for opp in store.doc.opportunities where opp.stage == .open {
-            let notes = store.notes(forOpportunity: opp)
+        for proj in store.doc.projects where proj.stage == .open {
+            let notes = store.notes(forProject: proj.id)
             guard !notes.isEmpty, let latest = notes.compactMap(\.date).max(), latest < cutoff else { continue }
-            let name = store.org(forOpportunity: opp).map { "\($0.name) · \(opp.name)" } ?? opp.name
+            let name = store.org(forProject: proj.id).map { "\($0.name) · \(proj.name)" } ?? proj.name
             out.append(StaleRelationship(name: name, lastContact: DateDisplay.day(dayString(latest)), date: latest))
         }
         return out.sorted { $0.date > $1.date }

@@ -19,6 +19,7 @@ struct DashboardMetrics {
     var typeMix: [LabeledCount] = []
     var funnel: [LabeledCount] = []   // technical sales-cycle stages, in order
     var recordedSeconds = 0           // summed meeting duration in the filtered set
+    var scannedURLs: Set<URL> = []    // the filtered note set (for per-org counts)
     var openActions = 0
     var overdueActions = 0
     var unanswered: [OpenQuestion] = []
@@ -46,6 +47,7 @@ struct DashboardMetrics {
             return true
         }
         m.meetingsScanned = files.count
+        m.scannedURLs = Set(files.map { $0.url })
 
         var weekCounts: [Int: Int] = [:]   // weeks-ago (0..5) → count
         var typeCounts: [String: Int] = [:]
@@ -263,6 +265,20 @@ struct DashboardView: View {
     /// Changing any note-scan filter re-runs the scan (via `.task(id:)`).
     private var filterKey: String { "\(range.rawValue)|\(orgFilter)" }
 
+    /// The selected account plus all descendant orgs (empty when no account filter).
+    private var orgSubtreeIDs: Set<String> {
+        guard !orgFilter.isEmpty else { return [] }
+        var ids: Set<String> = [], queue = [orgFilter]
+        while let id = queue.popLast() {
+            guard ids.insert(id).inserted else { continue }
+            queue.append(contentsOf: store.childOrgs(of: id).map { $0.id })
+        }
+        return ids
+    }
+    private var orgSubtreeNames: [String] {
+        orgSubtreeIDs.compactMap { store.org($0)?.name }
+    }
+
     private var filterBar: some View {
         HStack(spacing: 12) {
             Picker("Range", selection: $range) {
@@ -344,16 +360,28 @@ struct DashboardView: View {
     }
 
     // MARK: Relationships — who you engage, and who's going quiet.
+    // Engagement counts honor the range + account filters (via the scanned set);
+    // "going quiet" is recency-based, scoped to the selected account subtree.
     private var relationshipsCard: some View {
+        // Restrict to the selected account subtree (or all orgs).
+        let orgsInScope = orgFilter.isEmpty
+            ? store.doc.orgs
+            : store.doc.orgs.filter { orgSubtreeIDs.contains($0.id) }
+        let scoped = Set(orgSubtreeNames)
         let stale = DigestService.staleRelationships(asOf: Date())
-        let topOrgs = store.doc.orgs
-            .map { (name: $0.name, count: store.notes(forOrg: $0.id, includingDescendants: true).count) }
+            .filter { orgFilter.isEmpty || scoped.contains($0.name) }
+        let topOrgs = orgsInScope
+            .map { org -> (name: String, count: Int) in
+                let urls = Set(store.notes(forOrg: org.id, includingDescendants: true).map { store.url(of: $0) })
+                return (org.name, urls.intersection(metrics.scannedURLs).count)
+            }
             .filter { $0.count > 0 }
             .sorted { $0.count > $1.count }
             .prefix(5)
         return DashCard(title: "Relationships", icon: "person.2.fill", tint: .teal) {
-            if topOrgs.isEmpty && stale.isEmpty {
-                DashEmpty("Link meetings to organisations and opportunities to see relationship activity here.")
+            if loading { DashLoading() }
+            else if topOrgs.isEmpty && stale.isEmpty {
+                DashEmpty("No linked meetings in this range. Link meetings to organisations and opportunities to see relationship activity here.")
             } else {
                 if !topOrgs.isEmpty {
                     Text("Most-engaged accounts").font(.caption.bold()).foregroundColor(.secondary)

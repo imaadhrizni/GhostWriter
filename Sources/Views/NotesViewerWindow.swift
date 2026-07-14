@@ -673,15 +673,19 @@ private struct NotesViewerView: View {
         }
     }
 
-    /// The enabled packet sections, as a human-readable phrase for the confirm.
+    /// The configured packet sections, as a human-readable phrase for the confirm.
     private var packetSectionsSummary: String {
         let s = AppSettings.shared
-        var parts: [String] = []
-        if s.packetIncludeEmail { parts.append("a follow-up email") }
-        if s.packetIncludePOC { parts.append("an updated POC plan") }
-        if s.packetIncludeActions { parts.append("action items") }
+        let parts: [String] = s.packetSectionIDs.map { id in
+            switch id {
+            case "followUpEmail":  return "a follow-up email"
+            case "pocPlan":        return "an updated POC plan"
+            case "actionItemList": return "action items"
+            default:               return s.allDraftDocs.first { $0.id == id }?.displayName.lowercased() ?? id
+            }
+        }
         switch parts.count {
-        case 0: return "no sections (enable some in Settings)"
+        case 0: return "no sections (add some in Settings)"
         case 1: return parts[0]
         case 2: return "\(parts[0]) and \(parts[1])"
         default: return parts.dropLast().joined(separator: ", ") + ", and " + parts.last!

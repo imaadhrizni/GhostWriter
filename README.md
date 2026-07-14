@@ -25,7 +25,7 @@ Because GhostWriter relies on global hotkeys, accessibility, and system-audio ca
 ./ship.sh
 ```
 
-This compiles, bundles, code-signs, installs in-place to `/Applications`, and launches the app. On first launch, enter a [Groq API Key](https://console.groq.com/keys) (`gsk_…`) and grant **Microphone**, **System Audio Recording**, and **Accessibility** when prompted.
+This compiles, bundles, code-signs, installs in-place to `/Applications`, and launches the app. On first launch, open **Settings** — the **Essentials** pane shows a live checklist for the three things you need: a [Groq API Key](https://console.groq.com/keys) (`gsk_…`), **Microphone**, and **Accessibility** (plus **System Audio Recording** for meetings). It flips to "You're all set" once they're granted.
 
 Full walkthrough in **[Installation, Setup & Usage](docs/usage.md)**.
 

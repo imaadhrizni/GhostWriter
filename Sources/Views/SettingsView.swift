@@ -162,8 +162,6 @@ fileprivate enum SettingsSearchIndex {
         // Dictation
         .init(label: "Dictation hotkey", section: .dictation, keywords: ["shortcut", "push to talk", "trigger", "default", "reset"]),
         .init(label: "Activation (hold / tap-to-lock / toggle)", section: .dictation, keywords: ["hands-free", "hands free", "toggle", "tap to lock", "latch", "hold", "long dictation", "push to talk", "ptt"]),
-        .init(label: "Auto-paste", section: .dictation, keywords: ["insert", "clipboard", "type out"]),
-        .init(label: "Dictation sound feedback", section: .dictation, keywords: ["chime", "beep", "audio cue"]),
         // Writing styles
         .init(label: "Writing styles", section: .styles, keywords: ["tone", "prompt", "rewrite", "voice", "custom style"]),
         .init(label: "Add or delete a writing style", section: .styles, keywords: ["new", "remove", "delete", "create", "edit"]),
@@ -185,7 +183,7 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Reset note prompts to default", section: .notes, keywords: ["default", "reset", "prompt", "restore"]),
         // Draft templates
         .init(label: "Draft templates", section: .draftTemplates, keywords: ["follow-up email", "reply", "message", "add", "delete", "reset to default"]),
-        .init(label: "Follow-Up Packet", section: .draftTemplates, keywords: ["packet", "bundle", "one-click", "poc plan", "action items", "follow-up email", "sections", "confirm", "ai usage", "cloud"]),
+        .init(label: "Follow-Up Packet", section: .draftTemplates, keywords: ["packet", "bundle", "one-click", "poc plan", "action items", "follow-up email", "sections", "reorder", "order", "confirm", "ai usage", "cloud"]),
         // Digest
         .init(label: "Relationship digest", section: .digest, keywords: ["daily", "weekly", "summary email", "rollup", "default", "reset"]),
         // Privacy
@@ -991,21 +989,110 @@ private struct WritingStylesPane: View {
                 Text("Reads the frontmost browser tab's address (Safari and Chromium browsers; not Firefox) so a website can get its own style — e.g. Gmail uses the Email style instead of the generic Browser one. Needs the Automation permission (prompted once). Off: every browser uses the Browser style.")
                     .font(.caption).foregroundColor(.secondary)
                 if settings.browserTabDetection {
-                    Text("Rules — one per line, host: style. Style is a built-in (messaging / email / code / browser / notes / general) or a custom style's name. First matching host wins; unmatched tabs use the Browser style.")
+                    Text("Give a website its own style. First matching host wins; unmatched tabs use the Browser style.")
                         .font(.caption).foregroundColor(.secondary)
-                    MultilineField(text: $settings.domainStyleRules,
-                                   placeholder: "mail.google.com: email\ngithub.com: code",
-                                   minHeight: 80,
-                                   font: .system(.caption, design: .monospaced))
-                    HStack {
-                        Spacer()
-                        DefaultResetButton(isDefault: settings.domainStyleRules == AppSettings.Default.domainStyleRules) {
-                            settings.domainStyleRules = AppSettings.Default.domainStyleRules
-                        }
-                    }
+                    DomainStyleEditor()
                 }
             }
         }
+    }
+}
+
+/// Row-based editor for browser-tab style rules. The host stays free text, but
+/// the style is a Picker over the closed set of built-in + custom styles, so it
+/// can't be mistyped. Backed by the same newline `host: style` string, with a
+/// collapsible bulk-edit box; a bulk edit re-hydrates the rows and vice-versa.
+private struct DomainStyleEditor: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var rules: [Rule] = []
+    @State private var showBulk = false
+
+    private struct Rule: Identifiable, Equatable {
+        let id = UUID()
+        var host: String
+        var style: String
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if rules.isEmpty {
+                Text("No site rules yet.").font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach($rules) { $rule in
+                    HStack(spacing: 8) {
+                        TextField("mail.google.com", text: $rule.host)
+                            .textFieldStyle(.roundedBorder)
+                        Image(systemName: "arrow.right").font(.caption2).foregroundColor(.secondary)
+                        Picker("", selection: $rule.style) {
+                            ForEach(styleOptions(including: rule.style), id: \.key) { opt in
+                                Text(opt.label).tag(opt.key)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 130)
+                        Button { rules.removeAll { $0.id == rule.id } } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .buttonStyle(.plain).foregroundColor(.secondary).help("Remove")
+                    }
+                }
+            }
+
+            HStack {
+                Button {
+                    rules.append(Rule(host: "", style: settings.dictationStyleKeys.first?.key ?? "email"))
+                } label: {
+                    Label("Add rule", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                Spacer()
+                DefaultResetButton(isDefault: settings.domainStyleRules == AppSettings.Default.domainStyleRules) {
+                    settings.domainStyleRules = AppSettings.Default.domainStyleRules
+                    hydrate()
+                }
+            }
+
+            DisclosureGroup(isExpanded: $showBulk) {
+                MultilineField(text: $settings.domainStyleRules,
+                               placeholder: "mail.google.com: email\ngithub.com: code",
+                               minHeight: 70,
+                               font: .system(.caption, design: .monospaced))
+                Text("One rule per line, host: style. Edits here stay in sync with the rows above.")
+                    .font(.caption2).foregroundColor(.secondary)
+            } label: {
+                Text("Paste or edit as a list").font(.caption)
+            }
+        }
+        .onAppear(perform: hydrate)
+        // Rows → storage. Guard against echoing our own write back into hydrate.
+        .onChange(of: rules) { _, new in
+            let serialized = serialize(new)
+            if serialized != settings.domainStyleRules { settings.domainStyleRules = serialized }
+        }
+        // Storage → rows, for external edits (bulk box, reset) only.
+        .onChange(of: settings.domainStyleRules) { _, new in
+            if new != serialize(rules) { hydrate() }
+        }
+    }
+
+    /// The style menu, guaranteeing the row's current key is present even if it
+    /// points at a since-deleted custom style (so the Picker still shows it).
+    private func styleOptions(including current: String) -> [(key: String, label: String)] {
+        var opts = settings.dictationStyleKeys
+        if !current.isEmpty && !opts.contains(where: { $0.key == current }) {
+            opts.append((current, "\(current) (missing)"))
+        }
+        return opts
+    }
+
+    private func hydrate() {
+        rules = settings.domainStyleList.map { Rule(host: $0.host, style: $0.style) }
+    }
+    private func serialize(_ list: [Rule]) -> String {
+        list.map { ($0.host.trimmingCharacters(in: .whitespaces), $0.style) }
+            .filter { !$0.0.isEmpty }
+            .map { "\($0.0): \($0.1)" }
+            .joined(separator: "\n")
     }
 }
 
@@ -1487,21 +1574,26 @@ private struct MeetingNotesPane: View {
                 Toggle("Append action items", isOn: $settings.actionItemsEnabled)
                 Text("Adds an Action Items checklist (with owners when identifiable). Shown per note in the Catalog, with export to Reminders.")
                     .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("AI Extraction") {
+                Text("Extra passes that enrich the summary. Each needs network access and is skipped in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Extract decisions, risks & open questions", isOn: $settings.structuredExtraction)
-                Text("Adds Decisions, Risks & Blockers, and Open Questions sections to the summary. Requires network access.")
+                Text("Adds Decisions, Risks & Blockers, and Open Questions sections to the summary.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Extract key fields per meeting type", isOn: $settings.extractKeyFields)
-                Text("Pulls the fields that matter for the chosen template — a customer call's deal stage, budget, timeline, and next step; an interview's recommendation; a 1:1's sentiment — into a Key Details section and machine-readable front-matter. Categorical fields (deal stage, recommendation, sentiment) are mirrored into tags so you can filter by them in the Catalog. Requires network access.")
+                Text("Pulls the fields that matter for the chosen template — a customer call's deal stage, budget, timeline, and next step; an interview's recommendation; a 1:1's sentiment — into a Key Details section and machine-readable front-matter. Categorical fields (deal stage, recommendation, sentiment) are mirrored into tags so you can filter by them in the Catalog.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Extract unanswered questions", isOn: $settings.extractUnanswered)
-                Text("Adds an Unanswered Questions section — questions raised in the meeting that never got a clear answer, i.e. your follow-up list. One extra AI call; disabled in Local-only mode.")
+                Text("Adds an Unanswered Questions section — questions raised in the meeting that never got a clear answer, i.e. your follow-up list. One extra AI call.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Add topic chapters", isOn: $settings.topicChapters)
-                Text("Appends a timestamped jump-list segmenting the meeting into topics. One extra AI call per meeting; disabled in Local-only mode.")
+                Text("Appends a timestamped jump-list segmenting the meeting into topics. One extra AI call per meeting.")
                     .font(.caption).foregroundColor(.secondary)
             }
 
@@ -1651,6 +1743,114 @@ private struct MeetingTemplatesPane: View {
     }
 }
 
+/// Pick-and-reorder editor for the Follow-Up Packet's sections. The packet is
+/// one composed document, so order is meaningful — sections render top-to-bottom
+/// in this list. Any draft-document type can be added; the curated three
+/// (email / POC plan / action items) keep their special grounding at generation
+/// time regardless of position.
+private struct PacketSectionsEditor: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    private var ids: [String] { settings.packetSectionIDs }
+
+    /// Draft docs not already in the packet, for the "Add section" menu.
+    private var availableGroups: [(title: String, docs: [DraftDoc])] {
+        settings.groupedDraftDocs.compactMap { group in
+            let docs = group.docs.filter { !ids.contains($0.id) }
+            return docs.isEmpty ? nil : (group.title, docs)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("The note viewer's one-click packet assembles these sections, in this order, into a single document grounded in the meeting.")
+                .font(.caption).foregroundColor(.secondary)
+
+            if ids.isEmpty {
+                Text("No sections — the packet would be empty. Add at least one below.")
+                    .font(.caption).foregroundColor(.orange)
+            } else {
+                ForEach(Array(ids.enumerated()), id: \.element) { index, id in
+                    row(index: index, id: id)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Menu {
+                    ForEach(availableGroups, id: \.title) { group in
+                        Section(group.title) {
+                            ForEach(group.docs) { doc in
+                                Button(doc.displayName) { settings.packetSectionIDs = ids + [doc.id] }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Add section", systemImage: "plus")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(availableGroups.isEmpty)
+
+                Spacer()
+
+                Text("\(ids.count) section\(ids.count == 1 ? "" : "s") · each is a separate AI call")
+                    .font(.caption2).foregroundColor(.secondary)
+
+                DefaultResetButton(isDefault: ids == AppSettings.defaultPacketSections) {
+                    settings.packetSectionIDs = AppSettings.defaultPacketSections
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func row(index: Int, id: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon(for: id)).foregroundColor(.secondary).frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label(for: id))
+                if let note = groundingNote(for: id) {
+                    Text(note).font(.caption2).foregroundColor(.secondary)
+                }
+            }
+            Spacer()
+            Button { move(index, by: -1) } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.plain).foregroundColor(.secondary)
+                .disabled(index == 0)
+            Button { move(index, by: 1) } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.plain).foregroundColor(.secondary)
+                .disabled(index == ids.count - 1)
+            Button { settings.packetSectionIDs = ids.filter { $0 != id } } label: {
+                Image(systemName: "minus.circle.fill")
+            }
+            .buttonStyle(.plain).foregroundColor(.secondary).help("Remove")
+        }
+    }
+
+    private func move(_ index: Int, by offset: Int) {
+        var list = ids
+        let target = index + offset
+        guard list.indices.contains(index), list.indices.contains(target) else { return }
+        list.swapAt(index, target)
+        settings.packetSectionIDs = list
+    }
+
+    private func label(for id: String) -> String {
+        settings.allDraftDocs.first { $0.id == id }?.displayName ?? id
+    }
+    private func icon(for id: String) -> String {
+        settings.allDraftDocs.first { $0.id == id }?.icon ?? "doc"
+    }
+    /// A one-line hint for the sections that get bespoke grounding.
+    private func groundingNote(for id: String) -> String? {
+        switch id {
+        case "pocPlan":        return "Grounded in the linked opportunity's success criteria."
+        case "actionItemList": return "Reuses the note's own checklist when it has one."
+        case "followUpEmail":  return "Shaped by the meeting type."
+        default:               return nil
+        }
+    }
+}
+
 private struct DraftTemplatesPane: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var selectedID: String = FollowUpKind.minutes.rawValue
@@ -1671,11 +1871,7 @@ private struct DraftTemplatesPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Follow-Up Packet") {
-                Text("The note viewer's one-click Follow-Up Packet assembles these sections into a single document, grounded in the meeting.")
-                    .font(.caption).foregroundColor(.secondary)
-                Toggle("Follow-up email", isOn: $settings.packetIncludeEmail)
-                Toggle("Updated POC plan (uses the linked opportunity's criteria)", isOn: $settings.packetIncludePOC)
-                Toggle("Action items", isOn: $settings.packetIncludeActions)
+                PacketSectionsEditor()
                 Divider()
                 Toggle("Confirm before generating (uses several cloud-AI calls)", isOn: $settings.packetConfirmBeforeRun)
             }

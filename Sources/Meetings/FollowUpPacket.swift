@@ -6,10 +6,11 @@ import Foundation
 /// composed into a single Markdown document ready to read, copy, or export as
 /// one PDF from the notes viewer.
 ///
-/// Everything is grounded strictly in the note; the three AI sections run
-/// concurrently, and any one failing degrades to an inline note rather than
-/// sinking the whole packet. Which sections are included is user-configurable
-/// (Settings → Meetings → Draft Templates → Follow-Up Packet).
+/// Everything is grounded strictly in the note; the sections run concurrently
+/// and any one failing degrades to an inline note rather than sinking the whole
+/// packet. Which sections are included — and in what order — is user-configurable
+/// (Settings → Meetings → Draft Templates → Follow-Up Packet): the three curated
+/// sections plus any other draft-document type.
 enum FollowUpPacket {
 
     /// Resolve Catalog context on the main actor, then generate the enabled
@@ -33,34 +34,55 @@ enum FollowUpPacket {
         let existingActions = NotesLibrary.actionItems(inFile: fileURL)
 
         let polisher = TextPolisher()
-        let wantEmail = settings.packetIncludeEmail
-        let wantPOC = settings.packetIncludePOC
-        let wantActions = settings.packetIncludeActions
+        let sectionIDs = settings.packetSectionIDs
 
-        // Fire the AI sections concurrently.
-        async let emailSection: String? = wantEmail
-            ? section(title: "✉️ Follow-Up Email") {
+        let out = header(base: fileURL.deletingPathExtension().lastPathComponent, ctx: ctx, text: text)
+        guard !sectionIDs.isEmpty else {
+            return out + "\n\n_No packet sections are configured. Add some in Settings → Meetings → Draft Templates._"
+        }
+
+        // Kick every section off concurrently, then splice them back together in
+        // the user's chosen order (creating all Tasks before the first await lets
+        // them overlap, exactly like the old `async let` fan-out).
+        let tasks: [Task<String?, Never>] = sectionIDs.map { id in
+            Task {
+                await produceSection(id: id, text: text, template: template,
+                                     criteria: ctx.criteria, existingActions: existingActions,
+                                     polisher: polisher, forceRefresh: forceRefresh)
+            }
+        }
+
+        var result = out
+        for task in tasks {
+            if let part = await task.value { result += "\n\n" + part }
+        }
+        return result
+    }
+
+    /// Produce one packet section by identifier. The three curated sections get
+    /// their bespoke treatment (meeting-type-aware email, criteria-grounded POC
+    /// plan, note-sourced action items); any other draft type falls back to a
+    /// generic guided draft.
+    @MainActor
+    private static func produceSection(id: String, text: String, template: SummaryTemplate,
+                                       criteria: [(text: String, status: String)],
+                                       existingActions: [NotesLibrary.ActionItem],
+                                       polisher: TextPolisher, forceRefresh: Bool) async -> String? {
+        switch id {
+        case "followUpEmail":
+            return await section(title: "✉️ Follow-Up Email") {
                 try await polisher.draftFollowUp(transcript: text, template: template, forceRefresh: forceRefresh)
-            } : nil
-
-        async let pocSection: String? = wantPOC
-            ? pocPlanSection(text: text, criteria: ctx.criteria, polisher: polisher, forceRefresh: forceRefresh)
-            : nil
-
-        // Action items: prefer the note's curated list; only ask the model when
-        // the note has none recorded yet.
-        async let actionsSection: String? = wantActions
-            ? actionItemsSection(existing: existingActions, text: text, polisher: polisher, forceRefresh: forceRefresh)
-            : nil
-
-        var out = header(base: fileURL.deletingPathExtension().lastPathComponent, ctx: ctx, text: text)
-        for part in await [emailSection, pocSection, actionsSection].compactMap({ $0 }) {
-            out += "\n\n" + part
+            }
+        case "pocPlan":
+            return await pocPlanSection(text: text, criteria: criteria, polisher: polisher, forceRefresh: forceRefresh)
+        case "actionItemList":
+            return await actionItemsSection(existing: existingActions, text: text, polisher: polisher, forceRefresh: forceRefresh)
+        default:
+            guard let doc = AppSettings.shared.allDraftDocs.first(where: { $0.id == id }) else { return nil }
+            return await section(title: "📄 \(doc.displayName)") {
+                try await polisher.draftDocument(transcript: text, guidance: doc.guidance, forceRefresh: forceRefresh)
+            }
         }
-        if !wantEmail && !wantPOC && !wantActions {
-            out += "\n\n_No packet sections are enabled. Turn some on in Settings → Meetings → Draft Templates._"
-        }
-        return out
     }
 
     // MARK: - Sections

@@ -108,8 +108,9 @@ final class AppSettings: ObservableObject {
         static let scriptHookPath         = "integrations.scriptHookPath"
         static let packetIncludeEmail     = "packet.includeEmail"
         static let packetIncludePOC       = "packet.includePOC"
-        static let packetIncludeActions   = "packet.includeActions"
+        static let packetIncludeActions   = "packet.includeActions"   // legacy — migrated into packetSections
         static let packetConfirmBeforeRun = "packet.confirmBeforeRun"
+        static let packetSections         = "packet.sections"
 
         static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
                           pttActivation,
@@ -142,7 +143,7 @@ final class AppSettings: ObservableObject {
                           monthlyBudgetUSD,
                           webhookEnabled, webhookURL, scriptHookEnabled, scriptHookPath,
                           packetIncludeEmail, packetIncludePOC, packetIncludeActions,
-                          packetConfirmBeforeRun]
+                          packetConfirmBeforeRun, packetSections]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -1044,6 +1045,24 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.domainStyleRules) }
     }
 
+    /// Parsed `host: style` rules, in order, skipping blank/malformed lines.
+    /// The structured browser-tab editor reads and writes through this.
+    var domainStyleList: [(host: String, style: String)] {
+        domainStyleRules.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, !parts[0].isEmpty else { return nil }
+            return (parts[0], parts[1])
+        }
+    }
+
+    /// The selectable style keys for domain/app rules — the built-in categories
+    /// followed by the user's own styles (by name). Values are the keys stored
+    /// in the rules; labels are what the picker shows.
+    var dictationStyleKeys: [(key: String, label: String)] {
+        AppCategory.allCases.map { ($0.rawValue, $0.displayName) }
+            + userDictationStyles.map { ($0.name, $0.name) }
+    }
+
     /// Resolve a style key ("email", "code", or a custom style's name) to a
     /// concrete style: a built-in category first, then a user style by name.
     func dictationStyle(forKey key: String) -> DictationStyle? {
@@ -1244,18 +1263,35 @@ final class AppSettings: ObservableObject {
     // MARK: - Follow-Up Packet
     // Which sections the one-click Follow-Up Packet assembles from a meeting.
 
-    var packetIncludeEmail: Bool {
-        get { bool(Key.packetIncludeEmail, Default.packetIncludeEmail) }
-        set { set(newValue, Key.packetIncludeEmail) }
+    /// The curated default packet: a follow-up email, an updated POC plan, and
+    /// the action items — in that order.
+    static let defaultPacketSections = ["followUpEmail", "pocPlan", "actionItemList"]
+
+    /// Ordered packet section identifiers — each is a `FollowUpKind` rawValue or
+    /// a user draft-template id ("user:UUID"). Order is the order they appear in
+    /// the composed document. Migrates once from the legacy include-toggles the
+    /// first time it's read, so upgrading users keep their choices.
+    var packetSectionIDs: [String] {
+        get {
+            if let raw = defaults.string(forKey: Key.packetSections) {
+                return raw.split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            }
+            var ids: [String] = []
+            if bool(Key.packetIncludeEmail, Default.packetIncludeEmail) { ids.append("followUpEmail") }
+            if bool(Key.packetIncludePOC, Default.packetIncludePOC) { ids.append("pocPlan") }
+            if bool(Key.packetIncludeActions, Default.packetIncludeActions) { ids.append("actionItemList") }
+            return ids
+        }
+        set { set(newValue.joined(separator: ","), Key.packetSections) }
     }
-    var packetIncludePOC: Bool {
-        get { bool(Key.packetIncludePOC, Default.packetIncludePOC) }
-        set { set(newValue, Key.packetIncludePOC) }
-    }
-    var packetIncludeActions: Bool {
-        get { bool(Key.packetIncludeActions, Default.packetIncludeActions) }
-        set { set(newValue, Key.packetIncludeActions) }
-    }
+
+    // Note: the legacy `packetInclude{Email,POC,Actions}` keys/defaults are read
+    // directly (via `bool(Key…, Default…)`) inside the `packetSectionIDs` getter
+    // to migrate a pre-0.31 install's choices, and are still cleared by
+    // `resetToDefaults()` through `Key.all`. No dedicated accessors are needed.
+
     /// Ask for confirmation before the packet runs its cloud AI calls. On by
     /// default (the packet fires several requests at once); the "Don't ask
     /// again" choice in the dialog clears this.

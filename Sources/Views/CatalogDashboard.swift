@@ -17,6 +17,7 @@ struct DashboardMetrics {
     var meetingsScanned = 0
     var weekTrend: [WeekBucket] = []
     var typeMix: [LabeledCount] = []
+    var funnel: [LabeledCount] = []   // technical sales-cycle stages, in order
     var openActions = 0
     var overdueActions = 0
     var unanswered: [OpenQuestion] = []
@@ -47,6 +48,7 @@ struct DashboardMetrics {
 
         var weekCounts: [Int: Int] = [:]   // weeks-ago (0..5) → count
         var typeCounts: [String: Int] = [:]
+        var funnelCounts: [String: Int] = [:]   // funnel-stage label → count
         var radarCounts: [String: Int] = [:]
         var open = 0, overdue = 0
         let today = cal.startOfDay(for: now)
@@ -63,6 +65,7 @@ struct DashboardMetrics {
             if let typeID = FrontMatter.field("gw_meeting_type", in: text) {
                 let name = typeNames[typeID] ?? typeID
                 typeCounts[name, default: 0] += 1
+                if let stage = Self.funnelStage(for: typeID) { funnelCounts[stage.label, default: 0] += 1 }
             }
 
             // Action items — open + overdue.
@@ -92,12 +95,29 @@ struct DashboardMetrics {
             WeekBucket(label: w == 0 ? "This wk" : "-\(w)w", count: weekCounts[w] ?? 0)
         }
         m.typeMix = typeCounts.sorted { $0.value > $1.value }.map { .init(label: $0.key, count: $0.value) }
+        // Funnel stays in cycle order (including empty stages) so drop-off is visible.
+        m.funnel = Self.funnelOrder.map { .init(label: $0, count: funnelCounts[$0] ?? 0) }
         m.openActions = open
         m.overdueActions = overdue
         m.radarTop = radarCounts.sorted { $0.value > $1.value }.prefix(8)
             .map { .init(label: $0.key, count: $0.value) }
 
         return m
+    }
+
+    /// The technical sales cycle, in order — used to render the meeting-type funnel.
+    static let funnelOrder = ["Discovery", "Demo", "Scoping", "Kickoff"]
+
+    /// Map a `MeetingType` raw id to its funnel stage, or nil for non-cycle
+    /// meeting types (standups, 1:1s, all-hands, general, etc.).
+    static func funnelStage(for typeID: String) -> (order: Int, label: String)? {
+        switch typeID {
+        case "discovery":       return (0, "Discovery")
+        case "solutionDemo":    return (1, "Demo")
+        case "solutionScoping": return (2, "Scoping")
+        case "kickoff":         return (3, "Kickoff")
+        default:                return nil
+        }
     }
 
     /// Extract the bullet questions under a "## Unanswered Questions" heading.
@@ -193,10 +213,10 @@ private struct KPITile: View {
 
 /// Time window for the note-scan insights.
 enum DashboardRange: String, CaseIterable, Identifiable {
-    case month = "30 days", quarter = "90 days", half = "6 months", all = "All time"
+    case day = "Today", week = "7 days", month = "30 days", quarter = "90 days", half = "6 months", all = "All time"
     var id: String { rawValue }
     var days: Int? {
-        switch self { case .month: 30; case .quarter: 90; case .half: 182; case .all: nil }
+        switch self { case .day: 1; case .week: 7; case .month: 30; case .quarter: 90; case .half: 182; case .all: nil }
     }
 }
 
@@ -223,6 +243,7 @@ struct DashboardView: View {
                           alignment: .leading, spacing: 16) {
                     relationshipsCard
                     activityCard
+                    meetingMixCard
                     actionItemsCard
                     competitiveCard
                     coverageCard
@@ -406,23 +427,52 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: Technical engagement coverage — meeting mix + open questions.
-    private var coverageCard: some View {
-        DashCard(title: "Technical Engagement Coverage", icon: "checkmark.shield.fill", tint: .orange) {
-            if loading { DashLoading() } else {
-                if !metrics.typeMix.isEmpty {
-                    Text("By meeting type").font(.caption.bold()).foregroundColor(.secondary)
-                    ForEach(metrics.typeMix.prefix(5)) { t in
+    // MARK: Meeting-type mix — where engagements sit in the technical cycle.
+    private var meetingMixCard: some View {
+        let funnelTotal = metrics.funnel.reduce(0) { $0 + $1.count }
+        // Non-cycle meeting types (standups, 1:1s, general, custom…) for context.
+        let cycleLabels = Set(DashboardMetrics.funnelOrder)
+        let other = metrics.typeMix.filter { !cycleLabels.contains($0.label) }
+        return DashCard(title: "Meeting-Type Mix", icon: "chart.bar.xaxis", tint: .indigo) {
+            if loading { DashLoading() }
+            else if metrics.typeMix.isEmpty {
+                DashEmpty("No meeting types recorded in this range. Pick a template when you start a meeting.")
+            } else {
+                Text("Technical cycle").font(.caption.bold()).foregroundColor(.secondary)
+                if funnelTotal == 0 {
+                    DashEmpty("No Discovery / Demo / Scoping / Kickoff meetings in this range.")
+                } else {
+                    Chart(metrics.funnel) { s in
+                        BarMark(x: .value("Meetings", s.count), y: .value("Stage", s.label))
+                            .foregroundStyle(.indigo.gradient)
+                            .annotation(position: .trailing) {
+                                Text("\(s.count)").font(.caption2).foregroundColor(.secondary)
+                            }
+                    }
+                    .chartYAxis { AxisMarks(preset: .aligned) }
+                    .chartXAxis(.hidden)
+                    .chartYScale(domain: DashboardMetrics.funnelOrder.reversed())
+                    .frame(height: CGFloat(DashboardMetrics.funnelOrder.count) * 28 + 10)
+                }
+                if !other.isEmpty {
+                    Divider()
+                    Text("Other meetings").font(.caption.bold()).foregroundColor(.secondary)
+                    ForEach(other.prefix(4)) { t in
                         HStack {
                             Text(t.label).font(.callout).lineLimit(1)
                             Spacer()
                             Text("\(t.count)").font(.caption.monospacedDigit()).foregroundColor(.secondary)
                         }
                     }
-                    Divider()
                 }
-                Label("Open technical questions", systemImage: "questionmark.circle.fill")
-                    .font(.caption.bold()).foregroundColor(.orange)
+            }
+        }
+    }
+
+    // MARK: Open technical questions — the SE's follow-up queue.
+    private var coverageCard: some View {
+        DashCard(title: "Open Technical Questions", icon: "questionmark.circle.fill", tint: .orange) {
+            if loading { DashLoading() } else {
                 if metrics.unanswered.isEmpty {
                     DashEmpty("No unanswered questions in recent meetings.")
                 } else {
@@ -448,7 +498,8 @@ struct DashboardView: View {
         let typeNames = Dictionary(
             AppSettings.shared.allTemplates.map { ($0.id, $0.displayName) },
             uniquingKeysWith: { a, _ in a })
-        let since = range.days.flatMap { Calendar.current.date(byAdding: .day, value: -$0, to: Date()) }
+        // Count in whole calendar days: "Today" = today only, "7 days" = today + prior 6.
+        let since = range.days.flatMap { Calendar.current.date(byAdding: .day, value: -($0 - 1), to: Date()) }
         // Resolve the account scope to a set of note file URLs (nil = all).
         let allowed: Set<URL>? = orgFilter.isEmpty ? nil
             : Set(store.notes(forOrg: orgFilter, includingDescendants: true).map { store.url(of: $0) })

@@ -108,6 +108,7 @@ final class AppSettings: ObservableObject {
         static let packetIncludeEmail     = "packet.includeEmail"
         static let packetIncludePOC       = "packet.includePOC"
         static let packetIncludeActions   = "packet.includeActions"
+        static let packetConfirmBeforeRun = "packet.confirmBeforeRun"
 
         static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
                           preferBuiltInMic,
@@ -138,7 +139,8 @@ final class AppSettings: ObservableObject {
                           priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok,
                           monthlyBudgetUSD,
                           webhookEnabled, webhookURL, scriptHookEnabled, scriptHookPath,
-                          packetIncludeEmail, packetIncludePOC, packetIncludeActions]
+                          packetIncludeEmail, packetIncludePOC, packetIncludeActions,
+                          packetConfirmBeforeRun]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -232,6 +234,7 @@ final class AppSettings: ObservableObject {
         static let packetIncludeEmail              = true
         static let packetIncludePOC                = true
         static let packetIncludeActions            = true
+        static let packetConfirmBeforeRun          = true
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -1219,6 +1222,13 @@ final class AppSettings: ObservableObject {
     var packetIncludeActions: Bool {
         get { bool(Key.packetIncludeActions, Default.packetIncludeActions) }
         set { set(newValue, Key.packetIncludeActions) }
+    }
+    /// Ask for confirmation before the packet runs its cloud AI calls. On by
+    /// default (the packet fires several requests at once); the "Don't ask
+    /// again" choice in the dialog clears this.
+    var packetConfirmBeforeRun: Bool {
+        get { bool(Key.packetConfirmBeforeRun, Default.packetConfirmBeforeRun) }
+        set { set(newValue, Key.packetConfirmBeforeRun) }
     }
 
     // MARK: - Transcription Quality

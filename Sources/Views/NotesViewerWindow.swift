@@ -129,6 +129,7 @@ private struct NotesViewerView: View {
     @State private var savedText: String
     @State private var status: String = ""
     @State private var drafting = false
+    @State private var showPacketConfirm = false
     @State private var summarizing = false
     @State private var regenerating = false
     /// Locked (read-only) by default; unlock to edit. Drafts with no backing
@@ -498,7 +499,7 @@ private struct NotesViewerView: View {
             if canDraftFollowUp {
                 Menu {
                     Section("One-click") {
-                        Button { generatePacket() } label: {
+                        Button { requestPacket() } label: {
                             Label("Follow-Up Packet", systemImage: "shippingbox.fill")
                         }
                     }
@@ -556,6 +557,16 @@ private struct NotesViewerView: View {
                 .disabled(!isDirty || !isEditable)
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
+        .confirmationDialog("Generate Follow-Up Packet?", isPresented: $showPacketConfirm, titleVisibility: .visible) {
+            Button("Generate") { generatePacket() }
+            Button("Generate & Don't Ask Again") {
+                AppSettings.shared.packetConfirmBeforeRun = false
+                generatePacket()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This uses cloud AI to generate \(packetSectionsSummary) from this meeting — several requests in one go. You can change what's included, or turn off this prompt, in Settings → Meetings → Draft Templates.")
+        }
     }
 
     /// Quick AI recap of the current note, opened in its own viewer window
@@ -659,6 +670,31 @@ private struct NotesViewerView: View {
             } catch {
                 status = "Draft failed: \(error.localizedDescription)"
             }
+        }
+    }
+
+    /// The enabled packet sections, as a human-readable phrase for the confirm.
+    private var packetSectionsSummary: String {
+        let s = AppSettings.shared
+        var parts: [String] = []
+        if s.packetIncludeEmail { parts.append("a follow-up email") }
+        if s.packetIncludePOC { parts.append("an updated POC plan") }
+        if s.packetIncludeActions { parts.append("action items") }
+        switch parts.count {
+        case 0: return "no sections (enable some in Settings)"
+        case 1: return parts[0]
+        case 2: return "\(parts[0]) and \(parts[1])"
+        default: return parts.dropLast().joined(separator: ", ") + ", and " + parts.last!
+        }
+    }
+
+    /// Entry point for the packet — confirm cloud-AI usage first (unless the
+    /// user turned the prompt off), since it fires several requests at once.
+    private func requestPacket() {
+        if AppSettings.shared.packetConfirmBeforeRun {
+            showPacketConfirm = true
+        } else {
+            generatePacket()
         }
     }
 

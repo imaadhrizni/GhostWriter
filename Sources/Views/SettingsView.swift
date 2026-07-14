@@ -178,7 +178,7 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Reset note prompts to default", section: .notes, keywords: ["default", "reset", "prompt", "restore"]),
         // Draft templates
         .init(label: "Draft templates", section: .draftTemplates, keywords: ["follow-up email", "reply", "message", "add", "delete", "reset to default"]),
-        .init(label: "Follow-Up Packet", section: .draftTemplates, keywords: ["packet", "bundle", "one-click", "poc plan", "action items", "follow-up email", "sections"]),
+        .init(label: "Follow-Up Packet", section: .draftTemplates, keywords: ["packet", "bundle", "one-click", "poc plan", "action items", "follow-up email", "sections", "confirm", "ai usage", "cloud"]),
         // Digest
         .init(label: "Relationship digest", section: .digest, keywords: ["daily", "weekly", "summary email", "rollup", "default", "reset"]),
         // Privacy
@@ -1424,6 +1424,8 @@ private struct DraftTemplatesPane: View {
                 Toggle("Follow-up email", isOn: $settings.packetIncludeEmail)
                 Toggle("Updated POC plan (uses the linked opportunity's criteria)", isOn: $settings.packetIncludePOC)
                 Toggle("Action items", isOn: $settings.packetIncludeActions)
+                Divider()
+                Toggle("Confirm before generating (uses several cloud-AI calls)", isOn: $settings.packetConfirmBeforeRun)
             }
 
             SettingsGroup("Document Type") {

@@ -121,8 +121,12 @@ private struct CatalogView: View {
     @StateObject private var radarModel = RadarModel()
     // Notes search + filters (in the window toolbar).
     @State private var query = ""
-    @State private var fOrg = ""
-    @State private var fProject = ""
+    // Account/project scope uses the shared OrgProjectTreePicker (one control,
+    // same as the dashboard & Open Questions). fOrg/fProject are derived from it.
+    @State private var fScopeKind = ""   // "", "org", "project"
+    @State private var fScopeID = ""
+    private var fOrg: String { fScopeKind == "org" ? fScopeID : "" }
+    private var fProject: String { fScopeKind == "project" ? fScopeID : "" }
     @State private var fTag = ""
     @State private var fPerson = ""
     @State private var fUnassigned = false
@@ -163,7 +167,7 @@ private struct CatalogView: View {
         case .projects:      return store.doc.projects.count
         case .tags:          return store.doc.tags.count
         case .notes:         return store.doc.notes.count
-        case .poc:           return store.projectsWithPOC.count
+        case .poc:           return store.allPocs.count
         case .radar:         return 0
         case .questions:     return 0
         }
@@ -171,6 +175,8 @@ private struct CatalogView: View {
 
     /// Sections that fill the content column and want no detail pane.
     private var wideCanvas: Bool { section == .dashboard || section == .questions }
+    /// Master lists that carry a filter/sort toolbar and so want a wider column.
+    private var wideMaster: Bool { section == .poc || section == .radar || section == .map }
 
     var body: some View {
         NavigationSplitView {
@@ -202,9 +208,9 @@ private struct CatalogView: View {
                 // this column); every other section is a normal master list, so
                 // cap it narrower.
                 .navigationSplitViewColumnWidth(
-                    min: wideCanvas ? 460 : (section == .poc ? 330 : 240),
-                    ideal: wideCanvas ? 640 : (section == .poc ? 370 : 285),
-                    max: wideCanvas ? 5000 : (section == .poc ? 460 : 400))
+                    min: wideCanvas ? 460 : (wideMaster ? 330 : 240),
+                    ideal: wideCanvas ? 640 : (wideMaster ? 370 : 285),
+                    max: wideCanvas ? 5000 : (wideMaster ? 460 : 400))
                 .navigationTitle(section.rawValue)
         } detail: {
             if wideCanvas {
@@ -221,10 +227,10 @@ private struct CatalogView: View {
                                            description: Text("Expand the tree and pick any item to open it here."))
                 }
             } else if section == .poc {
-                PocDetail(store: store, projID: selID)
+                PocDetail(store: store, pocID: selID)
                     .frame(minWidth: 360)
             } else if section == .radar {
-                RadarTermDetail(model: radarModel, term: selID)
+                RadarTermDetail(store: store, model: radarModel, term: selID)
             } else {
                 EntityDetail(store: store, section: section, selID: $selID)
             }
@@ -253,7 +259,7 @@ private struct CatalogView: View {
         if section == .dashboard {
             DashboardView(store: store) { section = .poc }
         } else if section == .radar {
-            RadarTermList(model: radarModel, selID: $selID)
+            RadarTermList(store: store, model: radarModel, selID: $selID)
         } else if section == .map {
             MapTree(store: store) { sec, id in mapSection = sec; mapID = id }
         } else if section == .poc {
@@ -320,7 +326,16 @@ private struct CatalogView: View {
                 filterMenu
                     .menuStyle(.borderlessButton)
                     .fixedSize()
+
+                if notesNonDefault {
+                    ResetButton(help: "Reset search, filters & range", action: resetNotes)
+                }
             }
+
+            // Shared account/project scope — the same tree picker used by the
+            // dashboard and Open Questions.
+            OrgProjectTreePicker(store: store, kind: $fScopeKind, id: $fScopeID,
+                                 allLabel: "All accounts & projects")
 
             Picker("Search type", selection: $scope) {
                 Text("Text").tag(NoteSearchScope.text)
@@ -340,8 +355,17 @@ private struct CatalogView: View {
     }
 
     private func clearFilters() {
-        fOrg = ""; fProject = ""; fTag = ""; fPerson = ""
+        fScopeKind = ""; fScopeID = ""; fTag = ""; fPerson = ""
         fUnassigned = false; fMissing = false
+    }
+
+    /// True when search, any facet, or the range is off-default.
+    private var notesNonDefault: Bool {
+        anyFilter || !query.trimmingCharacters(in: .whitespaces).isEmpty || fRange != DateRange.defaultRange
+    }
+    /// Reset the whole notes filter/search/range back to defaults.
+    private func resetNotes() {
+        clearFilters(); query = ""; fRange = DateRange.defaultRange
     }
 
     /// Single toolbar entry point for every note filter. Triage presets sit at
@@ -363,8 +387,8 @@ private struct CatalogView: View {
                 }
             }
             Divider()
-            facetSubmenu("Org", "building.2", $fOrg, store.orgsSorted.map { ($0.id, store.orgPath(of: $0.id)) })
-            facetSubmenu("Project", "folder", $fProject, store.doc.projects.sortedByName.map { ($0.id, store.projectPath(of: $0.id)) })
+            // Org/project scoping lives in the shared tree picker in the header;
+            // the Filter menu keeps the remaining facets.
             facetSubmenu("Person", "person", $fPerson, store.doc.people.sortedByName.map { ($0.id, $0.name) })
             facetSubmenu("Tag", "tag", $fTag, store.tagsSorted.map { ($0.id, $0.name) })
             if anyFilter {
@@ -403,8 +427,8 @@ private struct CatalogView: View {
         if anyFilter {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    if let o = store.org(fOrg)         { filterChip(o.name, .blue)      { fOrg = "" } }
-                    if let p = store.project(fProject) { filterChip(p.name, .teal)      { fProject = "" } }
+                    if let o = store.org(fOrg)         { filterChip(o.name, .blue)      { fScopeKind = ""; fScopeID = "" } }
+                    if let p = store.project(fProject) { filterChip(p.name, .teal)      { fScopeKind = ""; fScopeID = "" } }
                     if let p = store.person(fPerson)   { filterChip(p.name, .purple)    { fPerson = "" } }
                     if let t = store.tag(fTag)         { filterChip("#\(t.name)", .pink) { fTag = "" } }
                     if fUnassigned { filterChip("Unassigned", .orange) { fUnassigned = false } }
@@ -2007,13 +2031,51 @@ final class MapExpansion: ObservableObject {
     }
 }
 
+/// Shared scope/range/leaf-visibility rules for the map, passed down every node
+/// so the tree prunes consistently. When `range` is "All time" everything shows;
+/// otherwise a node is kept only if its subtree holds a note in the window.
+@MainActor
+private struct MapFilter {
+    let store: CatalogStore
+    let range: DateRange
+    let showPeople: Bool
+    let showTags: Bool
+
+    func note(_ n: CatalogNote) -> Bool { range.includes(n.date) }
+    func project(_ pid: String) -> Bool {
+        if range.days == nil { return true }
+        return store.doc.notes.contains { $0.projectIDs.contains(pid) && note($0) }
+            || store.childProjects(of: pid).contains { project($0.id) }
+    }
+    func org(_ oid: String) -> Bool {
+        if range.days == nil { return true }
+        return store.notes(directlyOnOrg: oid).contains { note($0) }
+            || store.rootProjects(forOrg: oid).contains { project($0.id) }
+            || store.childOrgs(of: oid).contains { org($0.id) }
+    }
+}
+
 private struct MapTree: View {
     @ObservedObject var store: CatalogStore
     let onPick: MapPick
     @State private var search = ""
+    @State private var scopeKind = ""   // "", "org", "project"
+    @State private var scopeID = ""
+    @State private var range: DateRange = .all
+    @State private var showPeople = true
+    @State private var showTags = true
     @StateObject private var exp = MapExpansion()
 
     private var q: String { search.trimmingCharacters(in: .whitespaces).lowercased() }
+    private var filter: MapFilter {
+        MapFilter(store: store, range: range, showPeople: showPeople, showTags: showTags)
+    }
+    private var mapNonDefault: Bool {
+        !q.isEmpty || !scopeID.isEmpty || range != .all || !showPeople || !showTags
+    }
+    private func resetMap() {
+        search = ""; scopeKind = ""; scopeID = ""; range = .all; showPeople = true; showTags = true
+    }
 
     /// Every container node's id — used to expand the whole tree at once.
     private var allNodeIDs: Set<String> {
@@ -2032,15 +2094,30 @@ private struct MapTree: View {
             store.org(id)?.name.lowercased().contains(q) ?? false
         }
     }
-    private var rootOrgs: [CatalogOrg] { store.rootOrgs.filter(matches) }
+
+    /// The root nodes to render, honoring the account/project scope. Scoping to
+    /// an org (or project) re-roots the tree at that node.
+    private var scopedRootOrgs: [CatalogOrg] {
+        if scopeKind == "org", let o = store.org(scopeID) { return [o] }
+        if scopeKind == "project" { return [] }
+        return store.rootOrgs
+    }
+    private var rootOrgs: [CatalogOrg] {
+        scopedRootOrgs.filter(matches).filter { filter.org($0.id) }
+    }
+    private var scopedProject: CatalogProject? {
+        scopeKind == "project" ? store.project(scopeID) : nil
+    }
     /// Only TRUE orphans belong in the "No organisation" section: a project with
     /// no parent AND no (resolvable) org. Sub-projects have `orgID == nil` by
     /// design — they inherit the org through their parent — so they must NOT be
     /// listed here; they render nested under their parent instead.
     private var orphanProjects: [CatalogProject] {
-        store.doc.projects.sortedByName
+        guard scopeKind == "" else { return [] }
+        return store.doc.projects.sortedByName
             .filter { $0.parentID == nil && store.org(forProject: $0.id) == nil }
             .filter { q.isEmpty || $0.name.lowercased().contains(q) }
+            .filter { filter.project($0.id) }
     }
 
     var body: some View {
@@ -2056,6 +2133,24 @@ private struct MapTree: View {
                     .help("Collapse all")
                     .disabled(exp.open.isEmpty)
             }
+            .padding(.horizontal, 10).padding(.top, 6)
+            HStack(spacing: 6) {
+                OrgProjectTreePicker(store: store, kind: $scopeKind, id: $scopeID,
+                                     allLabel: "Whole catalog")
+                RangePicker(range: $range, compact: true)
+                Spacer(minLength: 0)
+                Menu {
+                    Toggle("Show people", isOn: $showPeople)
+                    Toggle("Show tags", isOn: $showTags)
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                }
+                .menuStyle(.borderlessButton).fixedSize()
+                .help("Show or hide People and Tags leaves")
+                if mapNonDefault {
+                    ResetButton(help: "Reset search, scope, range & visibility", action: resetMap)
+                }
+            }
             .padding(.horizontal, 10).padding(.vertical, 6)
             Divider()
             List {
@@ -2063,10 +2158,13 @@ private struct MapTree: View {
                     Text("Nothing to map yet — add organisations, or import notes.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                ForEach(rootOrgs) { OrgMapNode(store: store, org: $0, exp: exp, onPick: onPick) }
+                ForEach(rootOrgs) { OrgMapNode(store: store, org: $0, exp: exp, filter: filter, onPick: onPick) }
+                if let p = scopedProject {
+                    ProjectMapNode(store: store, project: p, exp: exp, filter: filter, onPick: onPick)
+                }
                 if !orphanProjects.isEmpty {
                     Section("No organisation") {
-                        ForEach(orphanProjects) { ProjectMapNode(store: store, project: $0, exp: exp, onPick: onPick) }
+                        ForEach(orphanProjects) { ProjectMapNode(store: store, project: $0, exp: exp, filter: filter, onPick: onPick) }
                     }
                 }
             }
@@ -2102,16 +2200,23 @@ private struct OrgMapNode: View {
     @ObservedObject var store: CatalogStore
     let org: CatalogOrg
     @ObservedObject var exp: MapExpansion
+    let filter: MapFilter
     let onPick: MapPick
     var body: some View {
         DisclosureGroup(isExpanded: exp.binding(org.id)) {
-            ForEach(store.childOrgs(of: org.id)) { OrgMapNode(store: store, org: $0, exp: exp, onPick: onPick) }
+            ForEach(store.childOrgs(of: org.id).filter { filter.org($0.id) }) {
+                OrgMapNode(store: store, org: $0, exp: exp, filter: filter, onPick: onPick)
+            }
             // Only this org's TOP-LEVEL projects hang off it directly; sub-projects
             // appear nested under their parent (inheriting the org through it), so
             // the tree stays a true hierarchy with no duplicates.
-            ForEach(store.rootProjects(forOrg: org.id)) { ProjectMapNode(store: store, project: $0, exp: exp, onPick: onPick) }
+            ForEach(store.rootProjects(forOrg: org.id).filter { filter.project($0.id) }) {
+                ProjectMapNode(store: store, project: $0, exp: exp, filter: filter, onPick: onPick)
+            }
             // Internal notes attached directly to this org (no project).
-            ForEach(store.notes(directlyOnOrg: org.id).sortedByDateDescending) { NoteMapNode(store: store, note: $0, exp: exp, onPick: onPick) }
+            ForEach(store.notes(directlyOnOrg: org.id).filter(filter.note).sortedByDateDescending) {
+                NoteMapNode(store: store, note: $0, exp: exp, filter: filter, onPick: onPick)
+            }
         } label: {
             MapRow(icon: "building.2", tint: .blue, title: org.name,
                    trailing: AnyView(RelationshipBadge(org.relationship))) { onPick(.organisations, org.id) }
@@ -2123,14 +2228,15 @@ private struct ProjectMapNode: View {
     @ObservedObject var store: CatalogStore
     let project: CatalogProject
     @ObservedObject var exp: MapExpansion
+    let filter: MapFilter
     let onPick: MapPick
     var body: some View {
         DisclosureGroup(isExpanded: exp.binding(project.id)) {
-            let subs = store.childProjects(of: project.id)
-            ForEach(subs) { ProjectMapNode(store: store, project: $0, exp: exp, onPick: onPick) }
-            let notes = store.doc.notes.filter { $0.projectIDs.contains(project.id) }.sortedByDateDescending
+            let subs = store.childProjects(of: project.id).filter { filter.project($0.id) }
+            ForEach(subs) { ProjectMapNode(store: store, project: $0, exp: exp, filter: filter, onPick: onPick) }
+            let notes = store.doc.notes.filter { $0.projectIDs.contains(project.id) && filter.note($0) }.sortedByDateDescending
             if subs.isEmpty && notes.isEmpty { Text("No notes").font(.caption2).foregroundStyle(.secondary) }
-            ForEach(notes) { NoteMapNode(store: store, note: $0, exp: exp, onPick: onPick) }
+            ForEach(notes) { NoteMapNode(store: store, note: $0, exp: exp, filter: filter, onPick: onPick) }
         } label: {
             MapRow(icon: "folder", tint: .orange, title: project.name,
                    trailing: AnyView(StageBadge(project.stage))) { onPick(.projects, project.id) }
@@ -2144,11 +2250,12 @@ private struct NoteMapNode: View {
     @ObservedObject var store: CatalogStore
     let note: CatalogNote
     @ObservedObject var exp: MapExpansion
+    let filter: MapFilter
     let onPick: MapPick
 
     var body: some View {
-        let people = store.people(of: note)
-        let tags = store.tags(of: note)
+        let people = filter.showPeople ? store.people(of: note) : []
+        let tags = filter.showTags ? store.tags(of: note) : []
         let label = MapRow(icon: "doc.text", tint: .indigo, title: note.title,
                            openIcon: "arrow.up.forward.app") { openNote(note) }
         if people.isEmpty && tags.isEmpty {
@@ -2409,44 +2516,96 @@ enum PocState: String, CaseIterable, Identifiable {
     }
 }
 
+/// Tint for a POC lifecycle phase — shared by the tracker rows and detail pane.
+private func pocPhaseTint(_ p: PocPhase) -> Color {
+    switch p {
+    case .planned: .secondary
+    case .active:  .accentColor
+    case .passed:  .green
+    case .failed:  .red
+    case .onHold:  .orange
+    }
+}
+
+/// Small colored capsule showing a POC's lifecycle phase.
+private struct PhasePill: View {
+    let phase: PocPhase
+    var body: some View {
+        HStack(spacing: 3) {
+            Circle().fill(pocPhaseTint(phase)).frame(width: 6, height: 6)
+            Text(phase.label).font(.caption2.weight(.medium))
+        }
+        .foregroundStyle(pocPhaseTint(phase))
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Capsule().fill(pocPhaseTint(phase).opacity(0.12)))
+    }
+}
+
 private enum PocSort: String, CaseIterable, Identifiable {
-    case priority = "At-risk first", name = "Name", progress = "Progress", recent = "Recent activity"
+    case priority = "At-risk first", deadline = "Deadline", name = "Name", progress = "Progress", recent = "Recent activity"
     var id: String { rawValue }
 }
 private enum PocGroup: String, CaseIterable, Identifiable {
-    case status = "Status", account = "Account", stage = "Stage", date = "Date", none = "None"
+    case phase = "Phase", health = "Health", account = "Account", project = "Project", date = "Date", none = "None"
     var id: String { rawValue }
 }
-
-/// A project plus its computed POC tallies — the unit the tracker filters,
-/// sorts, and groups.
-private struct PocRow: Identifiable {
-    let project: CatalogProject
-    var id: String { project.id }
-    let total, passed, failed, pending: Int
-    let state: PocState
-    let accountPath: String
-    let lastActivity: Date?
-    var progress: Double { total == 0 ? 0 : Double(passed) / Double(total) }
+/// The Status filter: the Open (planned/in-progress/on-hold) / Closed
+/// (passed/failed) / All lifecycle scopes, plus a specific phase. Defaults to
+/// Open in the tracker.
+private enum PocStatusSel: Hashable, Identifiable {
+    case open, closed, all, phase(PocPhase)
+    static var allCases: [PocStatusSel] { [.open, .closed, .all] + PocPhase.allCases.map { .phase($0) } }
+    var id: String { label }
+    var label: String {
+        switch self {
+        case .open: "Open"; case .closed: "Closed"; case .all: "All"; case .phase(let p): p.label
+        }
+    }
+    func includes(_ p: PocPhase) -> Bool {
+        switch self {
+        case .open: p.isOpen; case .closed: !p.isOpen; case .all: true; case .phase(let ph): p == ph
+        }
+    }
+    var isDefault: Bool { if case .open = self { return true } else { return false } }
 }
 
+/// A POC plus its owning project and computed tallies — the unit the tracker
+/// filters, sorts, and groups. A single project may contribute several rows.
+private struct PocRow: Identifiable {
+    let project: CatalogProject
+    let poc: Poc
+    var id: String { poc.id }
+    let accountPath: String
+    let lastActivity: Date?
+
+    var total: Int  { poc.total }
+    var passed: Int { poc.passed }
+    var failed: Int { poc.failed }
+    var pending: Int { total - passed - failed }
+    var state: PocState { .of(total: total, passed: passed, failed: failed) }
+    var progress: Double { total == 0 ? 0 : Double(passed) / Double(total) }
+    var deadline: Date? { poc.deadline }
+}
+
+/// The POC Tracker master list — every POC across all projects, filterable by
+/// account/project/phase/health, groupable, and sortable, with a per-row
+/// deadline pill and a drill-down to the owning project's linked meetings.
 private struct PocProjectList: View {
     @ObservedObject var store: CatalogStore
-    @Binding var selID: String?
+    @Binding var selID: String?        // selected POC id
 
     @State private var query = ""
-    @State private var statusFilter: PocState? = nil     // nil = all states
-    @State private var accountFilter = ""                // org id ("" = all)
-    @State private var range: DateRange = .all           // by last meeting activity
+    @State private var statusSel: PocStatusSel = .open       // default: open POCs only
+    @State private var healthFilter: PocState? = nil
+    @State private var scopeKind = ""                    // "", "org", "project"
+    @State private var scopeID = ""
+    @State private var range: DateRange = .all           // by last activity OR deadline
     @State private var sort: PocSort = .priority
-    @State private var grouping: PocGroup = .status
-    @State private var expanded: Set<String> = []          // open group keys (Y/M/D or bucket)
-    @State private var expandedProjects: Set<String> = []  // projects showing their linked notes
+    @State private var grouping: PocGroup = .account
+    @State private var expanded: Set<String> = []          // open group keys
+    @State private var expandedProjects: Set<String> = []  // POC rows showing linked notes
     @State private var seeded = false
-    // Bulk selection
-    @State private var selectMode = false
-    @State private var picked: Set<String> = []
-    @State private var confirmClear = false
+    @State private var showNewPoc = false
 
     // MARK: Derived data
 
@@ -2458,28 +2617,31 @@ private struct PocProjectList: View {
         return parts.isEmpty ? "—" : parts.joined(separator: " › ")
     }
 
-    private func row(for p: CatalogProject) -> PocRow {
-        let total = p.pocCriteria.count
-        let passed = p.pocCriteria.filter { $0.status == .pass }.count
-        let failed = p.pocCriteria.filter { $0.status == .fail }.count
-        return PocRow(project: p, total: total, passed: passed, failed: failed,
-                      pending: total - passed - failed,
-                      state: .of(total: total, passed: passed, failed: failed),
-                      accountPath: accountLabel(p),
-                      lastActivity: store.notes(forProject: p.id).compactMap(\.date).max())
+    private func row(project p: CatalogProject, poc: Poc) -> PocRow {
+        PocRow(project: p, poc: poc,
+               accountPath: accountLabel(p),
+               lastActivity: store.notes(forProject: p.id).compactMap(\.date).max())
     }
 
-    /// Every non-archived project as a computed row.
-    private var allRows: [PocRow] { store.doc.projects.filter { !$0.archived }.map(row(for:)) }
+    private var allRows: [PocRow] {
+        store.doc.projects.filter { !$0.archived }.flatMap { p in p.pocs.map { row(project: p, poc: $0) } }
+    }
 
     private var filtered: [PocRow] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        let orgScope = accountFilter.isEmpty ? nil : store.orgSubtree(of: accountFilter)
+        let orgScope = scopeKind == "org" ? store.orgSubtree(of: scopeID) : nil
+        let projScope = scopeKind == "project" ? store.projectSubtree(of: scopeID) : nil
         return allRows.filter { r in
-            (q.isEmpty || r.project.name.lowercased().contains(q) || r.accountPath.lowercased().contains(q))
-            && (statusFilter == nil || r.state == statusFilter)
+            (q.isEmpty || r.poc.name.lowercased().contains(q)
+                       || r.project.name.lowercased().contains(q)
+                       || r.accountPath.lowercased().contains(q))
+            && statusSel.includes(r.poc.phase)
+            && (healthFilter == nil || r.state == healthFilter)
             && (orgScope == nil || (store.org(forProject: r.project.id).map { orgScope!.contains($0.id) } ?? false))
-            && (range.days == nil || range.includes(r.lastActivity))
+            && (projScope == nil || projScope!.contains(r.project.id))
+            // A ranged view keeps POCs with activity OR a deadline in the window,
+            // so a deadline-only POC is never hidden by the time filter.
+            && (range.days == nil || range.includes(r.lastActivity) || range.includes(r.deadline))
         }
     }
 
@@ -2489,7 +2651,9 @@ private struct PocProjectList: View {
             case .priority:
                 if a.state.priority != b.state.priority { return a.state.priority < b.state.priority }
                 return a.progress > b.progress
-            case .name:     return a.project.name.localizedCaseInsensitiveCompare(b.project.name) == .orderedAscending
+            case .deadline:
+                return (a.deadline ?? .distantFuture) < (b.deadline ?? .distantFuture)
+            case .name:     return a.poc.name.localizedCaseInsensitiveCompare(b.poc.name) == .orderedAscending
             case .progress: return a.progress > b.progress
             case .recent:   return (a.lastActivity ?? .distantPast) > (b.lastActivity ?? .distantPast)
             }
@@ -2501,8 +2665,7 @@ private struct PocProjectList: View {
         DateGrouping.tree(sorted) { $0.lastActivity }
     }
 
-    /// A project's linked meeting notes, newest-first — the "sub-group by note"
-    /// drill-down revealed when a project row is expanded.
+    /// The owning project's linked meeting notes, newest-first.
     private func linkedNotes(_ p: CatalogProject) -> [CatalogNote] {
         store.notes(forProject: p.id).sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
     }
@@ -2511,21 +2674,26 @@ private struct PocProjectList: View {
     private var groups: [(key: String, title: String, tint: Color, rows: [PocRow])] {
         switch grouping {
         case .none, .date:
-            // .none renders flat; .date renders via `dateTree` (handled in `list`).
             return [("all", "All POCs", .cyan, sorted)]
-        case .status:
+        case .phase:
+            return PocPhase.allCases.sorted { $0.order < $1.order }.compactMap { ph in
+                let rows = sorted.filter { $0.poc.phase == ph }
+                return rows.isEmpty ? nil : (ph.rawValue, ph.label, pocPhaseTint(ph), rows)
+            }
+        case .health:
             return PocState.allCases.compactMap { st in
                 let rows = sorted.filter { $0.state == st }
                 return rows.isEmpty ? nil : (st.rawValue, st.rawValue, st.color, rows)
             }
-        case .stage:
-            return OppStage.allCases.compactMap { stage in
-                let rows = sorted.filter { $0.project.stage == stage }
-                return rows.isEmpty ? nil : (stage.rawValue, stage.label, .secondary, rows)
+        case .project:
+            var order: [String] = []; var byKey: [String: [PocRow]] = [:]
+            for r in sorted {
+                if byKey[r.project.id] == nil { order.append(r.project.id) }
+                byKey[r.project.id, default: []].append(r)
             }
+            return order.map { ($0, byKey[$0]!.first!.project.name, .cyan, byKey[$0]!) }
         case .account:
-            var order: [String] = []
-            var byKey: [String: [PocRow]] = [:]
+            var order: [String] = []; var byKey: [String: [PocRow]] = [:]
             for r in sorted {
                 let key = store.org(forProject: r.project.id)?.name ?? "No account"
                 if byKey[key] == nil { order.append(key) }
@@ -2538,17 +2706,19 @@ private struct PocProjectList: View {
 
     // MARK: Overall stats
 
-    private var stats: (pocs: Int, atRisk: Int, complete: Int, passed: Int, criteria: Int) {
-        let withCriteria = allRows.filter { $0.total > 0 }
-        return (withCriteria.count,
-                withCriteria.filter { $0.state == .atRisk }.count,
-                withCriteria.filter { $0.state == .complete }.count,
-                withCriteria.reduce(0) { $0 + $1.passed },
-                withCriteria.reduce(0) { $0 + $1.total })
+    private var stats: (pocs: Int, atRisk: Int, complete: Int, dueSoon: Int, passed: Int, criteria: Int) {
+        let rows = allRows
+        return (rows.count,
+                rows.filter { $0.total > 0 && $0.state == .atRisk }.count,
+                rows.filter { $0.total > 0 && $0.state == .complete }.count,
+                rows.filter { DeadlineState($0.deadline)?.isUrgent == true }.count,
+                rows.reduce(0) { $0 + $1.passed },
+                rows.reduce(0) { $0 + $1.total })
     }
 
     private var activeFilters: Bool {
-        statusFilter != nil || !accountFilter.isEmpty || range != .all || !query.trimmingCharacters(in: .whitespaces).isEmpty
+        !statusSel.isDefault || healthFilter != nil || !scopeID.isEmpty
+        || range != .all || !query.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     // MARK: Body
@@ -2557,14 +2727,16 @@ private struct PocProjectList: View {
         Group {
             if store.doc.projects.isEmpty {
                 ContentUnavailableView("No projects", systemImage: "flask",
-                    description: Text("Add a project under Records, then track its POC here."))
+                    description: Text("Add a project under Records, then track its POCs here."))
             } else {
                 VStack(spacing: 0) {
                     statsStrip
                     controls
-                    if selectMode { selectBar }
                     Divider()
-                    if sorted.isEmpty {
+                    if allRows.isEmpty {
+                        ContentUnavailableView("No POCs yet", systemImage: "flask",
+                            description: Text("Tap ＋ to create a POC and start tracking its criteria and timeline."))
+                    } else if sorted.isEmpty {
                         ContentUnavailableView("No POCs match", systemImage: "line.3.horizontal.decrease.circle",
                             description: Text("Adjust the filters or range to see more."))
                     } else {
@@ -2575,45 +2747,11 @@ private struct PocProjectList: View {
         }
         .onAppear { if !seeded { expanded = allGroupKeys; seeded = true } }
         .onChange(of: grouping) { _, _ in expanded = allGroupKeys }
-        .confirmationDialog("Clear POC criteria?",
-                            isPresented: $confirmClear, titleVisibility: .visible) {
-            Button("Clear \(pickedWithCriteria.count) POC\(pickedWithCriteria.count == 1 ? "" : "s")", role: .destructive) {
-                // The detail pane observes the store, so it refreshes on its own.
-                store.clearPocCriteria(from: picked)
-                picked = []; selectMode = false
+        .sheet(isPresented: $showNewPoc) {
+            NewPocSheet(store: store, presetProjID: scopeKind == "project" ? scopeID : nil) { newID in
+                selID = newID
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Removes every success criterion from the selected project\(pickedWithCriteria.count == 1 ? "" : "s"). The project\(pickedWithCriteria.count == 1 ? "" : "s") stay\(pickedWithCriteria.count == 1 ? "s" : "") in the Catalog — you can re-add criteria anytime.")
         }
-    }
-
-    /// Selected projects that actually have criteria to clear.
-    private var pickedWithCriteria: Set<String> {
-        Set(allRows.filter { picked.contains($0.id) && $0.total > 0 }.map(\.id))
-    }
-
-    /// The bulk-action bar shown while in select mode.
-    private var selectBar: some View {
-        HStack(spacing: 10) {
-            Text("\(picked.count) selected").font(.caption.weight(.medium))
-            Button("Select all") { picked = Set(sorted.map(\.id)) }
-                .font(.caption).buttonStyle(.borderless)
-            if !picked.isEmpty {
-                Button("Clear") { picked = [] }
-                    .font(.caption).buttonStyle(.borderless)
-            }
-            Spacer()
-            Button(role: .destructive) { confirmClear = true } label: {
-                Label("Clear criteria", systemImage: "trash")
-            }
-            .font(.caption).buttonStyle(.borderless)
-            .disabled(pickedWithCriteria.isEmpty)
-            Button("Done") { selectMode = false; picked = [] }
-                .font(.caption).buttonStyle(.borderless)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(Color.accentColor.opacity(0.08))
     }
 
     private var allGroupKeys: Set<String> {
@@ -2630,6 +2768,7 @@ private struct PocProjectList: View {
                 statPill("\(s.pocs)", "POCs", .cyan, "flask")
                 statPill("\(s.atRisk)", "at risk", .red, "exclamationmark.triangle.fill")
                 statPill("\(s.complete)", "complete", .green, "checkmark.seal.fill")
+                if s.dueSoon > 0 { statPill("\(s.dueSoon)", "due soon", .orange, "calendar.badge.exclamationmark") }
                 Spacer()
             }
             if s.criteria > 0 {
@@ -2658,9 +2797,17 @@ private struct PocProjectList: View {
         VStack(spacing: 6) {
             HStack(spacing: 6) {
                 EntitySearchBar(text: $query, placeholder: "Search POCs…")
+                OrgProjectTreePicker(store: store, kind: $scopeKind, id: $scopeID,
+                                     allLabel: "All accounts & projects")
                 filterMenu
+                Button { showNewPoc = true } label: { Image(systemName: "plus") }
+                    .buttonStyle(.borderless).help("New POC")
             }
             HStack(spacing: 6) {
+                menu("Status", statusSel.label) {
+                    Picker("", selection: $statusSel) { ForEach(PocStatusSel.allCases) { Text($0.label).tag($0) } }
+                        .pickerStyle(.inline).labelsHidden()
+                }
                 menu("Group", grouping.rawValue) {
                     Picker("", selection: $grouping) { ForEach(PocGroup.allCases) { Text($0.rawValue).tag($0) } }
                         .pickerStyle(.inline).labelsHidden()
@@ -2682,28 +2829,34 @@ private struct PocProjectList: View {
                     .buttonStyle(.borderless)
                     .help("Expand or collapse all groups")
                 }
-                Button {
-                    selectMode.toggle(); if !selectMode { picked = [] }
-                } label: {
-                    Image(systemName: selectMode ? "checkmark.circle.fill" : "checklist")
+                if anyNonDefault {
+                    ResetButton(help: "Reset search, filters, group, sort & range", action: reset)
                 }
-                .buttonStyle(.borderless)
-                .help(selectMode ? "Exit selection" : "Select POCs to bulk-clear criteria")
             }
         }
         .padding(.horizontal, 10).padding(.bottom, 8)
     }
 
-    /// Status + account + range live under one badged Filter menu.
+    /// True when any control is off its default (drives the Reset button).
+    private var anyNonDefault: Bool {
+        activeFilters || grouping != .account || sort != .priority
+    }
+    private func reset() {
+        query = ""; statusSel = .open; healthFilter = nil; scopeKind = ""; scopeID = ""
+        range = .all; grouping = .account; sort = .priority
+    }
+
+    /// Health lives under this badged Filter menu (Status has its own labeled
+    /// dropdown in the controls row).
     private var filterMenu: some View {
         Menu {
-            Picker("Status", selection: $statusFilter) {
-                Text("All statuses").tag(PocState?.none)
+            Picker("Health", selection: $healthFilter) {
+                Text("All health").tag(PocState?.none)
                 ForEach(PocState.allCases) { Text($0.rawValue).tag(PocState?.some($0)) }
             }
             Divider()
-            Button("Clear filters") {
-                statusFilter = nil; accountFilter = ""; range = .all; query = ""
+            Button("Reset filters") {
+                statusSel = .open; healthFilter = nil; scopeKind = ""; scopeID = ""; range = .all; query = ""
             }
             .disabled(!activeFilters)
         } label: {
@@ -2738,14 +2891,14 @@ private struct PocProjectList: View {
     @ViewBuilder private var list: some View {
         List {
             if grouping == .date {
-                DateGroupDisclosure(nodes: dateTree, expanded: $expanded) { projectBlock($0) }
+                DateGroupDisclosure(nodes: dateTree, expanded: $expanded) { pocBlock($0) }
             } else {
                 ForEach(groups, id: \.key) { g in
                     if grouping == .none {
-                        ForEach(g.rows) { projectBlock($0) }
+                        ForEach(g.rows) { pocBlock($0) }
                     } else {
                         DisclosureGroup(isExpanded: binding(g.key)) {
-                            ForEach(g.rows) { projectBlock($0) }
+                            ForEach(g.rows) { pocBlock($0) }
                         } label: {
                             HStack(spacing: 6) {
                                 Circle().fill(g.tint).frame(width: 7, height: 7)
@@ -2765,35 +2918,29 @@ private struct PocProjectList: View {
                 set: { if $0 { expanded.insert(key) } else { expanded.remove(key) } })
     }
 
-    /// A project row plus, when expanded, its linked meeting notes beneath it.
-    @ViewBuilder private func projectBlock(_ r: PocRow) -> some View {
+    /// A POC row plus, when expanded, its project's linked meeting notes.
+    @ViewBuilder private func pocBlock(_ r: PocRow) -> some View {
         let notes = linkedNotes(r.project)
         VStack(spacing: 0) {
-            projectRow(r, noteCount: notes.count)
+            pocRow(r, noteCount: notes.count)
             if expandedProjects.contains(r.id) {
                 ForEach(notes) { noteSubRow($0) }
             }
         }
     }
 
-    private func projectRow(_ r: PocRow, noteCount: Int) -> some View {
+    private func pocRow(_ r: PocRow, noteCount: Int) -> some View {
         HStack(spacing: 10) {
-            if selectMode {
-                Button {
-                    if picked.contains(r.id) { picked.remove(r.id) } else { picked.insert(r.id) }
-                } label: {
-                    Image(systemName: picked.contains(r.id) ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(picked.contains(r.id) ? Color.accentColor : .secondary)
-                }
-                .buttonStyle(.plain)
-            }
             Image(systemName: r.state.icon)
                 .foregroundStyle(r.state.color)
                 .font(.system(size: 15))
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
-                Text(r.project.name).lineLimit(1)
-                Text(r.accountPath).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(r.poc.name).lineLimit(1)
+                    PhasePill(phase: r.poc.phase)
+                }
+                Text(r.project.name + " · " + r.accountPath).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 if r.total > 0 {
                     HStack(spacing: 6) {
                         ProgressView(value: r.progress)
@@ -2806,11 +2953,11 @@ private struct PocProjectList: View {
                 }
             }
             Spacer(minLength: 4)
+            if let dl = r.deadline { DeadlineBadge(deadline: dl) }
             if let d = r.lastActivity {
                 Text(d.formatted(.relative(presentation: .named)))
                     .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
             }
-            // Drill-down toggle to reveal this project's linked notes.
             if noteCount > 0 {
                 Button {
                     if expandedProjects.contains(r.id) { expandedProjects.remove(r.id) }
@@ -2826,18 +2973,12 @@ private struct PocProjectList: View {
         .padding(.vertical, 3)
         .padding(.horizontal, 6)
         .background(RoundedRectangle(cornerRadius: 6)
-            .fill(!selectMode && selID == r.id ? Color.accentColor.opacity(0.14) : .clear))
+            .fill(selID == r.id ? Color.accentColor.opacity(0.14) : .clear))
         .contentShape(Rectangle())
-        .onTapGesture {
-            if selectMode {
-                if picked.contains(r.id) { picked.remove(r.id) } else { picked.insert(r.id) }
-            } else {
-                selID = r.id
-            }
-        }
+        .onTapGesture { selID = r.id }
     }
 
-    /// One linked meeting note, indented under its project; opens on click.
+    /// One linked meeting note, indented under its POC; opens on click.
     private func noteSubRow(_ n: CatalogNote) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "doc.text").font(.caption2).foregroundStyle(.secondary)
@@ -2855,57 +2996,182 @@ private struct PocProjectList: View {
     }
 }
 
-/// Detail pane: the selected project's POC criteria — add, cycle status,
-/// remove, and seed from linked meetings.
+/// Sheet to create a new POC: pick the owning project, name it, create.
+private struct NewPocSheet: View {
+    @ObservedObject var store: CatalogStore
+    let presetProjID: String?
+    var onCreate: (String?) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var kind = ""
+    @State private var projID = ""
+    @State private var name = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("New POC").font(.title3.weight(.semibold))
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Project").font(.caption).foregroundStyle(.secondary)
+                OrgProjectTreePicker(store: store, kind: $kind, id: $projID,
+                                     allLabel: nil, scope: .projectsOnly, placeholder: "Choose a project…")
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Name").font(.caption).foregroundStyle(.secondary)
+                TextField("e.g. Security evaluation, Scale test…", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(create)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Create") { create() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(projID.isEmpty)
+            }
+        }
+        .padding(18)
+        .frame(width: 380)
+        .onAppear { if let p = presetProjID { kind = "project"; projID = p } }
+    }
+
+    private func create() {
+        guard !projID.isEmpty else { return }
+        let id = store.addPoc(name: name, to: projID)
+        onCreate(id)
+        dismiss()
+    }
+}
+
+/// Detail pane: one selected POC — its name, phase, timeline, description, and
+/// success criteria (add, cycle status, remove, seed from meetings).
+/// Sheet for pasting a whole list of criteria at once (indentation → hierarchy).
+private struct PocBulkAddSheet: View {
+    var onAdd: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Bulk add criteria").font(.title3.weight(.semibold))
+            Text("One criterion per line. Indent a line (spaces or a tab) to nest it under the one above — to any depth. Bullets like “* ” or “1.” are stripped; commas stay part of the text.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextEditor(text: $text)
+                .font(.body.monospaced())
+                .frame(minWidth: 460, minHeight: 220)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+            HStack {
+                let n = text.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+                Text(n == 0 ? " " : "\(n) line\(n == 1 ? "" : "s")")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Add") { onAdd(text); dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(18)
+        .frame(width: 520)
+    }
+}
+
+/// One criterion positioned in the display tree (with its indent depth).
+private struct PocCritNode: Identifiable {
+    let criterion: PocCriterion
+    let depth: Int
+    var id: String { criterion.id }
+}
+
 private struct PocDetail: View {
     @ObservedObject var store: CatalogStore
-    let projID: String?
+    let pocID: String?
     @State private var newCriterion = ""
     @State private var suggesting = false
     @State private var status = ""
+    @State private var confirmClear = false
+    @State private var confirmDelete = false
+    @State private var draftName = ""
+    @State private var draftDetail = ""
+    @State private var collapsedCrit: Set<String> = []   // collapsed sub-trees
+    @State private var addingUnder: String? = nil         // criterion id we're adding a child to
+    @State private var childText = ""
+    @State private var showBulkAdd = false
+    @State private var editingCrit: String? = nil         // criterion id being edited
+    @State private var editText = ""
+    @FocusState private var editFocused: Bool
+    @FocusState private var nameFocused: Bool
+    @FocusState private var detailFocused: Bool
 
-    private var opp: CatalogProject? { projID.flatMap { store.project($0) } }
+    private var found: (project: CatalogProject, poc: Poc)? { pocID.flatMap { store.poc($0) } }
 
-    /// The bridge can run only when cloud AI is available and the project
-    /// has at least one linked meeting to read.
+    /// The bridge can run only when cloud AI is available and the project has
+    /// at least one linked meeting to read.
     private var canSuggest: Bool {
-        guard let opp else { return false }
-        return !AppSettings.shared.localOnlyMode && !store.notes(forProject: opp.id).isEmpty
+        guard let f = found else { return false }
+        return !AppSettings.shared.localOnlyMode && !store.notes(forProject: f.project.id).isEmpty
     }
 
     var body: some View {
-        if let opp {
+        if let f = found {
+            let opp = f.project, poc = f.poc
             VStack(alignment: .leading, spacing: 14) {
-                header(opp)
-                if opp.pocCriteria.isEmpty {
+                header(opp, poc)
+                descriptionField(opp, poc)
+                if poc.criteria.isEmpty {
                     ContentUnavailableView("No success criteria yet", systemImage: "checklist",
                         description: Text("Add the measurable outcomes this POC must prove — or seed them from the project's meetings."))
                         .frame(maxHeight: .infinity)
                 } else {
-                    criteriaList(opp)
+                    criteriaList(opp, poc)
                 }
-                addBar(opp)
+                addBar(opp, poc)
             }
             .padding(18)
             .animation(.default, value: status)
+            .onAppear { draftName = poc.name; draftDetail = poc.detail }
+            .onChange(of: pocID) { _, _ in
+                draftName = poc.name; draftDetail = poc.detail
+                editingCrit = nil; addingUnder = nil
+            }
+            .confirmationDialog("Clear this POC's criteria?",
+                                isPresented: $confirmClear, titleVisibility: .visible) {
+                Button("Clear \(poc.criteria.count) criteri\(poc.criteria.count == 1 ? "on" : "a")", role: .destructive) {
+                    store.clearPocCriteria(pocID: poc.id, in: opp.id)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Removes every success criterion from “\(poc.name)”. The POC and project stay — you can re-add criteria anytime.")
+            }
+            .confirmationDialog("Delete this POC?",
+                                isPresented: $confirmDelete, titleVisibility: .visible) {
+                Button("Delete “\(poc.name)”", role: .destructive) {
+                    store.removePoc(poc.id, from: opp.id)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Removes this POC and its criteria from “\(opp.name)”. The project itself stays in the Catalog.")
+            }
         } else {
-            ContentUnavailableView("Select a project", systemImage: "flask",
-                description: Text("Pick a project to track its proof-of-concept criteria."))
+            ContentUnavailableView("Select a POC", systemImage: "flask",
+                description: Text("Pick a POC to track its criteria and timeline — or create one with ＋."))
         }
     }
 
-    @ViewBuilder private func header(_ opp: CatalogProject) -> some View {
-        let total = opp.pocCriteria.count
-        let passed = opp.pocCriteria.filter { $0.status == .pass }.count
-        let failed = opp.pocCriteria.filter { $0.status == .fail }.count
+    // MARK: Header
+
+    @ViewBuilder private func header(_ opp: CatalogProject, _ poc: Poc) -> some View {
+        let total = poc.total, passed = poc.passed, failed = poc.failed
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "flask").foregroundStyle(.cyan)
-                Text(opp.name).font(.title3.weight(.semibold))
+                TextField("POC name", text: $draftName)
+                    .textFieldStyle(.plain).font(.title3.weight(.semibold))
+                    .focused($nameFocused)
+                    .onSubmit { commitName(opp, poc) }
+                    .onChange(of: nameFocused) { _, f in if !f { commitName(opp, poc) } }
                 Spacer()
-                Button {
-                    suggestFromMeetings(opp)
-                } label: {
+                Button { suggestFromMeetings(opp, poc) } label: {
                     if suggesting { ProgressView().controlSize(.small) }
                     else { Label("Suggest from meetings", systemImage: "sparkles") }
                 }
@@ -2913,6 +3179,31 @@ private struct PocDetail: View {
                 .help(canSuggest
                       ? "Read this project's linked meetings and add the success criteria they mention"
                       : "Needs cloud AI (not Local-only) and at least one meeting linked to this project")
+            }
+            // Owning project / account path.
+            Text(accountPath(opp)).font(.caption).foregroundStyle(.secondary)
+            // Phase + timeline. Lays out on one row when the pane is wide enough,
+            // else stacks so the date fields and deadline pill never get clipped.
+            phaseMenu(opp, poc)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 14) { timelineDates(opp, poc); Spacer(minLength: 0) }
+                VStack(alignment: .leading, spacing: 8) { timelineDates(opp, poc) }
+            }
+            // Destructive actions, kept subtle.
+            HStack(spacing: 14) {
+                Spacer()
+                if total > 0 {
+                    Button(role: .destructive) { confirmClear = true } label: {
+                        Label("Clear all criteria", systemImage: "eraser")
+                    }
+                    .buttonStyle(.borderless).font(.caption)
+                    .help("Remove all success criteria from this POC (the POC and project stay)")
+                }
+                Button(role: .destructive) { confirmDelete = true } label: {
+                    Label("Delete POC", systemImage: "trash")
+                }
+                .buttonStyle(.borderless).font(.caption)
+                .help("Delete this POC entirely (the project stays)")
             }
             if total > 0 {
                 HStack(spacing: 12) {
@@ -2933,68 +3224,343 @@ private struct PocDetail: View {
         }
     }
 
-    private func criteriaList(_ opp: CatalogProject) -> some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                ForEach(opp.pocCriteria) { c in
-                    HStack(alignment: .top, spacing: 10) {
-                        Button { store.setPocStatus(c.status.next, criterionID: c.id, projID: opp.id) } label: {
-                            Image(systemName: statusIcon(c.status)).foregroundStyle(statusColor(c.status))
-                                .font(.system(size: 16))
-                        }
-                        .buttonStyle(.plain).help("Click to cycle: Pending → Passed → Failed")
-                        Text(c.text)
-                            .strikethrough(c.status == .pass, color: .secondary)
-                            .foregroundStyle(c.status == .fail ? Color.red : .primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(c.status.label).font(.caption).foregroundStyle(statusColor(c.status))
-                        Button { store.removePocCriterion(c.id, from: opp.id) } label: {
-                            Image(systemName: "xmark.circle").foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain).help("Remove criterion")
-                    }
-                    .padding(.vertical, 8)
-                    Divider()
-                }
-            }
-        }
-        .frame(maxHeight: .infinity)
+    private func accountPath(_ p: CatalogProject) -> String {
+        var parts: [String] = []
+        if let org = store.org(forProject: p.id) { parts.append(store.orgPath(of: org.id)) }
+        parts.append(p.name)
+        return parts.joined(separator: " › ")
     }
 
-    private func addBar(_ opp: CatalogProject) -> some View {
+    private func phaseMenu(_ opp: CatalogProject, _ poc: Poc) -> some View {
+        Menu {
+            Picker("Phase", selection: Binding(
+                get: { poc.phase },
+                set: { store.setPocPhase($0, pocID: poc.id, in: opp.id) })) {
+                ForEach(PocPhase.allCases) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.inline).labelsHidden()
+        } label: {
+            PhasePill(phase: poc.phase)
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+    }
+
+    /// The start + target date controls plus the deadline pill — used in both
+    /// the wide (one-row) and narrow (stacked) layouts via `ViewThatFits`.
+    @ViewBuilder private func timelineDates(_ opp: CatalogProject, _ poc: Poc) -> some View {
+        dateControl("Start", date: poc.startDate, defaultDays: 0) {
+            store.setPocStartDate($0, pocID: poc.id, in: opp.id)
+        }
+        dateControl("Target", date: poc.deadline, defaultDays: 14) {
+            store.setPocDeadline($0, pocID: poc.id, in: opp.id)
+        }
+        if let d = poc.deadline { DeadlineBadge(deadline: d) }
+    }
+
+    @ViewBuilder private func dateControl(_ label: String, date: Date?, defaultDays: Int,
+                                          set: @escaping (Date?) -> Void) -> some View {
+        if let d = date {
+            HStack(spacing: 4) {
+                Text(label).font(.caption).foregroundStyle(.secondary)
+                DatePicker("", selection: Binding(get: { d }, set: { set($0) }),
+                           displayedComponents: .date)
+                    .labelsHidden().datePickerStyle(.compact)
+                Button { set(nil) } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain).help("Clear the \(label.lowercased()) date")
+            }
+        } else {
+            Button {
+                set(Calendar.current.date(byAdding: .day, value: defaultDays, to: Date()))
+            } label: {
+                Label("\(label) date", systemImage: "calendar.badge.plus")
+            }
+            .buttonStyle(.borderless).font(.caption)
+        }
+    }
+
+    private func descriptionField(_ opp: CatalogProject, _ poc: Poc) -> some View {
+        TextField("What must this POC prove? (optional)", text: $draftDetail, axis: .vertical)
+            .textFieldStyle(.roundedBorder)
+            .lineLimit(1...3)
+            .focused($detailFocused)
+            .onChange(of: detailFocused) { _, f in
+                if !f { store.setPocDetail(draftDetail, pocID: poc.id, in: opp.id) }
+            }
+    }
+
+    private func commitName(_ opp: CatalogProject, _ poc: Poc) {
+        let clean = draftName.trimmingCharacters(in: .whitespaces)
+        if clean.isEmpty { draftName = poc.name } else if clean != poc.name {
+            store.renamePoc(poc.id, in: opp.id, to: clean)
+        }
+    }
+
+    // MARK: Criteria
+
+    // MARK: Criteria tree
+
+    private func children(of parent: String?, in poc: Poc) -> [PocCriterion] {
+        poc.criteria.filter { $0.parentID == parent }
+    }
+    private func hasChildren(_ c: PocCriterion, _ poc: Poc) -> Bool {
+        poc.criteria.contains { $0.parentID == c.id }
+    }
+    /// Passed/total over a parent's descendant leaves (for the roll-up count).
+    private func subtreeTally(_ c: PocCriterion, _ poc: Poc) -> (passed: Int, total: Int) {
+        var stack = [c.id]; var leaves: [PocCriterion] = []
+        while let id = stack.popLast() {
+            let kids = poc.criteria.filter { $0.parentID == id }
+            if kids.isEmpty {
+                if let leaf = poc.criteria.first(where: { $0.id == id }) { leaves.append(leaf) }
+            } else {
+                stack.append(contentsOf: kids.map(\.id))
+            }
+        }
+        return (leaves.filter { $0.status == .pass }.count, leaves.count)
+    }
+
+    /// Flatten the criteria hierarchy into a display order (pre-order DFS),
+    /// honoring collapsed sub-trees.
+    private func critNodes(_ poc: Poc) -> [PocCritNode] {
+        var out: [PocCritNode] = []
+        func walk(_ parent: String?, _ depth: Int) {
+            for c in children(of: parent, in: poc) {
+                out.append(PocCritNode(criterion: c, depth: depth))
+                if hasChildren(c, poc) && !collapsedCrit.contains(c.id) { walk(c.id, depth + 1) }
+            }
+        }
+        walk(nil, 0)
+        return out
+    }
+
+    /// Ids of criteria that have children (the collapsible parents).
+    private func parentIDs(_ poc: Poc) -> [String] {
+        poc.criteria.filter { c in poc.criteria.contains { $0.parentID == c.id } }.map(\.id)
+    }
+
+    private func criteriaList(_ opp: CatalogProject, _ poc: Poc) -> some View {
+        let parents = parentIDs(poc)
+        let allCollapsed = !parents.isEmpty && parents.allSatisfy { collapsedCrit.contains($0) }
+        return VStack(spacing: 0) {
+            if !parents.isEmpty {
+                HStack {
+                    Spacer()
+                    Button {
+                        if allCollapsed { collapsedCrit.subtract(parents) } else { collapsedCrit.formUnion(parents) }
+                    } label: {
+                        Image(systemName: allCollapsed ? "chevron.down.circle" : "chevron.up.circle")
+                            .font(.system(size: 14)).frame(width: 26, height: 26).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless).help(allCollapsed ? "Expand all sub-criteria" : "Collapse all sub-criteria")
+                }
+            }
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(critNodes(poc)) { node in
+                        criterionRow(opp, poc, node)
+                        Divider()
+                    }
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+    }
+
+    /// A comfortably-sized icon button (26×26 hit area) for the criterion rows.
+    private func critIcon(_ icon: String, _ help: String, size: CGFloat = 14,
+                          color: Color = .secondary, disabled: Bool = false,
+                          _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: size)).foregroundStyle(color)
+                .frame(width: 26, height: 26).contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless).disabled(disabled).help(help)
+    }
+
+    @ViewBuilder private func criterionRow(_ opp: CatalogProject, _ poc: Poc, _ node: PocCritNode) -> some View {
+        let c = node.criterion
+        let parent = hasChildren(c, poc)
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 6) {
+                Color.clear.frame(width: CGFloat(node.depth) * 18, height: 1)
+                if parent {
+                    critIcon(collapsedCrit.contains(c.id) ? "chevron.right" : "chevron.down",
+                             "Collapse or expand sub-criteria") { toggleCollapse(c.id) }
+                } else {
+                    critIcon(statusIcon(c.status), "Click to cycle: Pending → Passed → Failed",
+                             size: 16, color: statusColor(c.status)) {
+                        store.setPocStatus(c.status.next, criterionID: c.id, pocID: poc.id, projID: opp.id)
+                    }
+                }
+                if editingCrit == c.id {
+                    TextField("Criterion", text: $editText, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(1...6)
+                        .focused($editFocused)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onSubmit { commitEdit(opp, poc) }
+                        .onChange(of: editFocused) { _, f in if !f { commitEdit(opp, poc) } }
+                } else {
+                    Text(c.text)
+                        .strikethrough(!parent && c.status == .pass, color: .secondary)
+                        .foregroundStyle(!parent && c.status == .fail ? Color.red : .primary)
+                        .fontWeight(parent ? .medium : .regular)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { beginEdit(c) }
+                        .help("Double-click to edit")
+                }
+                if parent {
+                    let t = subtreeTally(c, poc)
+                    Text("\(t.passed)/\(t.total)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                } else {
+                    Text(c.status.label).font(.caption).foregroundStyle(statusColor(c.status))
+                }
+                let sibs = children(of: c.parentID, in: poc)
+                let idx = sibs.firstIndex { $0.id == c.id } ?? 0
+                critIcon("chevron.up", "Move up", disabled: idx == 0) {
+                    store.movePocCriterion(c.id, up: true, pocID: poc.id, projID: opp.id)
+                }
+                critIcon("chevron.down", "Move down", disabled: idx >= sibs.count - 1) {
+                    store.movePocCriterion(c.id, up: false, pocID: poc.id, projID: opp.id)
+                }
+                critIcon("pencil", "Edit criterion") { beginEdit(c) }
+                critIcon("plus.circle", "Add a sub-criterion") { addingUnder = c.id; childText = "" }
+                critIcon("xmark.circle", parent ? "Remove this item and its sub-criteria" : "Remove criterion") {
+                    store.removePocCriterion(c.id, pocID: poc.id, from: opp.id)
+                }
+            }
+            .padding(.vertical, 4)
+            if addingUnder == c.id {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Color.clear.frame(width: CGFloat(node.depth + 1) * 18, height: 1)
+                        TextField("Sub-criterion… (one per line to add several)",
+                                  text: $childText, axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+                            .lineLimit(1...4)
+                            .onSubmit { commitChild(opp, poc, parent: c.id) }
+                        Button("Add") { commitChild(opp, poc, parent: c.id) }
+                            .disabled(childText.trimmingCharacters(in: .whitespaces).isEmpty)
+                        Button("Cancel") { addingUnder = nil }
+                    }
+                    if splitCriteria(childText).count > 1 {
+                        Text("Adds \(splitCriteria(childText).count) sub-criteria (indent to nest deeper)")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .padding(.leading, CGFloat(node.depth + 1) * 18)
+                    }
+                }
+                .padding(.bottom, 8)
+            }
+        }
+    }
+
+    private func beginEdit(_ c: PocCriterion) {
+        editText = c.text; editingCrit = c.id; editFocused = true
+    }
+    private func commitEdit(_ opp: CatalogProject, _ poc: Poc) {
+        if let id = editingCrit {
+            store.setPocCriterionText(editText, criterionID: id, pocID: poc.id, projID: opp.id)
+        }
+        editingCrit = nil
+    }
+
+    private func toggleCollapse(_ id: String) {
+        if collapsedCrit.contains(id) { collapsedCrit.remove(id) } else { collapsedCrit.insert(id) }
+    }
+
+    private func commitChild(_ opp: CatalogProject, _ poc: Poc, parent: String) {
+        // Parse one-per-line (indent to nest deeper), all rooted under `parent`.
+        let lines = parseBulk(childText)
+        guard !lines.isEmpty else { return }
+        store.addPocCriteriaTree(lines, under: parent, toPoc: poc.id, in: opp.id)
+        childText = ""; addingUnder = nil
+        collapsedCrit.remove(parent)   // reveal the newly added children
+    }
+
+    private func addBar(_ opp: CatalogProject, _ poc: Poc) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top, spacing: 8) {
-                // Multi-line so you can paste a whole list at once — one
-                // criterion per line (commas also split). ⌥⏎ for a newline;
-                // ⏎ commits.
-                TextField("Add a success criterion… (one per line to add several)",
-                          text: $newCriterion, axis: .vertical)
+                TextField("Add a success criterion…", text: $newCriterion, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
-                    .onSubmit { commitAdd(opp) }
-                Button("Add") { commitAdd(opp) }
+                    .onSubmit { commitAdd(opp, poc) }
+                Button("Add") { commitAdd(opp, poc) }
                     .disabled(newCriterion.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Bulk…") { showBulkAdd = true }
+                    .help("Paste a whole list — one criterion per line; indent lines to nest them")
             }
             if splitCriteria(newCriterion).count > 1 {
-                Text("Adds \(splitCriteria(newCriterion).count) criteria")
+                Text("Adds \(splitCriteria(newCriterion).count) criteria (one per line)")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+        .sheet(isPresented: $showBulkAdd) {
+            PocBulkAddSheet { text in
+                let lines = parseBulk(text)
+                guard !lines.isEmpty else { return }
+                store.addPocCriteriaTree(lines, under: nil, toPoc: poc.id, in: opp.id)
+            }
+        }
     }
 
-    /// Split the add field into individual criteria — one per line, and commas
-    /// split too — so a pasted list becomes many criteria at once.
+    /// Parse a pasted list into depth-tagged criteria. One criterion per line;
+    /// leading indentation (spaces / tabs) nests a line under the nearest
+    /// shallower one, to any depth; blank lines are skipped and common bullet
+    /// markers (`*`, `-`, `•`, `1.`) are stripped. Commas are NOT separators —
+    /// a criterion may contain commas.
+    private func parseBulk(_ s: String) -> [(text: String, depth: Int)] {
+        var out: [(String, Int)] = []
+        var indent: [Int] = []
+        for raw in s.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+            var width = 0
+            for ch in line {
+                if ch == " " { width += 1 } else if ch == "\t" { width += 4 } else { break }
+            }
+            let text = stripBullet(line.trimmingCharacters(in: .whitespaces))
+            guard !text.isEmpty else { continue }
+            while let last = indent.last, last >= width { indent.removeLast() }
+            out.append((text, indent.count))
+            indent.append(width)
+        }
+        return out
+    }
+
+    /// Strip a single leading bullet / number marker from a line.
+    private func stripBullet(_ s: String) -> String {
+        var t = s
+        if let f = t.first, "*-•·".contains(f) {
+            t.removeFirst()
+            return t.trimmingCharacters(in: .whitespaces)
+        }
+        // "1." / "1)" style
+        let digits = t.prefix { $0.isNumber }
+        if !digits.isEmpty {
+            let after = t.dropFirst(digits.count)
+            if let sep = after.first, sep == "." || sep == ")" {
+                return after.dropFirst().trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return t
+    }
+
+    /// Split the inline add field into criteria — one per **line** only (commas
+    /// are kept, since a criterion often contains them), stripping bullet markers.
     private func splitCriteria(_ s: String) -> [String] {
-        s.split(whereSeparator: { $0 == "\n" || $0 == "," })
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+        s.split(separator: "\n")
+            .map { stripBullet($0.trimmingCharacters(in: .whitespaces)) }
             .filter { !$0.isEmpty }
     }
 
-    private func commitAdd(_ opp: CatalogProject) {
+    private func commitAdd(_ opp: CatalogProject, _ poc: Poc) {
         let items = splitCriteria(newCriterion)
         guard !items.isEmpty else { return }
-        let added = store.addPocCriteriaTexts(items, to: opp.id)
+        let added = store.addPocCriteriaTexts(items, toPoc: poc.id, in: opp.id)
         newCriterion = ""
         if items.count > 1 {
             status = added == 0 ? "All already tracked."
@@ -3005,15 +3571,13 @@ private struct PocDetail: View {
     }
 
     /// Bridge: read the project's linked meeting notes, extract POC success
-    /// criteria, and add the new ones (deduped). Non-destructive — everything
-    /// added is editable/removable like a hand-typed criterion.
-    private func suggestFromMeetings(_ opp: CatalogProject) {
+    /// criteria, and add the new ones to this POC (deduped).
+    private func suggestFromMeetings(_ opp: CatalogProject, _ poc: Poc) {
         let notes = store.notes(forProject: opp.id)
         let transcripts = notes.compactMap { store.url(of: $0).readText() }
         guard !transcripts.isEmpty else { status = "No readable meetings linked to this project."; return }
-        // Cap the combined text so a busy project doesn't blow the context.
         let combined = String(transcripts.joined(separator: "\n\n---\n\n").prefix(40_000))
-        let projID = opp.id
+        let projID = opp.id, pid = poc.id
         suggesting = true
         status = "Reading \(transcripts.count) meeting\(transcripts.count == 1 ? "" : "s")…"
         Task { @MainActor in
@@ -3021,7 +3585,7 @@ private struct PocDetail: View {
             do {
                 let criteria = try await TextPolisher().extractPocCriteria(transcript: combined)
                 guard !criteria.isEmpty else { status = "No success criteria found in the linked meetings."; return }
-                let added = store.addPocCriteriaTexts(criteria, to: projID)
+                let added = store.addPocCriteriaTexts(criteria, toPoc: pid, in: projID)
                 status = added == 0
                     ? "Found \(criteria.count) — all already tracked."
                     : "Added \(added) criteri\(added == 1 ? "on" : "a") from \(transcripts.count) meeting\(transcripts.count == 1 ? "" : "s")."

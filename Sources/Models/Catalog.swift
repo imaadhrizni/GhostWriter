@@ -75,22 +75,32 @@ struct CatalogProject: Codable, Identifiable, Hashable {
     var valueCents: Int?
     var currency = "USD"
     var archived = false
-    /// Proof-of-concept success criteria tracked across meetings.
-    var pocCriteria: [PocCriterion] = []
+    /// Proof-of-concept records tracked under this project. A project can hold
+    /// several POCs, each with its own criteria, timeline, and lifecycle phase.
+    var pocs: [Poc] = []
 
-    /// A POC is "at risk" when it has a failing criterion, or nothing has passed
-    /// yet. Only meaningful once criteria exist.
-    var isPocAtRisk: Bool {
-        pocCriteria.contains { $0.status == .fail } || !pocCriteria.contains { $0.status == .pass }
+    /// Convenience: any POC on the project currently at risk.
+    var hasPocAtRisk: Bool { pocs.contains(where: \.isAtRisk) }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, orgID, parentID, stage, valueCents, currency, archived, pocs
+        // Legacy (pre-multi-POC) keys — decoded into a migrated POC, never written.
+        case pocCriteria, pocDeadline
     }
-}
 
-extension CatalogProject {
+    init(id: String = UUID().uuidString, name: String, orgID: String? = nil,
+         parentID: String? = nil, stage: OppStage = .open, valueCents: Int? = nil,
+         currency: String = "USD", archived: Bool = false, pocs: [Poc] = []) {
+        self.id = id; self.name = name; self.orgID = orgID; self.parentID = parentID
+        self.stage = stage; self.valueCents = valueCents; self.currency = currency
+        self.archived = archived; self.pocs = pocs
+    }
+
     /// Tolerant decoder: fields added after v1 (`parentID`, `stage`,
-    /// `valueCents`, `currency`, `pocCriteria`) are optional on the wire, so
-    /// catalogs exported before they existed still load. Any legacy
-    /// `opportunities` array in the JSON is simply ignored (dropped) — notes
-    /// once filed under an opportunity become unassigned.
+    /// `valueCents`, `currency`, `pocs`) are optional on the wire, so catalogs
+    /// exported before they existed still load. A legacy single-POC project
+    /// (criteria/deadline hung directly off the project) is migrated into one
+    /// `Poc`. Any legacy `opportunities` array in the JSON is simply ignored.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
@@ -101,7 +111,100 @@ extension CatalogProject {
         valueCents = try c.decodeIfPresent(Int.self, forKey: .valueCents)
         currency = try c.decodeIfPresent(String.self, forKey: .currency) ?? "USD"
         archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
-        pocCriteria = try c.decodeIfPresent([PocCriterion].self, forKey: .pocCriteria) ?? []
+        pocs = try c.decodeIfPresent([Poc].self, forKey: .pocs) ?? []
+        // Migrate a legacy single POC into the new list.
+        let legacyCriteria = try c.decodeIfPresent([PocCriterion].self, forKey: .pocCriteria) ?? []
+        let legacyDeadline = try c.decodeIfPresent(Date.self, forKey: .pocDeadline)
+        if pocs.isEmpty && (!legacyCriteria.isEmpty || legacyDeadline != nil) {
+            pocs = [Poc(name: "POC", criteria: legacyCriteria, deadline: legacyDeadline)]
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encodeIfPresent(orgID, forKey: .orgID)
+        try c.encodeIfPresent(parentID, forKey: .parentID)
+        try c.encode(stage, forKey: .stage)
+        try c.encodeIfPresent(valueCents, forKey: .valueCents)
+        try c.encode(currency, forKey: .currency)
+        try c.encode(archived, forKey: .archived)
+        try c.encode(pocs, forKey: .pocs)
+    }
+}
+
+/// A proof-of-concept tracked under a project. A project can hold several; each
+/// owns its criteria, an optional start→deadline window, and a lifecycle phase.
+struct Poc: Codable, Identifiable, Hashable {
+    var id = UUID().uuidString
+    var name: String
+    /// What this POC must prove — free text shown atop the detail pane.
+    var detail: String = ""
+    var phase: PocPhase = .planned
+    var criteria: [PocCriterion] = []
+    var startDate: Date?
+    var deadline: Date?
+
+    /// Leaf criteria — the ones that carry a real pass/fail. Parents are just
+    /// groupings, so the tallies count leaves to avoid double-counting. A flat
+    /// (un-nested) POC has every criterion as a leaf.
+    var leaves: [PocCriterion] {
+        let parents = Set(criteria.compactMap { $0.parentID })
+        return criteria.filter { !parents.contains($0.id) }
+    }
+    var passed: Int { leaves.filter { $0.status == .pass }.count }
+    var failed: Int { leaves.filter { $0.status == .fail }.count }
+    var total: Int  { leaves.count }
+
+    /// At risk when a leaf has failed, or nothing has passed yet. Only
+    /// meaningful once criteria exist.
+    var isAtRisk: Bool {
+        let ls = leaves
+        return ls.contains { $0.status == .fail } || !ls.contains { $0.status == .pass }
+    }
+
+    enum CodingKeys: String, CodingKey { case id, name, detail, phase, criteria, startDate, deadline }
+    init(id: String = UUID().uuidString, name: String, detail: String = "",
+         phase: PocPhase = .planned, criteria: [PocCriterion] = [],
+         startDate: Date? = nil, deadline: Date? = nil) {
+        self.id = id; self.name = name; self.detail = detail; self.phase = phase
+        self.criteria = criteria; self.startDate = startDate; self.deadline = deadline
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "POC"
+        detail = try c.decodeIfPresent(String.self, forKey: .detail) ?? ""
+        phase = try c.decodeIfPresent(PocPhase.self, forKey: .phase) ?? .planned
+        criteria = try c.decodeIfPresent([PocCriterion].self, forKey: .criteria) ?? []
+        startDate = try c.decodeIfPresent(Date.self, forKey: .startDate)
+        deadline = try c.decodeIfPresent(Date.self, forKey: .deadline)
+    }
+}
+
+/// A POC's lifecycle phase — set by the user, distinct from the criteria-derived
+/// health. Drives grouping and the phase pill in the tracker.
+enum PocPhase: String, Codable, CaseIterable, Identifiable {
+    case planned, active, passed, failed, onHold
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .planned: return "Planned"
+        case .active:  return "In progress"
+        case .passed:  return "Passed"
+        case .failed:  return "Failed"
+        case .onHold:  return "On hold"
+        }
+    }
+    /// Ordering weight — active work first, closed/paused work last.
+    var order: Int {
+        switch self { case .active: 0; case .planned: 1; case .failed: 2; case .onHold: 3; case .passed: 4 }
+    }
+    /// "Open" = still in flight (planned / in progress / on hold). Passed and
+    /// failed are closed outcomes. Drives the tracker's default Open-only filter.
+    var isOpen: Bool {
+        switch self { case .planned, .active, .onHold: true; case .passed, .failed: false }
     }
 }
 
@@ -117,11 +220,15 @@ enum PocStatus: String, Codable, CaseIterable {
     }
 }
 
-/// A single measurable success criterion for a project's proof-of-concept.
+/// A single POC success criterion. Criteria form an unlimited hierarchy via
+/// `parentID` (nil = top-level); a parent groups its children, and only leaf
+/// criteria carry the measurable pass/fail that rolls up the tallies.
 struct PocCriterion: Codable, Identifiable, Hashable {
     var id = UUID().uuidString
     var text: String
     var status: PocStatus = .pending
+    /// Parent criterion — nil for a top-level item. Enables sub-criteria.
+    var parentID: String?
 }
 
 /// Controlled-vocabulary tag. Aliases fold variants (renewal/renewals) into one.
@@ -287,28 +394,89 @@ final class CatalogStore: ObservableObject {
         }
     }
 
-    // MARK: POC success criteria
+    // MARK: POC records & success criteria
 
-    /// Projects that have at least one POC criterion, by name.
+    /// Every POC in the catalog paired with its owning project — the unit the
+    /// tracker lists, filters, and groups. Newest-touched projects aside, order
+    /// is stable (project order, then the project's POC order).
+    var allPocs: [(project: CatalogProject, poc: Poc)] {
+        doc.projects.filter { !$0.archived }.flatMap { p in p.pocs.map { (p, $0) } }
+    }
+
+    /// Projects that carry at least one POC, by name.
     var projectsWithPOC: [CatalogProject] {
-        doc.projects.filter { !$0.pocCriteria.isEmpty }
+        doc.projects.filter { !$0.pocs.isEmpty }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    /// Bulk-add criteria (e.g. AI-extracted from meetings), skipping any whose
-    /// text already exists on the project (case-insensitive). Returns how many
-    /// were actually added.
+    /// Locate a POC and its project by POC id.
+    func poc(_ pocID: String) -> (project: CatalogProject, poc: Poc)? {
+        for p in doc.projects { if let m = p.pocs.first(where: { $0.id == pocID }) { return (p, m) } }
+        return nil
+    }
+
+    /// Create a new POC under a project and return its id.
     @discardableResult
-    func addPocCriteriaTexts(_ texts: [String], to projID: String) -> Int {
-        var added = 0
+    func addPoc(name: String, to projID: String) -> String? {
+        let clean = name.trimmingCharacters(in: .whitespaces)
+        var newID: String?
         mutate { doc in
             guard let i = doc.projects.firstIndex(where: { $0.id == projID }) else { return }
-            var existing = Set(doc.projects[i].pocCriteria.map { $0.text.lowercased() })
+            let poc = Poc(name: clean.isEmpty ? "POC \(doc.projects[i].pocs.count + 1)" : clean)
+            newID = poc.id
+            doc.projects[i].pocs.append(poc)
+        }
+        return newID
+    }
+
+    /// Remove a whole POC from its project.
+    func removePoc(_ pocID: String, from projID: String) {
+        mutatePoc(pocID, in: projID) { _ in } removingIf: { _ in true }
+    }
+
+    /// In-place edit of a single POC. `change` mutates it; if `removingIf`
+    /// returns true afterward the POC is dropped instead.
+    private func mutatePoc(_ pocID: String, in projID: String,
+                           _ change: (inout Poc) -> Void,
+                           removingIf remove: (Poc) -> Bool = { _ in false }) {
+        mutate { doc in
+            guard let pi = doc.projects.firstIndex(where: { $0.id == projID }),
+                  let mi = doc.projects[pi].pocs.firstIndex(where: { $0.id == pocID }) else { return }
+            if remove(doc.projects[pi].pocs[mi]) { doc.projects[pi].pocs.remove(at: mi); return }
+            change(&doc.projects[pi].pocs[mi])
+        }
+    }
+
+    func renamePoc(_ pocID: String, in projID: String, to name: String) {
+        let clean = name.trimmingCharacters(in: .whitespaces)
+        guard !clean.isEmpty else { return }
+        mutatePoc(pocID, in: projID) { $0.name = clean }
+    }
+    func setPocDetail(_ text: String, pocID: String, in projID: String) {
+        mutatePoc(pocID, in: projID) { $0.detail = text }
+    }
+    func setPocPhase(_ phase: PocPhase, pocID: String, in projID: String) {
+        mutatePoc(pocID, in: projID) { $0.phase = phase }
+    }
+    func setPocStartDate(_ date: Date?, pocID: String, in projID: String) {
+        mutatePoc(pocID, in: projID) { $0.startDate = date }
+    }
+    func setPocDeadline(_ date: Date?, pocID: String, in projID: String) {
+        mutatePoc(pocID, in: projID) { $0.deadline = date }
+    }
+
+    /// Bulk-add criteria to a POC (e.g. AI-extracted), skipping any whose text
+    /// already exists on that POC (case-insensitive). Returns how many landed.
+    @discardableResult
+    func addPocCriteriaTexts(_ texts: [String], toPoc pocID: String, in projID: String) -> Int {
+        var added = 0
+        mutatePoc(pocID, in: projID) { poc in
+            var existing = Set(poc.criteria.map { $0.text.lowercased() })
             for raw in texts {
                 let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 let key = t.lowercased()
                 guard !t.isEmpty, !existing.contains(key) else { continue }
-                doc.projects[i].pocCriteria.append(PocCriterion(text: t))
+                poc.criteria.append(PocCriterion(text: t))
                 existing.insert(key)
                 added += 1
             }
@@ -316,35 +484,87 @@ final class CatalogStore: ObservableObject {
         return added
     }
 
-    func setPocStatus(_ status: PocStatus, criterionID: String, projID: String) {
-        mutate { doc in
-            guard let pi = doc.projects.firstIndex(where: { $0.id == projID }),
-                  let ci = doc.projects[pi].pocCriteria.firstIndex(where: { $0.id == criterionID }) else { return }
-            doc.projects[pi].pocCriteria[ci].status = status
-        }
-    }
-
-    func removePocCriterion(_ criterionID: String, from projID: String) {
-        mutate { doc in
-            if let pi = doc.projects.firstIndex(where: { $0.id == projID }) {
-                doc.projects[pi].pocCriteria.removeAll { $0.id == criterionID }
-            }
-        }
-    }
-
-    /// Drop every success criterion from each of `projIDs` in one pass — the
-    /// projects stay in the Catalog but leave active POC tracking. Returns how
-    /// many projects actually had criteria cleared.
+    /// Bulk-insert a depth-tagged list of criteria as a hierarchy (from a pasted,
+    /// indented list). `depth` is the 0-based indent level; each line nests under
+    /// the most recent shallower line, rooted at `under`. Returns how many landed.
     @discardableResult
-    func clearPocCriteria(from projIDs: Set<String>) -> Int {
-        var cleared = 0
-        mutate { doc in
-            for i in doc.projects.indices where projIDs.contains(doc.projects[i].id) && !doc.projects[i].pocCriteria.isEmpty {
-                doc.projects[i].pocCriteria.removeAll()
-                cleared += 1
+    func addPocCriteriaTree(_ lines: [(text: String, depth: Int)], under root: String?,
+                            toPoc pocID: String, in projID: String) -> Int {
+        var added = 0
+        mutatePoc(pocID, in: projID) { poc in
+            // Stack of (depth, id); the synthetic base maps any top-level line to `root`.
+            var stack: [(depth: Int, id: String?)] = [(-1, root)]
+            for line in lines {
+                let t = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !t.isEmpty else { continue }
+                while let top = stack.last, top.depth >= line.depth { stack.removeLast() }
+                let parent = stack.last?.id ?? root
+                let c = PocCriterion(text: t, status: .pending, parentID: parent)
+                poc.criteria.append(c)
+                stack.append((line.depth, c.id))
+                added += 1
             }
         }
-        return cleared
+        return added
+    }
+
+    /// Add one criterion, optionally nested under `parentID`. Returns its id.
+    @discardableResult
+    func addPocCriterion(_ text: String, parentID: String?, toPoc pocID: String, in projID: String) -> String? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        let c = PocCriterion(text: t, status: .pending, parentID: parentID)
+        mutatePoc(pocID, in: projID) { $0.criteria.append(c) }
+        return c.id
+    }
+
+    /// Edit a criterion's text (ignores an empty/whitespace-only value).
+    func setPocCriterionText(_ text: String, criterionID: String, pocID: String, projID: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        mutatePoc(pocID, in: projID) { poc in
+            if let ci = poc.criteria.firstIndex(where: { $0.id == criterionID }) { poc.criteria[ci].text = t }
+        }
+    }
+
+    func setPocStatus(_ status: PocStatus, criterionID: String, pocID: String, projID: String) {
+        mutatePoc(pocID, in: projID) { poc in
+            if let ci = poc.criteria.firstIndex(where: { $0.id == criterionID }) { poc.criteria[ci].status = status }
+        }
+    }
+
+    /// Reorder a criterion among its siblings (same `parentID`) by swapping with
+    /// the adjacent one. Descendants stay linked via `parentID`, so the whole
+    /// sub-tree moves with it. No-op at the ends.
+    func movePocCriterion(_ criterionID: String, up: Bool, pocID: String, projID: String) {
+        mutatePoc(pocID, in: projID) { poc in
+            guard let c = poc.criteria.first(where: { $0.id == criterionID }) else { return }
+            let sibs = poc.criteria.enumerated().filter { $0.element.parentID == c.parentID }
+            guard let pos = sibs.firstIndex(where: { $0.element.id == criterionID }) else { return }
+            let other = up ? pos - 1 : pos + 1
+            guard other >= 0, other < sibs.count else { return }
+            poc.criteria.swapAt(sibs[pos].offset, sibs[other].offset)
+        }
+    }
+
+    /// Remove a criterion and its whole sub-tree (descendants by `parentID`).
+    func removePocCriterion(_ criterionID: String, pocID: String, from projID: String) {
+        mutatePoc(pocID, in: projID) { poc in
+            var doomed: Set<String> = [criterionID]
+            var grew = true
+            while grew {
+                grew = false
+                for c in poc.criteria where !doomed.contains(c.id) && (c.parentID.map(doomed.contains) ?? false) {
+                    doomed.insert(c.id); grew = true
+                }
+            }
+            poc.criteria.removeAll { doomed.contains($0.id) }
+        }
+    }
+
+    /// Drop every success criterion from a single POC (the POC record stays).
+    func clearPocCriteria(pocID: String, in projID: String) {
+        mutatePoc(pocID, in: projID) { $0.criteria.removeAll() }
     }
 
     /// Route every mutation through here so persistence is never forgotten.
@@ -539,7 +759,7 @@ final class CatalogStore: ObservableObject {
         }) else { return (nil, nil, []) }
 
         if let projID = note.projectIDs.first, let proj = project(projID) {
-            return (org(forProject: proj.id)?.name, proj.name, proj.pocCriteria)
+            return (org(forProject: proj.id)?.name, proj.name, proj.pocs.flatMap(\.criteria))
         }
         if let orgID = note.orgIDs.first {
             return (org(orgID)?.name, nil, [])

@@ -165,6 +165,20 @@ enum DateGrouping {
     }
 }
 
+/// The one Reset control used across every filterable Catalog view (dashboard,
+/// Notes, Map, POC, Keyword Radar) — a single borderless icon so "clear
+/// everything back to defaults" looks and sits the same everywhere.
+struct ResetButton: View {
+    var help: String = "Reset filters"
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) { Image(systemName: "arrow.uturn.backward") }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help(help)
+    }
+}
+
 /// A compact toggle that expands or collapses every group in a tree at once,
 /// sharing the same `expanded` key set as `DateGroupDisclosure`.
 struct ExpandCollapseButton<Item>: View {
@@ -236,5 +250,64 @@ struct DateGroupDisclosure<Item: Identifiable, Row: View>: View {
             Binding(get: { expanded.contains(node.id) },
                     set: { if $0 { expanded.insert(node.id) } else { expanded.remove(node.id) } })
         }
+    }
+}
+
+// MARK: - POC deadline
+
+/// How a POC's target date stands relative to now — drives colour and label
+/// wherever a deadline is shown (tracker rows, detail pane, dashboard).
+enum DeadlineState {
+    case overdue(Int)    // days past
+    case dueToday
+    case soon(Int)       // within 3 days
+    case upcoming(Int)   // further out
+
+    init?(_ deadline: Date?, now: Date = Date()) {
+        guard let deadline else { return nil }
+        let cal = Calendar.current
+        let days = cal.dateComponents([.day], from: cal.startOfDay(for: now),
+                                      to: cal.startOfDay(for: deadline)).day ?? 0
+        if days < 0        { self = .overdue(-days) }
+        else if days == 0  { self = .dueToday }
+        else if days <= 3  { self = .soon(days) }
+        else               { self = .upcoming(days) }
+    }
+
+    var label: String {
+        switch self {
+        case .overdue(let d):  return "Overdue \(d)d"
+        case .dueToday:        return "Due today"
+        case .soon(let d), .upcoming(let d): return "Due in \(d)d"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .overdue:  return .red
+        case .dueToday, .soon: return .orange
+        case .upcoming: return .secondary
+        }
+    }
+
+    /// True for anything the user should act on now (overdue / today / soon).
+    var isUrgent: Bool { if case .upcoming = self { return false }; return true }
+}
+
+/// Compact pill showing a POC deadline's urgency; reused across the tracker,
+/// detail pane, and dashboard so due-dates read the same everywhere.
+struct DeadlineBadge: View {
+    let deadline: Date
+    var body: some View {
+        let state = DeadlineState(deadline) ?? .upcoming(0)
+        HStack(spacing: 3) {
+            Image(systemName: "calendar").font(.caption2)
+            Text(state.label).font(.caption2.weight(.medium)).lineLimit(1)
+        }
+        .fixedSize()
+        .foregroundStyle(state.color)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Capsule().fill(state.color.opacity(0.12)))
+        .help("POC target date: \(deadline.formatted(date: .abbreviated, time: .omitted))")
     }
 }

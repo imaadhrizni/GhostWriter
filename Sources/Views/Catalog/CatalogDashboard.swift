@@ -229,9 +229,9 @@ private struct KPIStrip: View {
         return store.doc.notes.filter { !store.effectiveOrgIDs(of: $0).isDisjoint(with: ids) }.count
     }
     private var openOpps: Int { opps.filter { $0.stage == .open }.count }
-    private var activePOCs: Int { opps.filter { !$0.pocCriteria.isEmpty }.count }
+    private var activePOCs: Int { opps.reduce(0) { $0 + $1.pocs.count } }
     private var pocPassRate: Double {
-        let all = opps.flatMap { $0.pocCriteria }
+        let all = opps.flatMap { $0.pocs.flatMap(\.criteria) }
         guard !all.isEmpty else { return 0 }
         return Double(all.filter { $0.status == .pass }.count) / Double(all.count)
     }
@@ -375,13 +375,10 @@ struct DashboardView: View {
                 scope: .orgsOnly)
 
             if filtersActive {
-                Button {
+                ResetButton(help: "Reset filters to default (\(Self.defaultRange.rawValue), all accounts)") {
                     range = Self.defaultRange
                     orgFilter = ""
-                } label: {
-                    Label("Reset", systemImage: "arrow.uturn.backward")
                 }
-                .help("Reset filters to default (\(Self.defaultRange.rawValue), all accounts)")
             }
 
             Spacer()
@@ -396,29 +393,31 @@ struct DashboardView: View {
     }
 
     // POC command center. Scoped by the account filter so an SE can focus on one
-    // customer's POCs; when a time range is set, limited to POCs with meeting
-    // activity in that window (criteria themselves aren't time-stamped).
+    // customer's POCs; when a time range is set, keeps POCs with meeting activity
+    // OR a deadline in that window — so a time-critical POC is never hidden.
     private var pocCard: some View {
-        var opps = store.doc.projects.filter { !$0.pocCriteria.isEmpty }
+        // Every (project, poc) pair, account-scoped.
+        var pocs: [(project: CatalogProject, poc: Poc)] = store.doc.projects
+            .filter { !$0.pocs.isEmpty }.flatMap { p in p.pocs.map { (p, $0) } }
         if !orgFilter.isEmpty {
             let subtree = store.orgSubtree(of: orgFilter)
-            opps = opps.filter { store.org(forProject: $0.id).map { subtree.contains($0.id) } ?? false }
+            pocs = pocs.filter { store.org(forProject: $0.project.id).map { subtree.contains($0.id) } ?? false }
         }
-        // Range: keep POCs touched by a meeting in the filtered set ("All time" = no
-        // limit). Skip while the scan is in flight so the hero doesn't flash empty.
         if range.days != nil && !loading {
-            opps = opps.filter { o in
-                store.notes(forProject: o.id).contains { metrics.scannedURLs.contains(store.url(of: $0)) }
+            pocs = pocs.filter { entry in
+                let touched = store.notes(forProject: entry.project.id)
+                    .contains { metrics.scannedURLs.contains(store.url(of: $0)) }
+                return touched || range.includes(entry.poc.deadline)
             }
         }
-        let all = opps.flatMap { $0.pocCriteria }
+        let all = pocs.flatMap { $0.poc.criteria }
         let passed = all.filter { $0.status == .pass }.count
         let failed = all.filter { $0.status == .fail }.count
         let pending = all.filter { $0.status == .pending }.count
-        let atRisk = opps.filter { $0.isPocAtRisk }
+        let atRisk = pocs.filter { $0.poc.isAtRisk }
         return DashCard(title: "POC Command Center", icon: "flask.fill", tint: .cyan) {
-            if all.isEmpty {
-                DashEmpty("No POC criteria yet. Add them in the POC Tracker.")
+            if pocs.isEmpty {
+                DashEmpty("No POCs in scope. Add them in the POC Tracker.")
             } else {
                 HStack(spacing: 14) {
                     StatNumber("\(passed)", "Passed", .green)
@@ -427,8 +426,14 @@ struct DashboardView: View {
                 }
                 ProgressView(value: Double(passed), total: Double(max(all.count, 1)))
                     .tint(.green)
-                Text("\(passed)/\(all.count) criteria passed across \(opps.count) POC\(opps.count == 1 ? "" : "s")")
+                Text("\(passed)/\(all.count) criteria passed across \(pocs.count) POC\(pocs.count == 1 ? "" : "s")")
                     .font(.caption).foregroundColor(.secondary)
+                let urgent = pocs.filter { DeadlineState($0.poc.deadline)?.isUrgent == true }
+                if !urgent.isEmpty {
+                    Label("\(urgent.count) POC\(urgent.count == 1 ? "" : "s") due soon or overdue",
+                          systemImage: "calendar.badge.exclamationmark")
+                        .font(.caption).foregroundColor(.orange)
+                }
                 Divider()
                 HStack {
                     Text(pocAtRiskOnly ? "At risk" : "POCs").font(.caption.bold()).foregroundColor(pocAtRiskOnly ? .orange : .secondary)
@@ -436,19 +441,21 @@ struct DashboardView: View {
                     Toggle("At-risk only", isOn: $pocAtRiskOnly)
                         .toggleStyle(.checkbox).font(.caption)
                 }
-                let shown = (pocAtRiskOnly ? atRisk : opps)
+                let shown = (pocAtRiskOnly ? atRisk : pocs)
                 if shown.isEmpty {
                     DashEmpty(pocAtRiskOnly ? "No POCs at risk. 👍" : "No POCs in scope.")
                 } else {
-                    ForEach(shown.prefix(6), id: \.id) { o in
-                        let p = o.pocCriteria.filter { $0.status == .pass }.count
-                        let risky = o.isPocAtRisk
+                    ForEach(shown.prefix(6), id: \.poc.id) { entry in
+                        let p = entry.poc.passed
+                        let risky = entry.poc.isAtRisk
                         HStack {
                             Image(systemName: risky ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                                 .foregroundColor(risky ? .orange : .green).font(.caption2)
-                            Text(o.name).lineLimit(1)
+                            Text(entry.poc.name).lineLimit(1)
+                            Text(entry.project.name).font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                            if let dl = entry.poc.deadline { DeadlineBadge(deadline: dl) }
                             Spacer()
-                            Text("\(p)/\(o.pocCriteria.count)").font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                            Text("\(p)/\(entry.poc.total)").font(.caption.monospacedDigit()).foregroundColor(.secondary)
                         }.font(.callout)
                     }
                 }

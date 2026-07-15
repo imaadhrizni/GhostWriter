@@ -271,13 +271,7 @@ struct RadarTermList: View {
     }
 
     private func pill(_ value: String, _ label: String, _ tint: Color, _ icon: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon).font(.caption2).foregroundStyle(tint)
-            Text(value).font(.subheadline.weight(.semibold).monospacedDigit())
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(Capsule().fill(tint.opacity(0.12)))
+        StatPill(icon: icon, value: value, label: label, tint: tint)
     }
 
     // MARK: Controls

@@ -418,9 +418,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         importItem.target = self
         menu.addItem(importItem)
 
+        // Split the Live Brief *display* toggles from the capture verbs above —
+        // they act on an already-running meeting's panel, a distinct concern.
+        menu.addItem(NSMenuItem.separator())
+
         // Live Brief is a display toggle (show/hide the floating panel), not a
-        // capture verb, so it follows the capture cluster. Hidden unless a
-        // meeting's live assistant is active (see menuNeedsUpdate).
+        // capture verb. Hidden unless a meeting's live assistant is active
+        // (see menuNeedsUpdate).
         let liveBriefItem = NSMenuItem(title: "Hide Live Brief", action: #selector(toggleLiveBrief), keyEquivalent: "")
         liveBriefItem.image = NSImage(systemSymbolName: "sparkles.rectangle.stack", accessibilityDescription: nil)
         liveBriefItem.target = self
@@ -437,22 +441,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        // ── Notes & history ─────────────────────────────────────
-        // Notes submenu — current notes, quick notes, recent meetings, folder —
-        // rebuilt on open via menuNeedsUpdate
-        let meetingNotesItem = NSMenuItem(title: "Notes & History", action: nil, keyEquivalent: "")
-        meetingNotesItem.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)
-        let meetingNotesMenu = NSMenu(title: "Notes & History")
-        meetingNotesMenu.delegate = self
-        meetingNotesItem.submenu = meetingNotesMenu
-        menu.addItem(meetingNotesItem)
-
-        // Catalog is the primary organiser — it sits directly under Notes,
-        // above the raw dictation archive.
+        // ── Browse ──────────────────────────────────────────────
+        // Catalog is the primary organiser and the main browse surface, so it
+        // leads the cluster; then the quick file-open submenu, then the raw
+        // dictation archive.
         let catalogItem = NSMenuItem(title: "Catalog…", action: #selector(showCatalog), keyEquivalent: "")
         catalogItem.image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: nil)
         catalogItem.target = self
         menu.addItem(catalogItem)
+
+        // Notes submenu — current notes, quick notes, recent meetings, folder —
+        // rebuilt on open via menuNeedsUpdate. Labelled "Recent Notes" to signal
+        // it's the quick day-by-day file opener, distinct from the Catalog browse.
+        let meetingNotesItem = NSMenuItem(title: "Recent Notes", action: nil, keyEquivalent: "")
+        meetingNotesItem.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)
+        let meetingNotesMenu = NSMenu(title: "Recent Notes")
+        meetingNotesMenu.delegate = self
+        meetingNotesItem.submenu = meetingNotesMenu
+        menu.addItem(meetingNotesItem)
 
         let dictationsItem = NSMenuItem(title: "Dictations…", action: #selector(showDictations), keyEquivalent: "")
         dictationsItem.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)
@@ -734,8 +740,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let fileURL = MeetingNotesWriter.appendQuickNote(polished) else {
                     // The note must not vanish: park it on the clipboard and say so.
                     await MainActor.run {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(polished, forType: .string)
+                        Clipboard.plain(polished)
                         appState.recordingState = .error("Couldn't save quick note — copied to clipboard. Check the Quick Notes folder in Settings.")
                     }
                     try? await Task.sleep(for: .seconds(3))
@@ -2532,7 +2537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 errorMenuItem?.isHidden = true
             }
 
-        case "Notes & History":
+        case "Recent Notes":
             menu.removeAllItems()
 
             // Current (or latest) meeting notes — same action as ⌃⌥N —

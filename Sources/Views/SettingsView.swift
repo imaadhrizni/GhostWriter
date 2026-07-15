@@ -155,6 +155,7 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Notes folder location", section: .general, keywords: ["storage", "save", "directory", "path", "choose", "change", "default", "reset"]),
         .init(label: "Back up & restore notes", section: .general, keywords: ["backup", "restore", "export", "import", "archive", "recover"]),
         .init(label: "Date format", section: .general, keywords: ["timestamp", "filename", "default", "reset"]),
+        .init(label: "PDF paper size (Letter / A4)", section: .general, keywords: ["pdf", "export", "paper", "a4", "letter", "page size", "print", "report", "poc"]),
         .init(label: "Menu-bar icon", section: .general, keywords: ["status item", "tray", "default", "reset"]),
         // AI & Models
         .init(label: "Groq API key", section: .ai, keywords: ["token", "account", "authentication", "credential", "change", "clear", "remove"]),
@@ -655,6 +656,18 @@ private struct GeneralPane: View {
                 DateFormatField()
             }
 
+            SettingsGroup("PDF Export") {
+                Picker("Paper size", selection: $settings.pdfPaperSize) {
+                    Text("US Letter").tag("letter")
+                    Text("A4").tag("a4")
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 260)
+                Text("Page size for exported PDFs — meeting notes, Reports, and POCs. A4 is the standard outside North America.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             SettingsGroup("Startup") {
                 Toggle("Start GhostWriter at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in
@@ -728,12 +741,7 @@ private struct BackupRow: View {
     }
 
     private func pickRestore() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.zip]
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.prompt = "Restore"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = FilePanels.openFile(contentTypes: [.zip], prompt: "Restore") else { return }
         pendingArchive = url
         confirmRestore = true
     }
@@ -2025,9 +2033,7 @@ private struct KeywordChip: View {
             .foregroundColor(.secondary)
             .help("Remove")
         }
-        .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(Capsule().fill(Color.accentColor.opacity(0.12)))
-        .overlay(Capsule().stroke(Color.accentColor.opacity(0.25)))
+        .pillBackground(.accentColor, opacity: 0.12, hPad: 8, vPad: 3, stroke: 0.25)
     }
 }
 
@@ -2317,25 +2323,15 @@ private struct TemplateTransferSection: View {
             status = "Nothing to export yet."
             return
         }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "GhostWriter-Templates.json"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try data.write(to: url, options: .atomic)
-            status = "Exported to \(url.lastPathComponent)."
-        } catch {
-            status = "Export failed: \(error.localizedDescription)"
+        if let s = FilePanels.save(defaultName: "GhostWriter-Templates.json", contentTypes: [.json],
+                                   successVerb: "Exported to", failVerb: "Export",
+                                   write: { try data.write(to: $0, options: .atomic) }) {
+            status = s
         }
     }
 
     private func beginImport() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.json]
-        guard panel.runModal() == .OK, let url = panel.url,
+        guard let url = FilePanels.openFile(contentTypes: [.json]),
               let data = try? Data(contentsOf: url) else { return }
         guard settings.isValidTemplateBundle(data) else {
             status = "That file isn't a GhostWriter template export."

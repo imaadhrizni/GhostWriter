@@ -33,32 +33,33 @@ final class CatalogWindowController: NSWindowController {
 
 private enum CatalogSection: String, CaseIterable, Identifiable {
     // Declared in sidebar order so the enum and `sidebarGroups` can't drift:
-    // the two ways to browse first, then records in containment order.
+    // Overview (where do I stand), then Records (everything captured), then
+    // Track (the watch/resolve surfaces), then Explore (the graph lens).
     case dashboard     = "Dashboard"
+    case reports       = "Reports"
     case notes         = "Notes"
-    case map           = "Map"
     case organisations = "Organisations"
     case projects      = "Projects"
     case people        = "People"
     case tags          = "Tags"
+    case questions     = "Open Questions"
     case poc           = "POC Tracker"
     case radar         = "Keyword Radar"
-    case questions     = "Open Questions"
+    case map           = "Map"
     var id: String { rawValue }
 
-    /// Sidebar layout: the two ways to look at the catalog on top (Notes is the
-    /// primary document list; Map is the graph explorer), then the records with
-    /// the deal-flow chain kept contiguous (org → project) to
-    /// match the Map tree, with People — a cross-cutting per-note entity like
-    /// Tags — sitting last.
+    /// Sidebar layout, grouped for scanning:
+    /// • **Overview** — the "where do I stand" surfaces (Dashboard, Reports).
+    /// • **Records** — every captured entity, led by Notes (the primary record),
+    ///   then the deal-flow chain (org → project) kept contiguous to match the
+    ///   Map tree, with People and Tags — cross-cutting per-note entities — last.
+    /// • **Track** — the watch/resolve surfaces, led by the actionable inbox.
+    /// • **Explore** — the graph lens over everything.
     static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
-        ("Overview", [.dashboard]),
-        ("Browse",   [.notes, .map]),
-        // Tags is a cross-cutting per-note entity like People, so it lives with
-        // the records rather than in a one-row "Labels" group.
-        ("Records",  [.organisations, .projects, .people, .tags]),
-        // "Track" = the watch/resolve surfaces, led by the actionable inbox.
+        ("Overview", [.dashboard, .reports]),
+        ("Records",  [.notes, .organisations, .projects, .people, .tags]),
         ("Track",    [.questions, .poc, .radar]),
+        ("Explore",  [.map]),
     ]
 
     var singular: String {
@@ -73,6 +74,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .poc:           return "POC"
         case .radar:         return "Term"
         case .questions:     return "Question"
+        case .reports:       return "Report"
         }
     }
     var icon: String {
@@ -87,6 +89,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .poc:           return "flask"
         case .radar:         return "dot.radiowaves.left.and.right"
         case .questions:     return "questionmark.circle"
+        case .reports:       return "chart.bar.doc.horizontal"
         }
     }
     var tint: Color {
@@ -101,6 +104,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .poc:           return .cyan
         case .radar:         return .red
         case .questions:     return .mint
+        case .reports:       return .green
         }
     }
 }
@@ -170,11 +174,12 @@ private struct CatalogView: View {
         case .poc:           return store.allPocs.count
         case .radar:         return 0
         case .questions:     return 0
+        case .reports:       return 0
         }
     }
 
     /// Sections that fill the content column and want no detail pane.
-    private var wideCanvas: Bool { section == .dashboard || section == .questions }
+    private var wideCanvas: Bool { section == .dashboard || section == .questions || section == .reports }
     /// Master lists that carry a filter/sort toolbar and so want a wider column.
     private var wideMaster: Bool { section == .poc || section == .radar || section == .map }
 
@@ -266,6 +271,8 @@ private struct CatalogView: View {
             PocProjectList(store: store, selID: $selID)
         } else if section == .questions {
             OpenQuestionsList(store: store)
+        } else if section == .reports {
+            ReportsView(store: store)
         } else if section == .notes {
             VStack(spacing: 0) {
                 notesSearchHeader
@@ -454,9 +461,8 @@ private struct CatalogView: View {
                 Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
             }
             .font(.caption2).fontWeight(.medium)
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Capsule().fill(color.opacity(0.16)))
             .foregroundStyle(color)
+            .pillBackground(color, opacity: 0.16, hPad: 7, vPad: 2)
         }
         .buttonStyle(.plain)
         .help("Remove filter")
@@ -516,27 +522,17 @@ private struct CatalogView: View {
     /// Write the catalog to a user-chosen `.json` file.
     private func exportCatalog() {
         guard let data = try? store.exportData() else { status = "Export failed"; return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "Catalog.json"
-        panel.prompt = "Export"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try data.write(to: url, options: .atomic)
-            status = "Exported catalog"
-        } catch {
-            status = "Export failed: \(error.localizedDescription)"
+        if let s = FilePanels.save(defaultName: "Catalog.json", contentTypes: [.json],
+                                   prompt: "Export", successVerb: "Exported", failVerb: "Export",
+                                   write: { try data.write(to: $0, options: .atomic) }) {
+            status = s
         }
     }
 
     /// Pick a `.json` file, validate it, then offer merge/replace.
     private func importCatalog() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.prompt = "Import"
-        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+        guard let url = FilePanels.openFile(contentTypes: [.json], prompt: "Import"),
+              let data = try? Data(contentsOf: url) else { return }
         guard store.isValidCatalog(data) else { status = "Not a valid catalog file"; return }
         pendingImportData = data
         showImportChoice = true
@@ -878,7 +874,7 @@ private struct EntityList: View {
             Divider()
             Group {
                 switch section {
-                case .dashboard, .map, .notes, .poc, .radar, .questions: EmptyView()   // handled by CatalogView
+                case .dashboard, .map, .notes, .poc, .radar, .questions, .reports: EmptyView()   // handled by CatalogView
                 case .organisations: orgList
                 case .people:        peopleList
                 case .projects:      projectList
@@ -995,7 +991,7 @@ private struct EntityList: View {
             var name = "New Tag", n = 2
             while existing.contains(name.lowercased()) { name = "New Tag \(n)"; n += 1 }
             selID = store.addTag(name: name).id
-        case .dashboard, .notes, .poc, .radar, .questions:   break
+        case .dashboard, .notes, .poc, .radar, .questions, .reports:   break
         }
     }
 }
@@ -1029,7 +1025,7 @@ private struct EntityEditorView: View {
 
     var body: some View {
         switch section {
-        case .dashboard, .map, .poc, .radar, .questions: EmptyView()
+        case .dashboard, .map, .poc, .radar, .questions, .reports: EmptyView()
         case .organisations:
             if let o = store.org(id) { OrgEditor(store: store, org: o, onDelete: onDelete) } else { missing }
         case .people:
@@ -1054,13 +1050,7 @@ private struct EntityEditorView: View {
 struct CapsulePill: View {
     let text: String
     let color: Color
-    var body: some View {
-        Text(text)
-            .font(.caption2).fontWeight(.medium)
-            .padding(.horizontal, 6).padding(.vertical, 1)
-            .background(Capsule().fill(color.opacity(0.16)))
-            .foregroundStyle(color)
-    }
+    var body: some View { TintedPill(text: text, tint: color) }
 }
 
 private struct RelationshipBadge: View {
@@ -1803,9 +1793,8 @@ private struct Chip: View {
             Button(action: onRemove) { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
                 .buttonStyle(.plain)
         }
-        .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(Capsule().fill(color.opacity(0.16)))
         .foregroundStyle(color)
+        .pillBackground(color, opacity: 0.16, hPad: 8, vPad: 3)
     }
 }
 
@@ -1991,9 +1980,8 @@ private struct PromoteMenu: View {
                     Text(token).font(.caption).lineLimit(1)
                     Image(systemName: "plus").font(.system(size: 8, weight: .bold))
                 }
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(Capsule().fill(Color.secondary.opacity(0.15)))
                 .foregroundStyle(.secondary)
+                .pillBackground(.secondary, opacity: 0.15, hPad: 8, vPad: 3)
             } else {
                 Label("Add as", systemImage: "plus.circle")
             }
@@ -2306,6 +2294,8 @@ private struct OpenQuestionsList: View {
     @State private var fRange: DateRange = DateRange.defaultRange
     // Open Year/Month/Day groups.
     @State private var expanded: Set<String> = []
+    // Include answered (ticked-off) questions in the list.
+    @State private var showAnswered = false
 
     struct QItem: Identifiable {
         let id = UUID()
@@ -2315,6 +2305,8 @@ private struct OpenQuestionsList: View {
         let url: URL
         let orgIDs: Set<String>
         let projIDs: Set<String>
+        var done: Bool
+        var rawLine: String
     }
 
     // A note and its unanswered questions, inside an account/project group.
@@ -2328,12 +2320,16 @@ private struct OpenQuestionsList: View {
     private var filtered: [QItem] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         return items.filter { item in
-            (q.isEmpty || item.question.lowercased().contains(q) || item.title.lowercased().contains(q))
+            (showAnswered || !item.done)
+            && (q.isEmpty || item.question.lowercased().contains(q) || item.title.lowercased().contains(q))
             && (fKind != "org" || item.orgIDs.contains(fID))
             && (fKind != "project" || item.projIDs.contains(fID))
             && fRange.includes(item.date)
         }
     }
+
+    /// Open (not-yet-answered) questions among the currently filtered set.
+    private var openCount: Int { filtered.filter { !$0.done }.count }
 
     /// The filtered questions collapsed into one entry per note (newest-first).
     private var noteGroups: [NoteGroup] {
@@ -2397,7 +2393,9 @@ private struct OpenQuestionsList: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("\(ng.questions.count) open").font(.caption2).foregroundStyle(.secondary)
+                let open = ng.questions.filter { !$0.done }.count
+                Text(open == ng.questions.count ? "\(open) open" : "\(open) open · \(ng.questions.count - open) answered")
+                    .font(.caption2).foregroundStyle(.secondary)
                 Image(systemName: "arrow.up.forward.square").font(.caption2).foregroundStyle(.secondary)
             }
             .contentShape(Rectangle())
@@ -2406,11 +2404,20 @@ private struct OpenQuestionsList: View {
         .padding(.top, 2)
     }
 
-    /// A single unanswered question, indented under its note.
+    /// A single question, indented under its note. The leading checkbox ticks
+    /// it answered (or back to open); tapping the text opens the source note.
     private func questionRow(_ q: QItem) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            Image(systemName: "questionmark.circle").font(.caption2).foregroundStyle(.orange).padding(.top, 2)
-            Text(q.question).lineLimit(4)
+            Button { toggle(q) } label: {
+                Image(systemName: q.done ? "checkmark.circle.fill" : "circle")
+                    .font(.caption).foregroundStyle(q.done ? .green : .orange).padding(.top, 2)
+            }
+            .buttonStyle(.plain)
+            .help(q.done ? "Mark as unanswered" : "Mark as answered")
+            Text(q.question)
+                .lineLimit(4)
+                .strikethrough(q.done, color: .secondary)
+                .foregroundStyle(q.done ? .secondary : .primary)
             Spacer(minLength: 0)
         }
         .padding(.leading, 8)
@@ -2420,9 +2427,12 @@ private struct OpenQuestionsList: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("\(filtered.count) open").font(.headline)
+            Text("\(openCount) open").font(.headline)
             Spacer()
             EntitySearchBar(text: $query, placeholder: "Search questions").frame(width: 160)
+            Toggle("Answered", isOn: $showAnswered)
+                .toggleStyle(.button).font(.caption)
+                .help("Show questions already marked answered")
             RangePicker(range: $fRange, compact: true)
             OrgProjectTreePicker(store: store, kind: $fKind, id: $fID, allLabel: "All accounts")
             if !filtered.isEmpty {
@@ -2443,7 +2453,7 @@ private struct OpenQuestionsList: View {
         var result: [QItem] = []
         for f in NotesLibrary.meetingFiles(limit: AppSettings.shared.searchDepth) {
             guard let text = f.url.readText() else { continue }
-            let qs = Self.unanswered(in: text)
+            let qs = NotesLibrary.openQuestions(in: text)
             guard !qs.isEmpty else { continue }
             let title = FrontMatter.title(in: text) ?? f.displayName
             let rel = f.url.path.replacingOccurrences(of: root, with: "")
@@ -2452,26 +2462,22 @@ private struct OpenQuestionsList: View {
             let projIDs = note.map { store.effectiveProjectIDs(of: $0) } ?? []
             let date = DateDisplay.posixDay.date(from: f.day)
             for q in qs {
-                result.append(QItem(question: q, title: title, date: date, url: f.url,
-                                    orgIDs: orgIDs, projIDs: projIDs))
+                result.append(QItem(question: q.text, title: title, date: date, url: f.url,
+                                    orgIDs: orgIDs, projIDs: projIDs, done: q.done, rawLine: q.rawLine))
             }
         }
         items = result
     }
 
-    /// Bullet questions under a "## Unanswered Questions" heading.
-    private static func unanswered(in text: String) -> [String] {
-        guard let range = text.range(of: "## Unanswered Questions") else { return [] }
-        var out: [String] = []
-        for raw in text[range.upperBound...].split(separator: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("## ") || line.hasPrefix("# ") { break }
-            if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                let q = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-                if !q.isEmpty { out.append(q) }
-            }
-        }
-        return out
+    /// Tick a question answered (or back to open) — rewrites its checkbox in the
+    /// source note, then updates the row in place (no full rescan).
+    private func toggle(_ q: QItem) {
+        guard let i = items.firstIndex(where: { $0.id == q.id }) else { return }
+        let nowDone = !items[i].done
+        NotesLibrary.setCheckbox(rawLine: items[i].rawLine, text: items[i].question,
+                                 done: nowDone, inFile: items[i].url)
+        items[i].done = nowDone
+        items[i].rawLine = "- [\(nowDone ? "x" : " ")] \(items[i].question)"
     }
 }
 
@@ -2516,28 +2522,16 @@ enum PocState: String, CaseIterable, Identifiable {
     }
 }
 
-/// Tint for a POC lifecycle phase — shared by the tracker rows and detail pane.
-private func pocPhaseTint(_ p: PocPhase) -> Color {
-    switch p {
-    case .planned: .secondary
-    case .active:  .accentColor
-    case .passed:  .green
-    case .failed:  .red
-    case .onHold:  .orange
-    }
-}
-
 /// Small colored capsule showing a POC's lifecycle phase.
 private struct PhasePill: View {
     let phase: PocPhase
     var body: some View {
         HStack(spacing: 3) {
-            Circle().fill(pocPhaseTint(phase)).frame(width: 6, height: 6)
+            Circle().fill(phase.tint).frame(width: 6, height: 6)
             Text(phase.label).font(.caption2.weight(.medium))
         }
-        .foregroundStyle(pocPhaseTint(phase))
-        .padding(.horizontal, 6).padding(.vertical, 2)
-        .background(Capsule().fill(pocPhaseTint(phase).opacity(0.12)))
+        .foregroundStyle(phase.tint)
+        .pillBackground(phase.tint, opacity: 0.12, hPad: 6, vPad: 2)
     }
 }
 
@@ -2678,7 +2672,7 @@ private struct PocProjectList: View {
         case .phase:
             return PocPhase.allCases.sorted { $0.order < $1.order }.compactMap { ph in
                 let rows = sorted.filter { $0.poc.phase == ph }
-                return rows.isEmpty ? nil : (ph.rawValue, ph.label, pocPhaseTint(ph), rows)
+                return rows.isEmpty ? nil : (ph.rawValue, ph.label, ph.tint, rows)
             }
         case .health:
             return PocState.allCases.compactMap { st in
@@ -2782,13 +2776,7 @@ private struct PocProjectList: View {
     }
 
     private func statPill(_ value: String, _ label: String, _ tint: Color, _ icon: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon).font(.caption2).foregroundStyle(tint)
-            Text(value).font(.subheadline.weight(.semibold).monospacedDigit())
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(Capsule().fill(tint.opacity(0.12)))
+        StatPill(icon: icon, value: value, label: label, tint: tint)
     }
 
     // MARK: Controls
@@ -2800,6 +2788,7 @@ private struct PocProjectList: View {
                 OrgProjectTreePicker(store: store, kind: $scopeKind, id: $scopeID,
                                      allLabel: "All accounts & projects")
                 filterMenu
+                exportMenu
                 Button { showNewPoc = true } label: { Image(systemName: "plus") }
                     .buttonStyle(.borderless).help("New POC")
             }
@@ -2870,6 +2859,40 @@ private struct PocProjectList: View {
                 Circle().fill(Color.accentColor).frame(width: 6, height: 6).offset(x: 2, y: -1)
             }
         }
+    }
+
+    /// Export / share every POC in the current filtered, sorted view as one
+    /// document — copy (rich text), save Markdown, or a paginated PDF.
+    private var exportMenu: some View {
+        let items = sorted.map { (project: $0.project, poc: $0.poc, accountPath: $0.accountPath) }
+        let title = exportTitle
+        let doc = PocExport.markdown(items, title: title)
+        let base = PocExport.fileBase(title)
+        return Menu {
+            Button { _ = PocExport.copy(PocExport.titled(doc, title)) } label: {
+                Label("Copy \(items.count) POCs", systemImage: "doc.on.doc")
+            }
+            Divider()
+            Button { _ = PocPDF.export(PocDocBuilder.report(items, title: title), base: base) } label: {
+                Label("Export PDF…", systemImage: "arrow.down.doc")
+            }
+            Button { _ = PocExport.saveMarkdown(PocExport.titled(doc, title), base: base) } label: {
+                Label("Save Markdown…", systemImage: "text.append")
+            }
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .disabled(sorted.isEmpty)
+        .help("Export the POCs shown here (respects the current filters)")
+    }
+
+    /// Title for an all-POCs export — names the scoped account/project if one
+    /// is picked, else a generic report title.
+    private var exportTitle: String {
+        if scopeKind == "org", let o = store.org(scopeID) { return "\(o.name) — POC Report" }
+        if scopeKind == "project", let p = store.project(scopeID) { return "\(p.name) — POC Report" }
+        return "POC Report"
     }
 
     private func menu<Content: View>(_ title: String, _ value: String,
@@ -3099,9 +3122,12 @@ private struct PocDetail: View {
     @State private var showBulkAdd = false
     @State private var editingCrit: String? = nil         // criterion id being edited
     @State private var editText = ""
+    @State private var expandedDetail: Set<String> = []   // criteria showing their description
+    @State private var detailDrafts: [String: String] = [:] // in-flight description edits, by criterion id
     @FocusState private var editFocused: Bool
     @FocusState private var nameFocused: Bool
     @FocusState private var detailFocused: Bool
+    @FocusState private var critDetailFocus: String?      // which criterion's description field has focus
 
     private var found: (project: CatalogProject, poc: Poc)? { pocID.flatMap { store.poc($0) } }
 
@@ -3179,6 +3205,7 @@ private struct PocDetail: View {
                 .help(canSuggest
                       ? "Read this project's linked meetings and add the success criteria they mention"
                       : "Needs cloud AI (not Local-only) and at least one meeting linked to this project")
+                shareMenu(opp, poc)
             }
             // Owning project / account path.
             Text(accountPath(opp)).font(.caption).foregroundStyle(.secondary)
@@ -3229,6 +3256,36 @@ private struct PocDetail: View {
         if let org = store.org(forProject: p.id) { parts.append(store.orgPath(of: org.id)) }
         parts.append(p.name)
         return parts.joined(separator: " › ")
+    }
+
+    /// Export / share this POC: copy (rich or just the criteria checklist),
+    /// save as Markdown, or export a paginated PDF.
+    private func shareMenu(_ opp: CatalogProject, _ poc: Poc) -> some View {
+        let doc = PocExport.markdown(project: opp, poc: poc, accountPath: accountPath(opp))
+        let base = PocExport.fileBase(poc.name)
+        return Menu {
+            Button { status = PocExport.copy(PocExport.titled(doc, poc.name)) } label: {
+                Label("Copy POC", systemImage: "doc.on.doc")
+            }
+            Button { status = PocExport.copyPlain(PocExport.checklist(poc)) } label: {
+                Label("Copy criteria only", systemImage: "checklist")
+            }
+            .disabled(poc.criteria.isEmpty)
+            Divider()
+            Button {
+                status = PocPDF.export(PocDocBuilder.single(project: opp, poc: poc,
+                                                             accountPath: accountPath(opp)), base: base)
+            } label: {
+                Label("Export PDF…", systemImage: "arrow.down.doc")
+            }
+            Button { status = PocExport.saveMarkdown(PocExport.titled(doc, poc.name), base: base) } label: {
+                Label("Save Markdown…", systemImage: "text.append")
+            }
+        } label: {
+            Label("Share", systemImage: "square.and.arrow.up")
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .help("Copy or export this POC and its criteria")
     }
 
     private func phaseMenu(_ opp: CatalogProject, _ poc: Poc) -> some View {
@@ -3389,8 +3446,8 @@ private struct PocDetail: View {
                     critIcon(collapsedCrit.contains(c.id) ? "chevron.right" : "chevron.down",
                              "Collapse or expand sub-criteria") { toggleCollapse(c.id) }
                 } else {
-                    critIcon(statusIcon(c.status), "Click to cycle: Pending → Passed → Failed",
-                             size: 16, color: statusColor(c.status)) {
+                    critIcon(c.status.icon, "Click to cycle: Pending → Passed → Failed",
+                             size: 16, color: c.status.color) {
                         store.setPocStatus(c.status.next, criterionID: c.id, pocID: poc.id, projID: opp.id)
                     }
                 }
@@ -3417,7 +3474,7 @@ private struct PocDetail: View {
                     let t = subtreeTally(c, poc)
                     Text("\(t.passed)/\(t.total)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 } else {
-                    Text(c.status.label).font(.caption).foregroundStyle(statusColor(c.status))
+                    Text(c.status.label).font(.caption).foregroundStyle(c.status.color)
                 }
                 let sibs = children(of: c.parentID, in: poc)
                 let idx = sibs.firstIndex { $0.id == c.id } ?? 0
@@ -3427,6 +3484,9 @@ private struct PocDetail: View {
                 critIcon("chevron.down", "Move down", disabled: idx >= sibs.count - 1) {
                     store.movePocCriterion(c.id, up: false, pocID: poc.id, projID: opp.id)
                 }
+                critIcon(c.detail.isEmpty ? "text.badge.plus" : "text.alignleft",
+                         c.detail.isEmpty ? "Add a description" : "Show / edit description",
+                         color: c.detail.isEmpty ? .secondary : .accentColor) { toggleDetail(c) }
                 critIcon("pencil", "Edit criterion") { beginEdit(c) }
                 critIcon("plus.circle", "Add a sub-criterion") { addingUnder = c.id; childText = "" }
                 critIcon("xmark.circle", parent ? "Remove this item and its sub-criteria" : "Remove criterion") {
@@ -3434,6 +3494,33 @@ private struct PocDetail: View {
                 }
             }
             .padding(.vertical, 4)
+            if expandedDetail.contains(c.id) {
+                HStack(alignment: .top, spacing: 6) {
+                    Color.clear.frame(width: CGFloat(node.depth + 1) * 18, height: 1)
+                    Image(systemName: "text.alignleft").font(.caption2).foregroundStyle(.secondary).padding(.top, 5)
+                    TextField("Add a description… (optional)", text: detailBinding(c), axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.callout)
+                        .lineLimit(1...8)
+                        .focused($critDetailFocus, equals: c.id)
+                        .onSubmit { commitDetail(opp, poc, c.id) }
+                        .onChange(of: critDetailFocus) { old, _ in if old == c.id { commitDetail(opp, poc, c.id) } }
+                }
+                .padding(.leading, 6)
+                .padding(.bottom, 8)
+            } else if !c.detail.isEmpty {
+                // Collapsed but has detail: show a one-line preview so it's discoverable.
+                HStack(alignment: .top, spacing: 6) {
+                    Color.clear.frame(width: CGFloat(node.depth + 1) * 18, height: 1)
+                    Text(c.detail)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onTapGesture { toggleDetail(c) }
+                }
+                .padding(.leading, 6)
+                .padding(.bottom, 6)
+            }
             if addingUnder == c.id {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .top, spacing: 8) {
@@ -3470,6 +3557,30 @@ private struct PocDetail: View {
 
     private func toggleCollapse(_ id: String) {
         if collapsedCrit.contains(id) { collapsedCrit.remove(id) } else { collapsedCrit.insert(id) }
+    }
+
+    /// Show / hide a criterion's description editor. Seeds the draft on open.
+    private func toggleDetail(_ c: PocCriterion) {
+        if expandedDetail.contains(c.id) {
+            expandedDetail.remove(c.id)
+            detailDrafts[c.id] = nil
+        } else {
+            detailDrafts[c.id] = c.detail
+            expandedDetail.insert(c.id)
+            critDetailFocus = c.id
+        }
+    }
+
+    /// Two-way binding to a criterion's in-flight description draft.
+    private func detailBinding(_ c: PocCriterion) -> Binding<String> {
+        Binding(get: { detailDrafts[c.id] ?? c.detail },
+                set: { detailDrafts[c.id] = $0 })
+    }
+
+    /// Persist a criterion's edited description to the store.
+    private func commitDetail(_ opp: CatalogProject, _ poc: Poc, _ id: String) {
+        guard let draft = detailDrafts[id] else { return }
+        store.setPocCriterionDetail(draft, criterionID: id, pocID: poc.id, projID: opp.id)
     }
 
     private func commitChild(_ opp: CatalogProject, _ poc: Poc, parent: String) {
@@ -3595,12 +3706,6 @@ private struct PocDetail: View {
         }
     }
 
-    private func statusIcon(_ s: PocStatus) -> String {
-        switch s { case .pending: return "circle"; case .pass: return "checkmark.circle.fill"; case .fail: return "xmark.circle.fill" }
-    }
-    private func statusColor(_ s: PocStatus) -> Color {
-        switch s { case .pending: return .secondary; case .pass: return .green; case .fail: return .red }
-    }
 }
 
 // MARK: Small helpers

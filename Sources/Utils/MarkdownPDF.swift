@@ -15,7 +15,8 @@ import CoreText
 
 enum MarkdownPDF {
 
-    private static let pageSize = CGSize(width: 612, height: 792)   // US Letter, 72 dpi
+    // US Letter or A4 (72 dpi), following the user's export paper-size setting.
+    private static var pageSize: CGSize { AppSettings.shared.pdfPageSize }
     private static let margin: CGFloat = 56                         // ~0.78"
 
     // Explicit print colors — independent of the app's light/dark appearance.
@@ -376,6 +377,10 @@ enum MarkdownPDF {
 
         for rawLine in body.components(separatedBy: "\n") {
             let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            // Leading-whitespace depth for nested bullets: 2 spaces (or a tab) = one level.
+            var lead = 0
+            for ch in rawLine { if ch == " " { lead += 1 } else if ch == "\t" { lead += 2 } else { break } }
+            let nestIndent = CGFloat(lead / 2) * 16
             if trimmed.isEmpty {
                 out.append(NSAttributedString(string: "\n", attributes: [.font: gap]))
                 continue
@@ -400,9 +405,16 @@ enum MarkdownPDF {
                 // A hairline under each top-level section for clear structure.
                 appendRule(to: out, color: inkRule, thickness: 0.75, spacingBefore: 3, spacingAfter: 10)
             } else if let bullet = bulletContent(trimmed) {
+                let (marker, markerColor): (String, NSColor?) = {
+                    switch bullet.marker {
+                    case "☑  ": return ("☑  ", NSColor(calibratedRed: 0.15, green: 0.5, blue: 0.2, alpha: 1))
+                    case "☒  ": return ("☒  ", NSColor(calibratedRed: 0.65, green: 0.15, blue: 0.15, alpha: 1))
+                    default:    return (bullet.marker, nil)
+                    }
+                }()
                 append(bullet.text, font: bodyFont, color: inkBody,
-                       spacingAfter: 3, indent: 20, hanging: 20,
-                       marker: bullet.marker, to: out)
+                       spacingAfter: 3, indent: 20 + nestIndent, hanging: 20,
+                       marker: marker, markerColor: markerColor, to: out)
             } else if trimmed.hasPrefix("> ") || trimmed == ">" {
                 appendQuote(String(trimmed.dropFirst(trimmed.count > 1 ? 2 : 1)), to: out)
             } else {
@@ -447,6 +459,7 @@ enum MarkdownPDF {
         var marker = "•  "
         if rest.hasPrefix("[ ]") { marker = "☐  "; rest = String(rest.dropFirst(3)) }
         else if rest.lowercased().hasPrefix("[x]") { marker = "☑  "; rest = String(rest.dropFirst(3)) }
+        else if rest.hasPrefix("[-]") { marker = "☒  "; rest = String(rest.dropFirst(3)) }
         return (rest.trimmingCharacters(in: .whitespaces), marker)
     }
 

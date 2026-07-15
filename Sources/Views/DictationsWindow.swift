@@ -346,8 +346,7 @@ private struct DictationsView: View {
                     if !item.style.isEmpty {
                         Text(item.style)
                             .font(.caption2).foregroundColor(.secondary)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                            .pillBackground(.secondary, opacity: 0.15, hPad: 5, vPad: 1)
                     }
                     Spacer()
                     Text(item.time.prefix(5))    // HH:mm
@@ -447,11 +446,7 @@ private struct DictationsView: View {
         if selected.contains(url) { selected.remove(url) } else { selected.insert(url) }
     }
 
-    private func setClipboard(_ text: String) {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(text, forType: .string)
-    }
+    private func setClipboard(_ text: String) { Clipboard.plain(text) }
 
     private func flashCopied(_ url: URL) {
         copiedID = url

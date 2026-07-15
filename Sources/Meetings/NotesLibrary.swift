@@ -172,29 +172,68 @@ enum NotesLibrary {
                                      options: [.caseInsensitive])
     }
 
-    /// Flip an item's checkbox in its notes file. Line-based: finds the
-    /// item's exact line (ignoring indentation), rewrites just that line.
-    /// Returns false when the line is gone (file edited elsewhere).
+    /// Flip an item's checkbox in its notes file.
     @discardableResult
     static func toggleDone(_ item: ActionItem) -> Bool {
-        guard let content = item.file.url.readText() else { return false }
+        setCheckbox(rawLine: item.rawLine, text: item.text, done: !item.done, inFile: item.file.url)
+    }
+
+    /// Rewrite a single checkbox bullet — located by its exact trimmed source
+    /// line — to `done`. Rebuilds the line from clean parts (indent + bullet +
+    /// one checkbox + text), so it's idempotent, repairs any earlier duplicated
+    /// "[x] [x]" tokens, and upgrades a legacy plain `-`/`*` bullet to a
+    /// checkbox. Returns false when the file can't be read/written or the line
+    /// is gone (edited elsewhere). Shared by action items and open questions.
+    @discardableResult
+    static func setCheckbox(rawLine: String, text: String, done: Bool, inFile url: URL) -> Bool {
+        guard let content = url.readText() else { return false }
         var lines = content.components(separatedBy: "\n")
         guard let idx = lines.firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespaces) == item.rawLine
+            $0.trimmingCharacters(in: .whitespaces) == rawLine
         }) else { return false }
-
-        // Rebuild the line from clean parts (bullet + one checkbox + text) —
-        // idempotent, and repairs any earlier duplicated "[x] [x]" tokens.
         let indent = lines[idx].prefix(while: { $0 == " " || $0 == "\t" })
-        let bullet = item.rawLine.hasPrefix("*") ? "*" : "-"
-        lines[idx] = "\(indent)\(bullet) [\(item.done ? " " : "x")] \(item.text)"
+        let bullet = rawLine.hasPrefix("*") ? "*" : "-"
+        lines[idx] = "\(indent)\(bullet) [\(done ? "x" : " ")] \(text)"
         do {
-            try lines.joined(separator: "\n").write(to: item.file.url, atomically: true, encoding: .utf8)
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
             return true
         } catch {
-            Log.app.error("❌ Could not update action item: \(error.localizedDescription)")
+            Log.app.error("❌ Could not update checkbox line: \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// One question under a note's "## Unanswered Questions" heading. `done`
+    /// reflects a `- [x]` checkbox; legacy plain `-`/`*` bullets read as open.
+    /// `rawLine` is the trimmed source line, used to locate it for a toggle.
+    struct OpenQuestion: Identifiable {
+        let id = UUID()
+        let text: String
+        let done: Bool
+        let rawLine: String
+    }
+
+    /// Parse the questions under a note's "## Unanswered Questions" heading,
+    /// preserving each one's answered state. One shared implementation for the
+    /// Catalog dashboard card and the Open Questions list.
+    static func openQuestions(in text: String) -> [OpenQuestion] {
+        guard let range = text.range(of: "## Unanswered Questions") else { return [] }
+        var out: [OpenQuestion] = []
+        for raw in text[range.upperBound...].split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("## ") || line.hasPrefix("# ") { break }   // next section
+            guard line.hasPrefix("- ") || line.hasPrefix("* ") else { continue }
+            var body = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            var done = false
+            if body.hasPrefix("[ ] ") {
+                body = String(body.dropFirst(4))
+            } else if body.lowercased().hasPrefix("[x] ") {
+                done = true; body = String(body.dropFirst(4))
+            }
+            body = body.trimmingCharacters(in: .whitespaces)
+            if !body.isEmpty { out.append(OpenQuestion(text: body, done: done, rawLine: line)) }
+        }
+        return out
     }
 
     /// Action items parsed from a single notes file — bullets under the

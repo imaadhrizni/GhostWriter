@@ -95,6 +95,7 @@ final class AppSettings: ObservableObject {
         static let autoTagging            = "meeting.autoTagging"
         static let errorNotifications     = "diagnostics.errorNotifications"
         static let uiDateFormat           = "ui.dateFormat"
+        static let pdfPaperSize           = "export.pdfPaperSize"
         static let browserTabDetection    = "dictation.browserTabDetection"
         static let domainStyleRules       = "dictation.domainStyleRules"
         static let saveDictations         = "dictation.saveToFiles"
@@ -147,7 +148,7 @@ final class AppSettings: ObservableObject {
                           dictationStyleOverrides, userDictationStyles, defaultDictationStyle,
                           quickNotesFolderPath, quickNoteNotify,
                           localOnlyMode, redactionEnabled, redactEmails, redactPhones, redactNumbers,
-                          autoTagging, errorNotifications, uiDateFormat,
+                          autoTagging, errorNotifications, uiDateFormat, pdfPaperSize,
                           browserTabDetection, domainStyleRules,
                           saveDictations, dictationsFolderPath, dictationOrganization, audioImportMaxMB,
                           meetingDetectInterval, liveBriefMinGrowth, transcriptionTimeout,
@@ -240,6 +241,7 @@ final class AppSettings: ObservableObject {
         static let autoTagging                     = true
         static let errorNotifications              = true
         static let uiDateFormat                    = "dd MMM yyyy"
+        static let pdfPaperSize                     = "letter"   // "letter" | "a4"
         static let browserTabDetection             = true
         static let saveDictations                  = true
         static let domainStyleRules = """
@@ -1438,6 +1440,16 @@ final class AppSettings: ObservableObject {
     var uiDateFormat: String {
         get { string(Key.uiDateFormat, Default.uiDateFormat) }
         set { set(newValue, Key.uiDateFormat) }
+    }
+
+    /// Paper size for exported PDFs (notes, reports, POCs): "letter" or "a4".
+    var pdfPaperSize: String {
+        get { string(Key.pdfPaperSize, Default.pdfPaperSize) }
+        set { set(newValue, Key.pdfPaperSize) }
+    }
+    /// Point dimensions (72 dpi) for the chosen paper size — US Letter or A4.
+    var pdfPageSize: CGSize {
+        pdfPaperSize == "a4" ? CGSize(width: 595, height: 842) : CGSize(width: 612, height: 792)
     }
 
     /// ISO 639-1 language hint for Whisper (e.g. "en", "de", "ta").

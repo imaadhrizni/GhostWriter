@@ -79,9 +79,6 @@ struct CatalogProject: Codable, Identifiable, Hashable {
     /// several POCs, each with its own criteria, timeline, and lifecycle phase.
     var pocs: [Poc] = []
 
-    /// Convenience: any POC on the project currently at risk.
-    var hasPocAtRisk: Bool { pocs.contains(where: \.isAtRisk) }
-
     enum CodingKeys: String, CodingKey {
         case id, name, orgID, parentID, stage, valueCents, currency, archived, pocs
         // Legacy (pre-multi-POC) keys — decoded into a migrated POC, never written.
@@ -226,6 +223,10 @@ enum PocStatus: String, Codable, CaseIterable {
 struct PocCriterion: Codable, Identifiable, Hashable {
     var id = UUID().uuidString
     var text: String
+    /// Optional longer description / acceptance detail. Hidden by default in
+    /// the tracker, expanded on demand. Defaults to "" so older Catalog.json
+    /// (which lacks the key) decodes cleanly.
+    var detail: String = ""
     var status: PocStatus = .pending
     /// Parent criterion — nil for a top-level item. Enables sub-criteria.
     var parentID: String?
@@ -403,12 +404,6 @@ final class CatalogStore: ObservableObject {
         doc.projects.filter { !$0.archived }.flatMap { p in p.pocs.map { (p, $0) } }
     }
 
-    /// Projects that carry at least one POC, by name.
-    var projectsWithPOC: [CatalogProject] {
-        doc.projects.filter { !$0.pocs.isEmpty }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
     /// Locate a POC and its project by POC id.
     func poc(_ pocID: String) -> (project: CatalogProject, poc: Poc)? {
         for p in doc.projects { if let m = p.pocs.first(where: { $0.id == pocID }) { return (p, m) } }
@@ -508,22 +503,20 @@ final class CatalogStore: ObservableObject {
         return added
     }
 
-    /// Add one criterion, optionally nested under `parentID`. Returns its id.
-    @discardableResult
-    func addPocCriterion(_ text: String, parentID: String?, toPoc pocID: String, in projID: String) -> String? {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return nil }
-        let c = PocCriterion(text: t, status: .pending, parentID: parentID)
-        mutatePoc(pocID, in: projID) { $0.criteria.append(c) }
-        return c.id
-    }
-
     /// Edit a criterion's text (ignores an empty/whitespace-only value).
     func setPocCriterionText(_ text: String, criterionID: String, pocID: String, projID: String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         mutatePoc(pocID, in: projID) { poc in
             if let ci = poc.criteria.firstIndex(where: { $0.id == criterionID }) { poc.criteria[ci].text = t }
+        }
+    }
+
+    /// Edit a criterion's optional description (trimmed; may be cleared to "").
+    func setPocCriterionDetail(_ detail: String, criterionID: String, pocID: String, projID: String) {
+        let d = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        mutatePoc(pocID, in: projID) { poc in
+            if let ci = poc.criteria.firstIndex(where: { $0.id == criterionID }) { poc.criteria[ci].detail = d }
         }
     }
 

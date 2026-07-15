@@ -85,8 +85,8 @@ struct DashboardMetrics {
 
             // Unanswered questions (the SE's follow-up queue).
             let title = FrontMatter.title(in: text) ?? f.displayName
-            for q in Self.unansweredQuestions(in: text) {
-                m.unanswered.append(.init(question: q, title: title, url: f.url))
+            for q in NotesLibrary.openQuestions(in: text) where !q.done {
+                m.unanswered.append(.init(question: q.text, title: title, url: f.url))
             }
 
             // Competitive / product signals — scanned over the same filtered set
@@ -150,21 +150,6 @@ struct DashboardMetrics {
         return 0
     }
 
-    /// Extract the bullet questions under a "## Unanswered Questions" heading.
-    private static func unansweredQuestions(in text: String) -> [String] {
-        guard let range = text.range(of: "## Unanswered Questions") else { return [] }
-        let after = text[range.upperBound...]
-        var out: [String] = []
-        for raw in after.split(separator: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("## ") || line.hasPrefix("# ") { break }   // next section
-            if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                let q = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-                if !q.isEmpty { out.append(q) }
-            }
-        }
-        return out
-    }
 }
 
 // MARK: "At a glance" KPI strip — inside the dashboard

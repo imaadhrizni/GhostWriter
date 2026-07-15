@@ -425,24 +425,33 @@ final class MeetingNotesWriter {
     /// unchanged, so Catalog links stay valid).
     static func setFrontMatterTitle(_ title: String, to fileURL: URL) {
         let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty,
-              var content = fileURL.readText(),
-              content.hasPrefix("---") else { return }
-        var lines = content.components(separatedBy: "\n")
-        guard let i = lines.firstIndex(where: { $0.hasPrefix("title:") }) else { return }
+        guard !clean.isEmpty else { return }
         // Escape a colon-bearing title so it stays valid YAML.
-        let safe = clean.contains(":") ? "\"\(clean.replacingOccurrences(of: "\"", with: "'"))\"" : clean
-        lines[i] = "title: \(safe)"
-        content = lines.joined(separator: "\n")
-        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
-        Log.meeting.info("🏷 Meeting title set")
+        let safe = FrontMatter.yamlScalar(clean, quoteWhen: ":", quoteLeadingSpace: false)
+        var replaced = false
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            replaced = FrontMatter.replaceLine(prefix: "title:", with: "title: \(safe)", in: &lines)
+        }
+        if replaced { Log.meeting.info("🏷 Meeting title set") }
     }
 
     /// Append an "Unanswered Questions" section (AI-extracted follow-up items).
     func appendUnansweredQuestions(_ body: String, to fileURL: URL) {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        append("\n## Unanswered Questions\n\n\(trimmed)\n", to: fileURL)
+        // Normalise every bullet to an open checkbox (`- [ ] …`) so a question
+        // can be ticked off (answered) from the Catalog or the note viewer,
+        // exactly like an action item.
+        let normalised = trimmed.components(separatedBy: "\n").map { raw -> String in
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("- ") || line.hasPrefix("* ") else { return raw }
+            var q = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            if q.hasPrefix("[ ] ") || q.lowercased().hasPrefix("[x] ") {
+                q = String(q.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+            }
+            return "- [ ] \(q)"
+        }.joined(separator: "\n")
+        append("\n## Unanswered Questions\n\n\(normalised)\n", to: fileURL)
         Log.meeting.info("❓ Unanswered questions appended")
     }
 
@@ -476,20 +485,17 @@ final class MeetingNotesWriter {
     /// the file has no front-matter (tags require it) or no new tags.
     static func addFrontMatterTags(_ tags: [String], to fileURL: URL) {
         let newTags = tags.filter { !$0.isEmpty }
-        guard !newTags.isEmpty,
-              var content = fileURL.readText(),
-              content.hasPrefix("---") else { return }
-
-        var lines = content.components(separatedBy: "\n")
-        guard let i = lines.firstIndex(where: { $0.hasPrefix("tags:") }) else { return }
-
-        // Parse existing "tags: [a, b]" and append any that are new.
-        var merged = FrontMatter.tags(in: content)
-        for tag in newTags where !merged.contains(tag) { merged.append(tag) }
-        lines[i] = "tags: [\(merged.joined(separator: ", "))]"
-        content = lines.joined(separator: "\n")
-        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
-        Log.meeting.info("🏷 Front-matter tags updated")
+        guard !newTags.isEmpty else { return }
+        var updated = false
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            guard let i = lines.firstIndex(where: { $0.hasPrefix("tags:") }) else { return }
+            // Parse existing "tags: [a, b]" and append any that are new.
+            var merged = FrontMatter.tags(in: "---\n" + lines.joined(separator: "\n") + "\n---")
+            for tag in newTags where !merged.contains(tag) { merged.append(tag) }
+            lines[i] = "tags: [\(merged.joined(separator: ", "))]"
+            updated = true
+        }
+        if updated { Log.meeting.info("🏷 Front-matter tags updated") }
     }
 
     /// Slug a display name into a hyphenated tag token ("Acme Corp" → "acme-corp").
@@ -514,26 +520,22 @@ final class MeetingNotesWriter {
         if let p = project { tagTokens.append(slug(p)) }
         addFrontMatterTags(tagTokens.filter { !$0.isEmpty }, to: fileURL)
 
-        // Structured fields for Dataview / Notion-style filtering.
-        guard var content = fileURL.readText(),
-              content.hasPrefix("---") else { return }
-        var lines = content.components(separatedBy: "\n")
-        guard let tagsIdx = lines.firstIndex(where: { $0.hasPrefix("tags:") }) else { return }
+        // Structured fields for Dataview / Notion-style filtering — inserted
+        // after the tags line (and only when there is one, matching the tags mirror).
+        var entries: [(key: String, value: String)] = []
+        if !people.isEmpty { entries.append(("attendees", "[\(people.joined(separator: ", "))]")) }
+        if let c = customer, !c.isEmpty { entries.append(("customer", c)) }
+        if let p = project, !p.isEmpty { entries.append(("project", p)) }
+        guard !entries.isEmpty else { return }
 
-        var inserts: [String] = []
-        func addField(_ key: String, _ value: String) {
-            guard !value.isEmpty, !lines.contains(where: { $0.hasPrefix("\(key):") }) else { return }
-            inserts.append("\(key): \(value)")
+        var added = false
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            guard lines.contains(where: { $0.hasPrefix("tags:") }) else { return }
+            let before = lines.count
+            FrontMatter.insertFields(entries, after: ["tags:"], in: &lines)
+            added = lines.count != before
         }
-        if !people.isEmpty { addField("attendees", "[\(people.joined(separator: ", "))]") }
-        if let c = customer { addField("customer", c) }
-        if let p = project { addField("project", p) }
-        guard !inserts.isEmpty else { return }
-
-        lines.insert(contentsOf: inserts, at: tagsIdx + 1)
-        content = lines.joined(separator: "\n")
-        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
-        Log.meeting.info("🏷 Front-matter entities added")
+        if added { Log.meeting.info("🏷 Front-matter entities added") }
     }
 
     /// Insert `gw_<key>: value` fields into the front-matter, after the tags
@@ -542,30 +544,18 @@ final class MeetingNotesWriter {
     /// without front-matter.
     static func addFrontMatterFields(_ pairs: [(key: String, value: String)], to fileURL: URL) {
         let clean = pairs.filter { !$0.value.isEmpty }
-        guard !clean.isEmpty,
-              var content = fileURL.readText(),
-              content.hasPrefix("---") else { return }
-        var lines = content.components(separatedBy: "\n")
-        // Anchor after tags:, else after title:, else right under the opening ---.
-        let anchor = lines.firstIndex { $0.hasPrefix("tags:") }
-            ?? lines.firstIndex { $0.hasPrefix("title:") }
-            ?? 0
-
-        func yaml(_ s: String) -> String {
-            let needsQuote = s.contains(where: { ":#[]{}".contains($0) }) || s.hasPrefix(" ")
-            return needsQuote ? "\"\(s.replacingOccurrences(of: "\"", with: "'"))\"" : s
+        guard !clean.isEmpty else { return }
+        // Each field as `gw_<key>: <yaml-quoted value>`, inserted after tags:,
+        // else after title:, else right under the opening --- (insertFields'
+        // default). Keys already present are skipped.
+        let entries = clean.map { (key: "gw_\($0.key)", value: FrontMatter.yamlScalar($0.value)) }
+        var added = false
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            let before = lines.count
+            FrontMatter.insertFields(entries, after: ["tags:", "title:"], in: &lines)
+            added = lines.count != before
         }
-        var inserts: [String] = []
-        for p in clean {
-            let key = "gw_\(p.key)"
-            guard !lines.contains(where: { $0.hasPrefix("\(key):") }) else { continue }
-            inserts.append("\(key): \(yaml(p.value))")
-        }
-        guard !inserts.isEmpty else { return }
-        lines.insert(contentsOf: inserts, at: anchor + 1)
-        content = lines.joined(separator: "\n")
-        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
-        Log.meeting.info("🏷 Front-matter key fields added")
+        if added { Log.meeting.info("🏷 Front-matter key fields added") }
     }
 
     /// Append a "## Key Details" section rendering the extracted fields as a

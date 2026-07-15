@@ -306,8 +306,7 @@ struct DeadlineBadge: View {
         }
         .fixedSize()
         .foregroundStyle(state.color)
-        .padding(.horizontal, 6).padding(.vertical, 2)
-        .background(Capsule().fill(state.color.opacity(0.12)))
+        .pillBackground(state.color, opacity: 0.12, hPad: 6, vPad: 2)
         .help("POC target date: \(deadline.formatted(date: .abbreviated, time: .omitted))")
     }
 }

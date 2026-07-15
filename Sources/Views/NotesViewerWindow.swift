@@ -741,16 +741,11 @@ private struct NotesViewerView: View {
                                          project: ctx.project, poc: ctx.poc) else {
             status = "Export failed: could not render PDF"; return
         }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.pdf]
-        panel.nameFieldStringValue = base + ".pdf"
-        panel.directoryURL = fileURL?.deletingLastPathComponent() ?? AppSettings.shared.notesFolder
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try pdf.write(to: url)
-            status = "Exported \(url.lastPathComponent)"
-        } catch {
-            status = "Export failed: \(error.localizedDescription)"
+        if let s = FilePanels.save(defaultName: base + ".pdf", contentTypes: [.pdf],
+                                   directory: fileURL?.deletingLastPathComponent() ?? AppSettings.shared.notesFolder,
+                                   successVerb: "Exported", failVerb: "Export",
+                                   write: { try pdf.write(to: $0) }) {
+            status = s
         }
     }
 
@@ -760,28 +755,12 @@ private struct NotesViewerView: View {
     ///   plain-text fallback, so pasting into Mail / Gmail / docs keeps the
     ///   headings, bold, and bullets — and pasting into a code field stays clean.
     private func copyToPasteboard() {
-        let pb = NSPasteboard.general
         if isEditable {
-            pb.clearContents()
-            pb.setString(text, forType: .string)
+            Clipboard.plain(text)          // raw Markdown, verbatim
             status = "Copied Markdown"
             return
         }
-        if let attr = try? NSAttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .full,
-                           failurePolicy: .returnPartiallyParsedIfPossible)) {
-            pb.clearContents()
-            pb.declareTypes([.rtf, .string], owner: nil)
-            if let rtf = attr.rtf(from: NSRange(location: 0, length: attr.length),
-                                  documentAttributes: [:]) {
-                pb.setData(rtf, forType: .rtf)
-            }
-            pb.setString(attr.string, forType: .string)   // markdown-stripped plain text
-        } else {
-            pb.clearContents()
-            pb.setString(text, forType: .string)
-        }
+        Clipboard.markdown(text)
         status = "Copied"
     }
 
@@ -819,16 +798,10 @@ private struct NotesViewerView: View {
     }
 
     private func saveAs() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "Follow-up.md"
-        panel.directoryURL = AppSettings.shared.notesFolder
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            status = "Saved to \(url.lastPathComponent)"
-        } catch {
-            status = "Save failed: \(error.localizedDescription)"
+        if let s = FilePanels.save(defaultName: "Follow-up.md", contentTypes: [.plainText],
+                                   successVerb: "Saved to",
+                                   write: { try text.write(to: $0, atomically: true, encoding: .utf8) }) {
+            status = s
         }
     }
 }
@@ -1139,9 +1112,8 @@ private struct FrontMatterView: View {
                 .font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
             Text(value).font(.system(size: 11, weight: .medium))
         }
-        .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(Capsule().fill(Color.accentColor.opacity(0.14)))
         .foregroundStyle(.primary.opacity(0.85))
+        .pillBackground(.accentColor, opacity: 0.14, hPad: 8, vPad: 3)
     }
 }
 

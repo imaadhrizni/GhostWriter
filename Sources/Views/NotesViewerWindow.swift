@@ -629,19 +629,28 @@ private struct NotesViewerView: View {
     private func draftDoc(_ doc: DraftDoc) {
         guard let fileURL, let transcript = fileURL.readText() else { return }
         let base = fileURL.deletingPathExtension().lastPathComponent
-        let guidance = doc.guidance
         let title = doc.displayName
+        // The POC plan builds on the project's tracked success criteria (same
+        // grounding the Follow-Up Packet uses) rather than re-inventing them.
+        var guidance = doc.guidance
+        var snapshot = ""
+        if doc.isPocPlan {
+            let criteria = CatalogStore.shared.linkChain(forFileURL: fileURL)
+                .criteria.map { ($0.text, $0.status.label) }
+            (guidance, snapshot) = PocPlanGrounding.apply(baseGuidance: guidance, criteria: criteria)
+        }
+        let finalGuidance = guidance, prefix = snapshot
         drafting = true
         status = "Drafting…"
         Task { @MainActor in
             defer { drafting = false }
             do {
-                let draft = try await TextPolisher().draftDocument(transcript: transcript, guidance: guidance)
+                let draft = try await TextPolisher().draftDocument(transcript: transcript, guidance: finalGuidance)
                 status = ""
                 NotesViewerWindowController.present(
                     draftTitle: "\(title) — \(base)",
-                    text: draft,
-                    regenerate: { try await TextPolisher().draftDocument(transcript: transcript, guidance: guidance, forceRefresh: true) })
+                    text: prefix + draft,
+                    regenerate: { prefix + (try await TextPolisher().draftDocument(transcript: transcript, guidance: finalGuidance, forceRefresh: true)) })
             } catch {
                 status = "Draft failed: \(error.localizedDescription)"
             }

@@ -2361,7 +2361,7 @@ private struct OpenQuestionsList: View {
                     ProgressView("Scanning notes…").frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if filtered.isEmpty {
                     ContentUnavailableView("No open questions", systemImage: "checkmark.circle",
-                        description: Text("Questions collect here from meeting notes that have an “Unanswered Questions” section (enable it in Settings → Meetings)."))
+                        description: Text("Questions collect here from meeting notes that have an “Open Questions” section (enable AI Extraction in Settings → Meetings)."))
                 } else {
                     List {
                         DateGroupDisclosure(nodes: tree, expanded: $expanded) { ng in

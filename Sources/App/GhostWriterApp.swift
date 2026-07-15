@@ -780,46 +780,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .reduce(0) { $0 + $1.count }
     }
 
-    /// Cleans a model-produced summary: drops the refusal sentinel, empty
-    /// sections, and duplicated headings. Returns nil when nothing real remains.
-    private static func sanitizedSummary(_ raw: String) -> String? {
-        let trimmedRaw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Only bail when the model says the WHOLE meeting was too thin — a
-        // stray token inside one section must not discard the entire summary.
-        guard !trimmedRaw.isEmpty, trimmedRaw != "NOT_ENOUGH_CONTENT" else { return nil }
-
-        // Split into (heading, body) sections
-        var sections: [(heading: String?, body: [String])] = [(nil, [])]
-        for line in trimmedRaw.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("#") {
-                sections.append((String(line), []))
-            } else {
-                sections[sections.count - 1].body.append(String(line))
-            }
-        }
-
-        var seenHeadings = Set<String>()
-        var output: [String] = []
-        var sawHeading = false
-        for section in sections {
-            let body = section.body.joined(separator: "\n")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let heading = section.heading {
-                // Keep every distinct heading — even with an empty body, so the
-                // structure (Summary / Decisions / Action Items …) is always
-                // visible. Blank sections render an explicit "_None_".
-                let key = heading.trimmingCharacters(in: CharacterSet(charactersIn: "# ")).lowercased()
-                guard !seenHeadings.contains(key) else { continue }
-                seenHeadings.insert(key)
-                output.append(heading)
-                output.append(body.isEmpty ? "_None_" : body)
-                sawHeading = true
-            } else if !body.isEmpty {
-                output.append(body)
-            }
-        }
-        return sawHeading ? output.joined(separator: "\n\n") : nil
-    }
 
     /// The single transcription choke point for dictation, quick notes, and
     /// meetings. Local-only mode goes straight to on-device recognition; other-
@@ -909,6 +869,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let wantsSummary = self.settings.summariesEnabled
             let wantsActions = self.settings.actionItemsEnabled
             let wantsStructured = self.settings.structuredExtraction
+            let wantsOpenQuestions = self.settings.extractUnanswered
             let wantsChapters = self.settings.topicChapters
             // Enough real speech to work with? (measure dialogue, not header/markers)
             if let transcript = self.meetingNotes.transcriptText(of: fileURL),
@@ -936,15 +897,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                             wantsSummary: wantsSummary, wantsActions: wantsActions)
             } else {
                 // Cloud path. Each feature below is independently toggleable.
-                if wantsSummary || wantsActions || wantsStructured {
+                if wantsSummary || wantsActions || wantsStructured || wantsOpenQuestions {
                     do {
                         let raw = try await self.textPolisher.summarize(
                             transcript: transcript,
                             template: self.settings.selectedTemplate,
                             includeSummary: wantsSummary,
                             includeActionItems: wantsActions,
-                            includeStructured: wantsStructured)
-                        if let summary = Self.sanitizedSummary(raw) {
+                            includeStructured: wantsStructured,
+                            includeOpenQuestions: wantsOpenQuestions)
+                        if let summary = MeetingNotesWriter.sanitizedSummary(raw) {
                             self.meetingNotes.appendSummary(summary, to: fileURL)
                         } else {
                             Log.meeting.info("⏭ Summary skipped — not enough content")
@@ -955,28 +917,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 }
 
-                // A concise AI title for the note's front-matter (the on-disk
-                // filename stays Meeting_<timestamp> so Catalog links hold).
-                if self.settings.frontMatterEnabled {
-                    if let title = try? await self.textPolisher.meetingTitle(transcript: transcript) {
-                        MeetingNotesWriter.setFrontMatterTitle(title, to: fileURL)
-                        // Keep the Catalog row's display title in step with the note.
+                // Meeting facts — title (front-matter), topic/entity metadata,
+                // and per-type key fields — in ONE fast structured call rather
+                // than three separate round-trips. Each piece is applied under
+                // its own setting; metadata falls back to on-device NER.
+                let wantsTitle = self.settings.frontMatterEnabled
+                let wantsMeta  = self.settings.autoTagging && self.settings.frontMatterEnabled
+                let wantsFields = self.settings.extractKeyFields
+                if wantsTitle || wantsMeta || wantsFields {
+                    let includePeople = !self.settings.redactionEnabled
+                    let schema = wantsFields ? self.settings.selectedTemplate.keyFields : []
+                    let facts = await self.textPolisher.extractMeetingFacts(
+                        transcript: transcript, includeTitle: wantsTitle,
+                        includePeople: includePeople, fields: schema)
+
+                    // Title → front-matter + Catalog row (filename stays Meeting_<ts>).
+                    if wantsTitle, !facts.title.isEmpty {
+                        MeetingNotesWriter.setFrontMatterTitle(facts.title, to: fileURL)
                         await MainActor.run {
                             let root = AppSettings.shared.notesFolder.path + "/"
-                            CatalogStore.shared.renameNote(relativePath: fileURL.path.replacingOccurrences(of: root, with: ""), to: title)
+                            CatalogStore.shared.renameNote(relativePath: fileURL.path.replacingOccurrences(of: root, with: ""), to: facts.title)
+                        }
+                    }
+
+                    // Topics/people/customer/project → front-matter (on-device
+                    // fallback when the cloud call came back empty).
+                    if wantsMeta {
+                        var meta = facts.metadata
+                        if meta.isEmpty {
+                            meta = OnDeviceNLP.extractMetadata(transcript: transcript, includePeople: includePeople)
+                        }
+                        if !meta.isEmpty {
+                            let customer = await self.validatedCustomer(meta.customer)
+                            MeetingNotesWriter.addMeetingMetadata(
+                                topics: meta.topics, people: meta.people,
+                                customer: customer, project: meta.project, to: fileURL)
+                        }
+                    }
+
+                    // Key fields → Key Details section + machine-readable
+                    // front-matter; category fields mirror into tags.
+                    if wantsFields, !facts.keyFields.isEmpty {
+                        self.meetingNotes.appendKeyDetails(
+                            facts.keyFields.map { ($0.field.label, $0.value) }, to: fileURL)
+                        if self.settings.frontMatterEnabled {
+                            MeetingNotesWriter.addFrontMatterFields(
+                                facts.keyFields.map { ($0.field.key, $0.value) }, to: fileURL)
+                            let categories = facts.keyFields
+                                .filter { $0.field.kind == .category }
+                                .map { ($0.field.key, $0.value) }
+                            MeetingNotesWriter.mirrorFieldsToTags(categories, to: fileURL)
                         }
                     }
                 }
 
-                // Unanswered questions: raised-but-not-resolved follow-up items.
-                if self.settings.extractUnanswered {
-                    do {
-                        let qs = try await self.textPolisher.unansweredQuestions(transcript: transcript)
-                        if !qs.isEmpty { self.meetingNotes.appendUnansweredQuestions(qs, to: fileURL) }
-                    } catch {
-                        Log.meeting.error("❌ Unanswered-questions extraction failed: \(error.localizedDescription)")
-                    }
-                }
+                // (Open Questions are produced by the summary pass above — see
+                // `includeOpenQuestions` — so there's no separate call here.)
 
                 // Topic chapters: a timestamped jump-list segmenting the meeting.
                 if wantsChapters {
@@ -1007,46 +1003,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.meetingNotes.appendAgenda(userEntries + dynEntries, to: fileURL)
                 }
 
-                // Auto-tag topics + entities into the front-matter (needs front-matter on).
-                // Person names are only harvested when redaction is off.
-                if self.settings.autoTagging, self.settings.frontMatterEnabled {
-                    let includePeople = !self.settings.redactionEnabled
-                    var meta = await self.textPolisher.extractMetadata(
-                        transcript: transcript, includePeople: includePeople)
-                    // Fall back to on-device NER when the cloud call came back empty
-                    // (e.g. Groq rate-limited) so tagging still happens.
-                    if meta.isEmpty {
-                        meta = OnDeviceNLP.extractMetadata(transcript: transcript, includePeople: includePeople)
-                    }
-                    if !meta.isEmpty {
-                        let customer = await self.validatedCustomer(meta.customer)
-                        MeetingNotesWriter.addMeetingMetadata(
-                            topics: meta.topics, people: meta.people,
-                            customer: customer, project: meta.project, to: fileURL)
-                    }
-                }
-
-                // Per-meeting-type key fields (deal stage, recommendation, …):
-                // a readable Key Details section, plus machine-readable
-                // front-matter fields; category fields are mirrored into tags
-                // so they're filterable in the Catalog.
-                if self.settings.extractKeyFields {
-                    let schema = self.settings.selectedTemplate.keyFields
-                    let extracted = await self.textPolisher.extractKeyFields(
-                        transcript: transcript, fields: schema)
-                    if !extracted.isEmpty {
-                        self.meetingNotes.appendKeyDetails(
-                            extracted.map { ($0.field.label, $0.value) }, to: fileURL)
-                        if self.settings.frontMatterEnabled {
-                            let pairs = extracted.map { ($0.field.key, $0.value) }
-                            MeetingNotesWriter.addFrontMatterFields(pairs, to: fileURL)
-                            let categories = extracted
-                                .filter { $0.field.kind == .category }
-                                .map { ($0.field.key, $0.value) }
-                            MeetingNotesWriter.mirrorFieldsToTags(categories, to: fileURL)
-                        }
-                    }
-                }
             }   // end cloud path
             }   // end "enough speech"
 
@@ -1118,7 +1074,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let sections = wantsSummary ? settings.selectedTemplate.summarySections : []
             if let raw = await AppleIntelligence.summarizeMeeting(
                 transcript: transcript, sections: sections, includeActionItems: wantsActions),
-               let summary = Self.sanitizedSummary(raw) {
+               let summary = MeetingNotesWriter.sanitizedSummary(raw) {
                 meetingNotes.appendSummary(
                     summary + "\n\n_— generated on-device with Apple Intelligence_", to: fileURL)
             } else {

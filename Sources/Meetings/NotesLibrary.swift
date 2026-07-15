@@ -213,16 +213,24 @@ enum NotesLibrary {
         let rawLine: String
     }
 
-    /// Parse the questions under a note's "## Unanswered Questions" heading,
-    /// preserving each one's answered state. One shared implementation for the
-    /// Catalog dashboard card and the Open Questions list.
+    /// Parse the questions under a note's questions section(s), preserving each
+    /// one's answered state. Accepts both the canonical `## Open Questions`
+    /// heading and the legacy `## Unanswered Questions` (older notes / the
+    /// summary's structured-extraction block); if a note carries both, their
+    /// items are merged and deduped case-insensitively. One shared
+    /// implementation for the Catalog dashboard card and the Open Questions list.
     static func openQuestions(in text: String) -> [OpenQuestion] {
-        guard let range = text.range(of: "## Unanswered Questions") else { return [] }
         var out: [OpenQuestion] = []
-        for raw in text[range.upperBound...].split(separator: "\n") {
+        var seen = Set<String>()
+        var inSection = false
+        for raw in text.components(separatedBy: "\n") {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("## ") || line.hasPrefix("# ") { break }   // next section
-            guard line.hasPrefix("- ") || line.hasPrefix("* ") else { continue }
+            if line.hasPrefix("## ") || line.hasPrefix("# ") {
+                let h = line.lowercased()
+                inSection = (h == "## open questions" || h == "## unanswered questions")
+                continue
+            }
+            guard inSection, line.hasPrefix("- ") || line.hasPrefix("* ") else { continue }
             var body = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
             var done = false
             if body.hasPrefix("[ ] ") {
@@ -231,7 +239,8 @@ enum NotesLibrary {
                 done = true; body = String(body.dropFirst(4))
             }
             body = body.trimmingCharacters(in: .whitespaces)
-            if !body.isEmpty { out.append(OpenQuestion(text: body, done: done, rawLine: line)) }
+            guard !body.isEmpty, seen.insert(body.lowercased()).inserted else { continue }
+            out.append(OpenQuestion(text: body, done: done, rawLine: line))
         }
         return out
     }

@@ -370,6 +370,49 @@ final class MeetingNotesWriter {
         Log.meeting.info("📝 Summary appended")
     }
 
+    /// Cleans a model-produced summary: drops the refusal sentinel, normalises
+    /// empty sections to `_None_`, and removes duplicated headings. Returns nil
+    /// when nothing real remains. Shared by the live-meeting finalizer and the
+    /// audio-import path so both post-process the summarizer identically.
+    static func sanitizedSummary(_ raw: String) -> String? {
+        let trimmedRaw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Only bail when the model says the WHOLE meeting was too thin — a
+        // stray token inside one section must not discard the entire summary.
+        guard !trimmedRaw.isEmpty, trimmedRaw != "NOT_ENOUGH_CONTENT" else { return nil }
+
+        // Split into (heading, body) sections.
+        var sections: [(heading: String?, body: [String])] = [(nil, [])]
+        for line in trimmedRaw.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("#") {
+                sections.append((String(line), []))
+            } else {
+                sections[sections.count - 1].body.append(String(line))
+            }
+        }
+
+        var seenHeadings = Set<String>()
+        var output: [String] = []
+        var sawHeading = false
+        for section in sections {
+            let body = section.body.joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let heading = section.heading {
+                // Keep every distinct heading — even with an empty body, so the
+                // structure (Summary / Decisions / Action Items …) is always
+                // visible. Blank sections render an explicit "_None_".
+                let key = heading.trimmingCharacters(in: CharacterSet(charactersIn: "# ")).lowercased()
+                guard !seenHeadings.contains(key) else { continue }
+                seenHeadings.insert(key)
+                output.append(heading)
+                output.append(body.isEmpty ? "_None_" : body)
+                sawHeading = true
+            } else if !body.isEmpty {
+                output.append(body)
+            }
+        }
+        return sawHeading ? output.joined(separator: "\n\n") : nil
+    }
+
     /// Drop a timestamped bookmark at the current point in the meeting: writes
     /// an inline marker into the transcript (so you can find the moment in
     /// context) and remembers it for the end-of-meeting jump-list. `elapsed` is
@@ -433,26 +476,6 @@ final class MeetingNotesWriter {
             replaced = FrontMatter.replaceLine(prefix: "title:", with: "title: \(safe)", in: &lines)
         }
         if replaced { Log.meeting.info("🏷 Meeting title set") }
-    }
-
-    /// Append an "Unanswered Questions" section (AI-extracted follow-up items).
-    func appendUnansweredQuestions(_ body: String, to fileURL: URL) {
-        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        // Normalise every bullet to an open checkbox (`- [ ] …`) so a question
-        // can be ticked off (answered) from the Catalog or the note viewer,
-        // exactly like an action item.
-        let normalised = trimmed.components(separatedBy: "\n").map { raw -> String in
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            guard line.hasPrefix("- ") || line.hasPrefix("* ") else { return raw }
-            var q = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-            if q.hasPrefix("[ ] ") || q.lowercased().hasPrefix("[x] ") {
-                q = String(q.dropFirst(4)).trimmingCharacters(in: .whitespaces)
-            }
-            return "- [ ] \(q)"
-        }.joined(separator: "\n")
-        append("\n## Unanswered Questions\n\n\(normalised)\n", to: fileURL)
-        Log.meeting.info("❓ Unanswered questions appended")
     }
 
     /// Count case-insensitive whole-word-ish occurrences of each watchlist term

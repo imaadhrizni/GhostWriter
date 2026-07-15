@@ -141,30 +141,19 @@ final class AudioImportService: ObservableObject {
         let wantsSummary = settings.summariesEnabled
         let wantsActions = settings.actionItemsEnabled
         let wantsStructured = settings.structuredExtraction
-        if wantsSummary || wantsActions || wantsStructured,
+        let wantsOpenQuestions = settings.extractUnanswered
+        if wantsSummary || wantsActions || wantsStructured || wantsOpenQuestions,
            let raw = try? await polisher.summarize(
                transcript: transcript, template: template,
                includeSummary: wantsSummary, includeActionItems: wantsActions,
-               includeStructured: wantsStructured),
-           let clean = Self.sanitizedSummary(raw) {
+               includeStructured: wantsStructured, includeOpenQuestions: wantsOpenQuestions),
+           let clean = MeetingNotesWriter.sanitizedSummary(raw) {
             writer.appendSummary(clean, to: fileURL)
-        }
-        if settings.extractUnanswered,
-           let qs = try? await polisher.unansweredQuestions(transcript: transcript), !qs.isEmpty {
-            writer.appendUnansweredQuestions(qs, to: fileURL)
         }
         if settings.topicChapters,
            let ch = try? await polisher.chapters(transcript: transcript), !ch.isEmpty {
             writer.appendChapters(ch, to: fileURL)
         }
-    }
-
-    /// Light guard mirroring the live path: drop an empty or explicitly-thin
-    /// summary; otherwise keep the model's Markdown as-is.
-    private static func sanitizedSummary(_ raw: String) -> String? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != "NOT_ENOUGH_CONTENT" else { return nil }
-        return trimmed
     }
 
     private func transcribe(_ url: URL, mime: String, seconds: Double) async throws -> String {

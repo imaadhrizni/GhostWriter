@@ -105,16 +105,8 @@ enum FollowUpPacket {
     /// when the note isn't linked to an opportunity with criteria.
     private static func pocPlanSection(text: String, criteria: [(text: String, status: String)],
                                        polisher: TextPolisher, forceRefresh: Bool) async -> String {
-        var guidance = AppSettings.shared.draftGuidance(for: .pocPlan)
-        var snapshot = ""
-        if !criteria.isEmpty {
-            snapshot = "**Current success criteria**\n\n"
-                + criteria.map { "- \(glyph($0.status)) \($0.text) — _\($0.status)_" }.joined(separator: "\n")
-                + "\n\n"
-            let list = criteria.map { "- [\($0.status)] \($0.text)" }.joined(separator: "\n")
-            guidance += "\n\nThe project already has these POC success criteria and statuses:\n\(list)\n"
-                + "Reflect them in the plan: keep the passed ones, and focus Timeline & Next Steps on advancing the pending or failed ones."
-        }
+        let (guidance, snapshot) = PocPlanGrounding.apply(
+            baseGuidance: AppSettings.shared.draftGuidance(for: .pocPlan), criteria: criteria)
         return await section(title: "🧪 POC Plan") {
             let plan = try await polisher.draftDocument(transcript: text, guidance: guidance, forceRefresh: forceRefresh)
             return snapshot + plan
@@ -157,14 +149,5 @@ enum FollowUpPacket {
         -> (org: String?, project: String?, criteria: [(text: String, status: String)]) {
         let c = CatalogStore.shared.linkChain(forFileURL: fileURL)
         return (c.org, c.project, c.criteria.map { ($0.text, $0.status.label) })
-    }
-
-    /// A checklist glyph for a POC status label.
-    private static func glyph(_ status: String) -> String {
-        switch status.lowercased() {
-        case "passed": return "✅"
-        case "failed": return "❌"
-        default:       return "⬜️"
-        }
     }
 }

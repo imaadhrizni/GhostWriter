@@ -207,6 +207,43 @@ enum DraftDoc: Identifiable, Equatable {
         case .user(let t):    return t.guidance
         }
     }
+
+    /// True for the built-in POC-plan draft — the one type grounded in the
+    /// project's tracked success criteria rather than re-inventing them.
+    var isPocPlan: Bool { self == .builtIn(.pocPlan) }
+}
+
+// MARK: - POC-plan criteria grounding
+
+/// Shared grounding for the POC-plan draft: when the note's linked project
+/// already tracks success criteria, feed those (with their pass/pending/fail
+/// status) into the draft so the plan builds on them instead of generating a
+/// fresh, disconnected set. Used by BOTH the standalone Draft… menu and the
+/// Follow-Up Packet, so criteria are authored once (in the tracker) and only
+/// referenced here. Returns the guidance to send plus a snapshot to prepend to
+/// the result ("" when the project has no criteria).
+enum PocPlanGrounding {
+    static func apply(baseGuidance: String,
+                      criteria: [(text: String, status: String)]) -> (guidance: String, snapshot: String) {
+        guard !criteria.isEmpty else { return (baseGuidance, "") }
+        let snapshot = "**Current success criteria**\n\n"
+            + criteria.map { "- \(glyph($0.status)) \($0.text) — _\($0.status)_" }.joined(separator: "\n")
+            + "\n\n"
+        let list = criteria.map { "- [\($0.status)] \($0.text)" }.joined(separator: "\n")
+        let guidance = baseGuidance
+            + "\n\nThe project already has these POC success criteria and statuses:\n\(list)\n"
+            + "Reflect them in the plan: keep the passed ones, and focus Timeline & Next Steps on advancing the pending or failed ones."
+        return (guidance, snapshot)
+    }
+
+    /// A checklist glyph for a POC status label.
+    static func glyph(_ status: String) -> String {
+        switch status.lowercased() {
+        case "passed": return "✅"
+        case "failed": return "❌"
+        default:       return "⬜️"
+        }
+    }
 }
 
 // MARK: - Text Polisher
@@ -364,9 +401,12 @@ final class TextPolisher {
                    template: SummaryTemplate = .builtIn(.general),
                    includeSummary: Bool = true,
                    includeActionItems: Bool = true,
-                   includeStructured: Bool = false) async throws -> String {
+                   includeStructured: Bool = false,
+                   includeOpenQuestions: Bool = false) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
-        guard includeSummary || includeActionItems || includeStructured else { throw GroqError.invalidResponse }
+        guard includeSummary || includeActionItems || includeStructured || includeOpenQuestions else {
+            throw GroqError.invalidResponse
+        }
 
         // Long meetings exceed the context window. Rather than dropping the
         // opening (a tail-only clip), map-reduce: condense the whole meeting in
@@ -384,8 +424,14 @@ final class TextPolisher {
             sections.append("""
             A section with the exact heading "## Risks & Blockers" listing, as Markdown bullets, risks, blockers, or concerns raised. Body "_None_" if none.
             """)
+        }
+        if includeOpenQuestions {
+            // The single source of "open questions" — folded into the summary
+            // pass (no separate round-trip). Strict answered-vs-open judgment,
+            // written as a checkbox task list so each is trackable / tickable
+            // in the Catalog.
             sections.append("""
-            A section with the exact heading "## Open Questions" listing, as Markdown bullets, questions left unresolved. Body "_None_" if none.
+            A section with the exact heading "## Open Questions" listing, as a Markdown checkbox task list ("- [ ] <question>"), ONLY genuinely open questions to follow up on: a question was explicitly asked AND no answer or resolution appears anywhere later in the transcript. Before listing one, confirm no later line answers it and drop it if any does. Exclude rhetorical questions, small talk, and anything addressed even partially or informally. Bias strongly toward leaving a question OUT when unsure. Body "_None_" if there are none.
             """)
         }
         if includeActionItems {
@@ -494,36 +540,6 @@ final class TextPolisher {
         let content = try await send(requestBody, timeout: 30)
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed == "NONE" ? "" : trimmed
-    }
-
-    /// Questions raised during the meeting that never got a clear answer — the
-    /// natural follow-up list. Markdown bullets, or "" when everything was
-    /// resolved (or the meeting was too short).
-    func unansweredQuestions(transcript: String) async throws -> String {
-        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
-        let clipped = String(Self.summarizableBody(transcript).suffix(20_000))
-        let requestBody = ChatRequest(
-            model: model,   // polishing model — the answered-vs-open judgment is subtle; the fast model over-lists
-            messages: [
-                .init(role: "system", content: """
-                From this meeting transcript, list ONLY genuinely open questions to follow up on: a \
-                question was explicitly asked AND no answer or resolution follows anywhere later in \
-                the transcript. Before listing a question, confirm no later line answers it — if any \
-                does, drop it. Exclude rhetorical questions, small talk, and anything that was \
-                addressed even partially or informally. Bias strongly toward leaving a question OUT \
-                when you are unsure whether it was answered. \
-                Output Markdown bullets, one open question per line, phrased as the question. \
-                If every question was answered, or none were genuinely open (or asked), output \
-                exactly NONE and nothing else.
-                """),
-                .init(role: "user", content: clipped)
-            ],
-            temperature: 0.2,
-            max_tokens: 300
-        )
-        let content = try await send(requestBody, timeout: 30)
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.uppercased() == "NONE" ? "" : trimmed
     }
 
     /// Extract POC success criteria from one or more meeting transcripts — the
@@ -719,11 +735,7 @@ final class TextPolisher {
     }
 
     static func parseLiveBrief(_ content: String) -> LiveBrief {
-        guard let start = content.firstIndex(of: "{"),
-              let end = content.lastIndex(of: "}"),
-              let data = String(content[start...end]).data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return LiveBrief(tldr: [], actions: []) }
+        guard let obj = firstJSONObject(in: content) else { return LiveBrief(tldr: [], actions: []) }
         func list(_ key: String, _ cap: Int) -> [String] {
             (obj[key] as? [Any] ?? []).compactMap { $0 as? String }
                 .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -789,9 +801,7 @@ final class TextPolisher {
             max_tokens: 220
         )
         guard let content = try? await send(body, timeout: 18),
-              let start = content.firstIndex(of: "{"), let end = content.lastIndex(of: "}"),
-              let data = String(content[start...end]).data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+              let obj = Self.firstJSONObject(in: content)
         else { return AgendaStatus(userCovered: Array(repeating: false, count: items.count)) }
 
         let coveredNums = Set((obj["covered"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue ?? Int("\($0)") })
@@ -874,44 +884,21 @@ final class TextPolisher {
         }
     }
 
-    /// Extract topic tags and named entities in a single call. `includePeople`
-    /// is dropped when redaction is on, so participant names aren't harvested
-    /// into metadata the user asked to keep private. Best-effort: returns an
-    /// empty value on any failure.
-    func extractMetadata(transcript: String, includePeople: Bool) async -> MeetingMetadata {
-        guard !apiKey.isEmpty else { return MeetingMetadata() }
-        let clipped = String(transcript.suffix(16_000))
-        let peopleLine = includePeople
-            ? #""people": array of participant/person names mentioned (proper case, e.g. ["Priya Fernando"]),"#
-            : #""people": [] (leave empty),"#
-        let body = ChatRequest(
-            model: fastModel,
-            messages: [
-                .init(role: "system", content: """
-                Identify what this meeting is about. Respond with ONLY a JSON object, no prose, with keys:
-                "topics": 3-6 short lowercase hyphenated subject tags (e.g. ["budget-review","q3-roadmap"]),
-                \(peopleLine)
-                "customer": the customer/client/company name if this is about one, else null,
-                "project": the project or product name if one is central, else null.
-                Use null (not "") for unknown string fields. Do not invent names.
-                """),
-                .init(role: "user", content: clipped)
-            ],
-            temperature: 0,
-            max_tokens: 200
-        )
-        guard let content = try? await send(body, timeout: 15) else { return MeetingMetadata() }
-        return Self.parseMetadata(content, includePeople: includePeople)
+    /// Decode the first top-level JSON object embedded in an LLM reply,
+    /// tolerating code fences / prose around it (slice from the first `{` to the
+    /// last `}`). The one place the "find braces → JSONSerialization" idiom
+    /// lives; every JSON-returning prompt parser routes through it.
+    static func firstJSONObject(in content: String) -> [String: Any]? {
+        guard let start = content.firstIndex(of: "{"),
+              let end = content.lastIndex(of: "}"), start < end,
+              let data = String(content[start...end]).data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
-    /// Parse the model's JSON metadata leniently (tolerates code fences / stray text).
-    static func parseMetadata(_ content: String, includePeople: Bool) -> MeetingMetadata {
-        guard let start = content.firstIndex(of: "{"),
-              let end = content.lastIndex(of: "}"),
-              let data = String(content[start...end]).data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return MeetingMetadata() }
-
+    /// Map a parsed JSON object's topic/entity keys onto `MeetingMetadata`.
+    /// Reads keys from any object that also carries the combined-facts keys, so
+    /// it backs `extractMeetingFacts`.
+    static func parseMetadata(_ obj: [String: Any], includePeople: Bool) -> MeetingMetadata {
         func cleanTag(_ s: String) -> String {
             s.trimmingCharacters(in: .whitespaces).lowercased()
                 .replacingOccurrences(of: " ", with: "-")
@@ -944,41 +931,11 @@ final class TextPolisher {
         let value: String   // non-empty, trimmed
     }
 
-    /// Extract the meeting-type's key fields as short values. Uses the fast
-    /// model (this is a metadata footer, not a quality-sensitive draft) and
-    /// returns only the fields the transcript actually supports. Best-effort:
-    /// returns [] on any failure or when the schema is empty.
-    func extractKeyFields(transcript: String, fields: [ExtractionField]) async -> [ExtractedValue] {
-        guard !apiKey.isEmpty, !fields.isEmpty else { return [] }
-        let clipped = String(transcript.suffix(16_000))
-        let spec = fields.map { "\"\($0.key)\": \($0.hint)" }.joined(separator: ",\n")
-        let body = ChatRequest(
-            model: fastModel,
-            messages: [
-                .init(role: "system", content: """
-                Extract these fields from the meeting transcript. Respond with ONLY a JSON object, no prose, with exactly these keys:
-                \(spec)
-                Rules: keep each value short (a few words, no sentences). Use "" (empty string) for anything the transcript does not clearly state — never guess. For fields listing allowed values, return exactly one of those values (lowercase, hyphenated) or "".
-                """),
-                .init(role: "user", content: clipped)
-            ],
-            temperature: 0,
-            max_tokens: 300
-        )
-        guard let content = try? await send(body, timeout: 15) else { return [] }
-        return Self.parseKeyFields(content, fields: fields)
-    }
 
-    /// Parse the model's JSON leniently into the schema's fields, dropping
+    /// Map a parsed JSON object's keys onto the schema's fields, dropping
     /// empties. Category values are slugged; text values are trimmed.
-    static func parseKeyFields(_ content: String, fields: [ExtractionField]) -> [ExtractedValue] {
-        guard let start = content.firstIndex(of: "{"),
-              let end = content.lastIndex(of: "}"),
-              let data = String(content[start...end]).data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return [] }
-
-        return fields.compactMap { field -> ExtractedValue? in
+    static func parseKeyFields(_ obj: [String: Any], fields: [ExtractionField]) -> [ExtractedValue] {
+        fields.compactMap { field -> ExtractedValue? in
             guard let raw = obj[field.key] as? String else { return nil }
             var v = raw.trimmingCharacters(in: .whitespaces)
             guard !v.isEmpty, v.lowercased() != "null" else { return nil }
@@ -987,6 +944,82 @@ final class TextPolisher {
             }
             return ExtractedValue(field: field, value: v)
         }
+    }
+
+    // MARK: - Combined meeting facts (title + metadata + key fields)
+
+    /// Everything the meeting-end pass extracts as short structured values —
+    /// pulled in ONE fast-model JSON call instead of three separate round-trips
+    /// (`meetingTitle` + `extractMetadata` + `extractKeyFields`).
+    struct MeetingFacts {
+        var title = ""
+        var metadata = MeetingMetadata()
+        var keyFields: [ExtractedValue] = []
+    }
+
+    /// Extract the note's title, topic/entity metadata, and the meeting-type key
+    /// fields in a single structured call. Each piece is requested only when
+    /// asked for; all parsing is lenient and best-effort (an empty/failed call
+    /// yields empty values, exactly like the three calls it replaces). A head +
+    /// tail clip keeps both the opening (best for the title/topic) and the late
+    /// decisions (best for fields) in view.
+    func extractMeetingFacts(transcript: String, includeTitle: Bool,
+                             includePeople: Bool, fields: [ExtractionField]) async -> MeetingFacts {
+        guard !apiKey.isEmpty else { return MeetingFacts() }
+        let body = Self.summarizableBody(transcript)
+        let clip = body.count > 20_000
+            ? String(body.prefix(6_000)) + "\n…\n" + String(body.suffix(14_000))
+            : body
+
+        var keys: [String] = []
+        if includeTitle {
+            keys.append(#""title": a concise 3-7 word Title-Case name for the meeting, like an email subject (name the topic and, if clear, the party) — no date, no quotes,"#)
+        }
+        keys.append(#""topics": 3-6 short lowercase hyphenated subject tags (e.g. ["budget-review","q3-roadmap"]),"#)
+        keys.append(includePeople
+            ? #""people": array of participant/person names mentioned (proper case, e.g. ["Priya Fernando"]),"#
+            : #""people": [] (leave empty),"#)
+        keys.append(#""customer": the customer/client/company name if this is about one, else null,"#)
+        keys.append(fields.isEmpty
+            ? #""project": the project or product name if one is central, else null."#
+            : #""project": the project or product name if one is central, else null,"#)
+        if !fields.isEmpty {
+            let spec = fields.map { "  \"\($0.key)\": \($0.hint)" }.joined(separator: ",\n")
+            keys.append("\"fields\": an object holding these keys (use \"\" for anything the transcript doesn't clearly state; for fields listing allowed values return exactly one, lowercase-hyphenated):\n{\n\(spec)\n}")
+        }
+
+        let request = ChatRequest(
+            model: fastModel,
+            messages: [
+                .init(role: "system", content: """
+                Analyze this meeting transcript. Respond with ONLY a JSON object, no prose, with keys:
+                \(keys.joined(separator: "\n"))
+                Use null (not "") for unknown top-level string fields. Do not invent names or values.
+                """),
+                .init(role: "user", content: clip)
+            ],
+            temperature: 0,
+            max_tokens: 400
+        )
+        guard let content = try? await send(request, timeout: 20) else { return MeetingFacts() }
+        return Self.parseMeetingFacts(content, includeTitle: includeTitle,
+                                      includePeople: includePeople, fields: fields)
+    }
+
+    /// Parse the combined-facts JSON leniently (tolerates fences / stray text).
+    static func parseMeetingFacts(_ content: String, includeTitle: Bool,
+                                  includePeople: Bool, fields: [ExtractionField]) -> MeetingFacts {
+        var facts = MeetingFacts()
+        guard let obj = firstJSONObject(in: content) else { return facts }   // parse once
+        facts.metadata = parseMetadata(obj, includePeople: includePeople)    // topics/people/customer/project
+        if includeTitle, let t = obj["title"] as? String {
+            facts.title = t.trimmingCharacters(in: CharacterSet(charactersIn: "\"'. \n\t"))
+                .components(separatedBy: "\n").first ?? ""
+        }
+        if !fields.isEmpty, let sub = obj["fields"] as? [String: Any] {
+            facts.keyFields = parseKeyFields(sub, fields: fields)
+        }
+        return facts
     }
 
     /// Shared chat request: sends, records usage, returns the message content.

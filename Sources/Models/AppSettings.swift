@@ -1801,7 +1801,10 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
             ("Proposed Approach", "the solution or architecture proposed, and how it addresses the requirements."),
             ("In / Out of Scope", "what was agreed to be in scope and explicitly out of scope."),
             ("Dependencies & Prerequisites", "integrations, access, data, or environment needed from either side (omit if none)."),
-            ("Open Questions", "unresolved questions or decisions to follow up on (omit if none)."),
+            // Open Questions is a first-class, toggle-driven section (the same
+            // `## Open Questions` checkbox list every meeting type gets) — kept
+            // out of the template so it isn't emitted twice and downgraded to
+            // plain bullets by the heading-dedup.
         ]
         case .allHands: return [
             ("Announcements", "the key announcements or news shared."),

@@ -62,7 +62,7 @@ private struct DictationItem: Identifiable, Hashable {
     /// plus the body. Routes through the shared FrontMatter reader.
     init(url: URL) {
         self.url = url
-        let content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let content = (url.readText()) ?? ""
         func unquote(_ s: String) -> String {
             var v = s.trimmingCharacters(in: .whitespaces)
             if v.hasPrefix("\""), v.hasSuffix("\""), v.count >= 2 {

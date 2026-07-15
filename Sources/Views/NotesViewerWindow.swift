@@ -40,7 +40,7 @@ final class NotesViewerWindowController: NSWindowController {
 
     /// Open an existing notes file for viewing/editing.
     convenience init(fileURL: URL) {
-        let text = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+        let text = (fileURL.readText()) ?? ""
         self.init(title: fileURL.lastPathComponent, fileURL: fileURL, initialText: text)
     }
 
@@ -627,7 +627,7 @@ private struct NotesViewerView: View {
     /// update, …). Each kind caches independently, so drafting one never
     /// clobbers another for the same meeting.
     private func draftDoc(_ doc: DraftDoc) {
-        guard let fileURL, let transcript = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+        guard let fileURL, let transcript = fileURL.readText() else { return }
         let base = fileURL.deletingPathExtension().lastPathComponent
         let guidance = doc.guidance
         let title = doc.displayName
@@ -651,7 +651,7 @@ private struct NotesViewerView: View {
     /// Auto follow-up: shape the draft to the note's recorded meeting type when
     /// present, else the type inferred from its headings, else the default.
     private func draftAutoFollowUp() {
-        guard let fileURL, let transcript = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+        guard let fileURL, let transcript = fileURL.readText() else { return }
         let base = fileURL.deletingPathExtension().lastPathComponent
         drafting = true
         status = "Drafting…"
@@ -1126,17 +1126,10 @@ private struct FrontMatterView: View {
     /// Render ISO-8601 timestamps (the front-matter `date:` field) as a
     /// friendly "03 Jul 2026 at 2:30 PM"; leave everything else untouched.
     static func pretty(_ value: String) -> String {
-        guard let date = isoDate(value) else { return value }
+        guard let date = DateDisplay.parseISO(value) else { return value }
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 
-    private static func isoDate(_ s: String) -> Date? {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        if let d = f.date(from: s) { return d }
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f.date(from: s)
-    }
 
     @ViewBuilder
     private func chip(_ key: String, _ value: String) -> some View {

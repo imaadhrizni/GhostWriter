@@ -104,6 +104,9 @@ final class AppSettings: ObservableObject {
         static let meetingDetectInterval  = "meeting.detectInterval"
         static let liveBriefMinGrowth     = "meeting.liveBriefMinGrowth"
         static let transcriptionTimeout   = "transcription.requestTimeout"
+        static let importTranscriptionTimeout = "transcription.importTimeout"
+        static let meetingEndQuietPolls   = "meeting.endQuietPolls"
+        static let summaryContextChars    = "ai.summaryContextChars"
         static let pttTapThreshold        = "dictation.pttTapThreshold"
         static let priceAudioPerHour      = "cost.audioPerHour"
         static let priceInputPerMTok      = "cost.inputPerMTok"
@@ -147,7 +150,8 @@ final class AppSettings: ObservableObject {
                           autoTagging, errorNotifications, uiDateFormat,
                           browserTabDetection, domainStyleRules,
                           saveDictations, dictationsFolderPath, dictationOrganization, audioImportMaxMB,
-                          meetingDetectInterval, liveBriefMinGrowth, transcriptionTimeout, pttTapThreshold,
+                          meetingDetectInterval, liveBriefMinGrowth, transcriptionTimeout,
+                          importTranscriptionTimeout, meetingEndQuietPolls, summaryContextChars, pttTapThreshold,
                           priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok,
                           monthlyBudgetUSD,
                           webhookEnabled, webhookURL, scriptHookEnabled, scriptHookPath,
@@ -203,7 +207,10 @@ final class AppSettings: ObservableObject {
         static let audioImportMaxMB: Int           = 50
         static let meetingDetectInterval: Double   = 3.0    // auto-detect poll seconds
         static let liveBriefMinGrowth: Int         = 350    // chars of new transcript before a brief refresh
-        static let transcriptionTimeout: Int       = 30     // seconds for a Groq STT request
+        static let transcriptionTimeout: Int       = 30     // seconds for a Groq STT request (live chunk)
+        static let importTranscriptionTimeout: Int = 120    // seconds for a whole-file STT request (import)
+        static let meetingEndQuietPolls: Int       = 2      // consecutive quiet polls before meeting-end
+        static let summaryContextChars: Int        = 24000  // char budget fed to summary/extraction prompts
         static let pttTapThreshold: Double         = 0.4    // seconds: below = tap-lock, above = hold
         static let meetingAutoDetect               = true
         static let voiceCommandsEnabled            = true
@@ -549,6 +556,24 @@ final class AppSettings: ObservableObject {
     var transcriptionTimeout: Int {
         get { min(120, max(10, int(Key.transcriptionTimeout, Default.transcriptionTimeout))) }
         set { set(min(120, max(10, newValue)), Key.transcriptionTimeout) }
+    }
+    /// Network timeout for transcribing a whole imported audio file (longer than
+    /// a live chunk, since a full recording can take a while to upload+process).
+    var importTranscriptionTimeout: Int {
+        get { min(300, max(30, int(Key.importTranscriptionTimeout, Default.importTranscriptionTimeout))) }
+        set { set(min(300, max(30, newValue)), Key.importTranscriptionTimeout) }
+    }
+    /// Consecutive "quiet" detector polls before a meeting is considered ended
+    /// (end latency ≈ this × meetingDetectInterval).
+    var meetingEndQuietPolls: Int {
+        get { min(5, max(1, int(Key.meetingEndQuietPolls, Default.meetingEndQuietPolls))) }
+        set { set(min(5, max(1, newValue)), Key.meetingEndQuietPolls) }
+    }
+    /// Character budget of transcript fed into summary/extraction prompts —
+    /// higher captures more of a long meeting at higher token cost.
+    var summaryContextChars: Int {
+        get { min(60000, max(8000, int(Key.summaryContextChars, Default.summaryContextChars))) }
+        set { set(min(60000, max(8000, newValue)), Key.summaryContextChars) }
     }
     /// Push-to-talk tap-vs-hold threshold in seconds (clamped 0.15–1.0).
     var pttTapThreshold: Double {

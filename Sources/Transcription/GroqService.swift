@@ -123,7 +123,9 @@ final class GroqService {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120   // whole files are larger than live chunks
+        // Whole files are larger than live chunks — use the dedicated (longer),
+        // user-configurable import timeout.
+        request.timeoutInterval = TimeInterval(AppSettings.shared.importTranscriptionTimeout)
 
         var body = Data()
         body.appendMultipart(name: "model", value: AppSettings.shared.transcriptionModel, boundary: boundary)

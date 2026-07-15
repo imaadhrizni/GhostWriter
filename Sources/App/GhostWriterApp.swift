@@ -1068,7 +1068,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let s = AppSettings.shared
         guard !s.localOnlyMode, (s.scriptHookEnabled || s.webhookEnabled) else { return }
 
-        let markdown = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+        let markdown = (fileURL.readText()) ?? ""
         let title = FrontMatter.title(in: markdown)
             ?? fileURL.deletingPathExtension().lastPathComponent
         let tags = FrontMatter.tags(in: markdown)
@@ -1094,7 +1094,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let payload = EventDispatcher.MeetingFinishedPayload(
             title: title,
             file: fileURL.path,
-            date: ISO8601DateFormatter().string(from: start),
+            date: DateDisplay.iso8601.string(from: start),
             durationSeconds: durationSeconds,
             meetingType: meetingType,
             organisation: org,

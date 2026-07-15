@@ -62,7 +62,7 @@ struct DashboardMetrics {
                 let weeks = (cal.dateComponents([.weekOfYear], from: d, to: now).weekOfYear ?? 0)
                 if weeks >= 0 && weeks < 6 { weekCounts[weeks, default: 0] += 1 }
             }
-            guard let text = try? String(contentsOf: f.url, encoding: .utf8) else { continue }
+            guard let text = f.url.readText() else { continue }
 
             // Recorded time. Live meetings write it as a body footer
             // (*Meeting duration: M:SS*); imports write front-matter `gw_duration: <n>`;
@@ -307,24 +307,15 @@ private struct KPITile: View {
 
 // MARK: Main canvas
 
-/// Time window for the note-scan insights.
-enum DashboardRange: String, CaseIterable, Identifiable {
-    case day = "Today", week = "7 days", month = "30 days", quarter = "90 days", half = "6 months", year = "1 year", all = "All time"
-    var id: String { rawValue }
-    var days: Int? {
-        switch self { case .day: 1; case .week: 7; case .month: 30; case .quarter: 90; case .half: 182; case .year: 365; case .all: nil }
-    }
-}
-
 struct DashboardView: View {
     @ObservedObject var store: CatalogStore
     var openPOCTracker: () -> Void
 
     @State private var metrics = DashboardMetrics()
     @State private var loading = true
-    // Filters
-    static let defaultRange: DashboardRange = .quarter
-    @State private var range: DashboardRange = DashboardView.defaultRange
+    // Filters — the shared `DateRange` (default: last 30 days).
+    static let defaultRange: DateRange = DateRange.defaultRange
+    @State private var range: DateRange = DateRange.defaultRange
     @State private var orgFilter = ""          // "" = all accounts
     @State private var pocAtRiskOnly = false
 
@@ -372,11 +363,7 @@ struct DashboardView: View {
 
     private var filterBar: some View {
         HStack(spacing: 12) {
-            Picker("Range", selection: $range) {
-                ForEach(DashboardRange.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .fixedSize()
+            RangePicker(range: $range)
 
             // Same shared selector as the rest of the app, in orgs-only mode
             // (the dashboard scopes by account, not project).

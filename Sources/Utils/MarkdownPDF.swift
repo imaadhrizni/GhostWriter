@@ -223,7 +223,7 @@ enum MarkdownPDF {
 
         var rows: [(String, String)] = []
         if let t = fm("gw_meeting_type") { rows.append(("Meeting Type", prettyType(t))) }
-        if let raw = fm("date"), let d = isoDate(raw) {
+        if let raw = fm("date"), let d = DateDisplay.parseISO(raw) {
             rows.append(("Date", d.formatted(date: .abbreviated, time: .shortened)))
         }
         // Prefer the Catalog-resolved chain; fall back to the note's front-matter.
@@ -491,13 +491,6 @@ enum MarkdownPDF {
 
     // MARK: - Date
 
-    private static func isoDate(_ s: String) -> Date? {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        if let d = f.date(from: s) { return d }
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f.date(from: s)
-    }
 
     // MARK: - Fonts
 

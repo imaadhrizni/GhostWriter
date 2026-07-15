@@ -18,7 +18,7 @@ enum FollowUpPacket {
     @MainActor
     static func generate(fileURL: URL, forceRefresh: Bool = false) async -> String {
         let settings = AppSettings.shared
-        guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else {
+        guard let text = fileURL.readText() else {
             return "_Couldn't read the meeting note._"
         }
 

@@ -332,6 +332,21 @@ final class CatalogStore: ObservableObject {
         }
     }
 
+    /// Drop every success criterion from each of `projIDs` in one pass — the
+    /// projects stay in the Catalog but leave active POC tracking. Returns how
+    /// many projects actually had criteria cleared.
+    @discardableResult
+    func clearPocCriteria(from projIDs: Set<String>) -> Int {
+        var cleared = 0
+        mutate { doc in
+            for i in doc.projects.indices where projIDs.contains(doc.projects[i].id) && !doc.projects[i].pocCriteria.isEmpty {
+                doc.projects[i].pocCriteria.removeAll()
+                cleared += 1
+            }
+        }
+        return cleared
+    }
+
     /// Route every mutation through here so persistence is never forgotten.
     private func mutate(_ change: (inout CatalogDocument) -> Void) {
         objectWillChange.send()
@@ -754,7 +769,7 @@ final class CatalogStore: ObservableObject {
     func moveNoteToDictation(_ id: String) throws -> URL? {
         guard let note = note(id: id) else { return nil }
         let fileURL = url(of: note)
-        guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
+        guard let content = fileURL.readText() else { return nil }
 
         // Strip YAML front-matter (shared reader), then take the body after the
         // FIRST content divider (the "---" following the note's title/header
@@ -868,7 +883,7 @@ final class CatalogStore: ObservableObject {
     /// Prefer a note's front-matter `title:` over its filename for display.
     static func displayTitle(for url: URL) -> String {
         let fallback = url.deletingPathExtension().lastPathComponent
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return fallback }
+        guard let text = url.readText() else { return fallback }
         return FrontMatter.title(in: text) ?? fallback
     }
 
@@ -892,7 +907,7 @@ final class CatalogStore: ObservableObject {
     /// at personal scale a direct read is fine).
     private func body(of note: CatalogNote) -> String {
         let url = AppSettings.shared.notesFolder.appendingPathComponent(note.filePath)
-        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        return (url.readText()) ?? ""
     }
 
     /// Title/body substring match for the in-catalog text search.
@@ -913,7 +928,7 @@ final class CatalogStore: ObservableObject {
     /// ghostwriter markers). Purely a suggestion source — never auto-applied.
     func suggestedTags(for note: CatalogNote) -> [String] {
         let url = AppSettings.shared.notesFolder.appendingPathComponent(note.filePath)
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        guard let content = url.readText() else { return [] }
         let boilerplate: Set<String> = ["meeting", "ghostwriter", "dictation"]
         let applied = Set((note.tagIDs.compactMap { tag($0)?.name.lowercased() }))
         var seen = Set<String>(), out: [String] = []

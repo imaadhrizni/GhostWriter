@@ -100,7 +100,7 @@ private enum CatalogSection: String, CaseIterable, Identifiable {
         case .notes:         return .indigo
         case .poc:           return .cyan
         case .radar:         return .red
-        case .questions:     return .orange
+        case .questions:     return .mint
         }
     }
 }
@@ -127,6 +127,7 @@ private struct CatalogView: View {
     @State private var fPerson = ""
     @State private var fUnassigned = false
     @State private var fMissing = false
+    @State private var fRange: DateRange = DateRange.defaultRange
     @State private var scope: NoteSearchScope = .text
     @State private var askNonce = 0
     private var anyFilter: Bool { !(fOrg.isEmpty && fProject.isEmpty && fTag.isEmpty && fPerson.isEmpty) || fUnassigned || fMissing }
@@ -201,9 +202,9 @@ private struct CatalogView: View {
                 // this column); every other section is a normal master list, so
                 // cap it narrower.
                 .navigationSplitViewColumnWidth(
-                    min: wideCanvas ? 460 : 240,
-                    ideal: wideCanvas ? 640 : 285,
-                    max: wideCanvas ? 5000 : 400)
+                    min: wideCanvas ? 460 : (section == .poc ? 330 : 240),
+                    ideal: wideCanvas ? 640 : (section == .poc ? 370 : 285),
+                    max: wideCanvas ? 5000 : (section == .poc ? 460 : 400))
                 .navigationTitle(section.rawValue)
         } detail: {
             if wideCanvas {
@@ -271,7 +272,7 @@ private struct CatalogView: View {
                     } else {
                         NotesList(store: store, selID: $selID, query: query, scope: scope,
                                   fOrg: fOrg, fProject: fProject, fTag: fTag, fPerson: fPerson,
-                                  unassignedOnly: fUnassigned, missingOnly: fMissing)
+                                  unassignedOnly: fUnassigned, missingOnly: fMissing, range: fRange)
                     }
                 }
             }
@@ -310,6 +311,11 @@ private struct CatalogView: View {
                 .padding(.horizontal, 8).padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 8)
                     .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.5)))
+
+                // Compact time-window dropdown — a segmented control is too wide
+                // for this narrow column. Hidden in Ask mode (answers over an
+                // explicit file set rather than a dated list).
+                if scope != .ask { RangePicker(range: $fRange, compact: true) }
 
                 filterMenu
                     .menuStyle(.borderlessButton)
@@ -803,7 +809,7 @@ private struct RelationshipSummaryButton: View {
         var blocks: [String] = []
         var lastError: String?
         for e in entries {
-            guard let text = try? String(contentsOf: e.url, encoding: .utf8), !text.isEmpty else { continue }
+            guard let text = e.url.readText(), !text.isEmpty else { continue }
             do {
                 let body = try await polisher.noteBrief(text: text, forceRefresh: forceRefresh)
                 blocks.append("\(e.title)\n\(TextPolisher.spacedBrief(body))")
@@ -1301,14 +1307,21 @@ private struct NotesList: View {
     let fOrg: String, fProject: String, fTag: String, fPerson: String
     var unassignedOnly: Bool = false
     var missingOnly: Bool = false
+    var range: DateRange = .all
     @State private var semanticOrder: [String] = []
     @State private var hovered: String?
     @State private var pendingTrash: CatalogNote?
     @State private var pendingDictation: CatalogNote?
     @State private var trashError: String?
     @State private var dropTargeted = false
+    // Which Year/Month/Day groups are open (browse mode only).
+    @State private var expanded: Set<String> = []
 
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
+
+    /// A live search collapses the date grouping to a flat, rank-ordered list;
+    /// browsing (no query) shows the collapsible Year → Month → Day tree.
+    private var searching: Bool { !trimmedQuery.isEmpty }
 
     private func facetFiltered(_ notes: [CatalogNote]) -> [CatalogNote] {
         var ns = notes
@@ -1318,19 +1331,25 @@ private struct NotesList: View {
         if !fPerson.isEmpty { ns = ns.filter { $0.personIDs.contains(fPerson) } }
         if unassignedOnly { ns = ns.filter(store.isUnassigned) }
         if missingOnly { ns = ns.filter { !store.fileExists($0) } }
+        // Time window (undated notes drop out while a window is active).
+        ns = ns.filter { range.includes($0.date) }
         return ns
     }
 
     private var filtered: [CatalogNote] {
-        if scope == .meaning && !trimmedQuery.isEmpty {
+        if scope == .meaning && searching {
             let rank = Dictionary(uniqueKeysWithValues: semanticOrder.enumerated().map { ($0.element, $0.offset) })
             let base = store.doc.notes.filter { rank[$0.id] != nil }
                 .sorted { (rank[$0.id] ?? 0) < (rank[$1.id] ?? 0) }
             return facetFiltered(base)
         }
         var ns = store.doc.notes
-        if !trimmedQuery.isEmpty { ns = ns.filter { store.noteMatches($0, query: trimmedQuery) } }
+        if searching { ns = ns.filter { store.noteMatches($0, query: trimmedQuery) } }
         return facetFiltered(ns).sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+    }
+
+    private var groups: [DateGroupNode<CatalogNote>] {
+        DateGrouping.tree(filtered) { $0.date }
     }
 
     var body: some View {
@@ -1342,85 +1361,29 @@ private struct NotesList: View {
                     Text("Use “Import notes” to add meeting notes.")
                 }
             } else {
-                List(filtered, selection: $selID) { n in
-                    let missing = !store.fileExists(n)
-                    HStack(spacing: 6) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(n.title).lineLimit(1).foregroundStyle(missing ? .secondary : .primary)
-                                if missing {
-                                    CapsulePill(text: "File missing", color: .red)
-                                } else if store.isUnassigned(n) {
-                                    CapsulePill(text: "Unassigned", color: .orange)
-                                }
-                            }
-                            HStack(spacing: 6) {
-                                if let d = n.date { Text(d.formatted(date: .abbreviated, time: .shortened)) }
-                                if !n.tagIDs.isEmpty { Text("· \(n.tagIDs.count) tags") }
-                            }
-                            .font(.caption2).foregroundStyle(.secondary)
+                VStack(spacing: 0) {
+                    if !searching && !filtered.isEmpty {
+                        HStack {
+                            Spacer()
+                            ExpandCollapseButton(tree: groups, expanded: $expanded)
+                                .buttonStyle(.borderless).font(.caption)
                         }
-                        Spacer(minLength: 4)
-                        // Row actions — always shown for missing rows (they need
-                        // triage), otherwise revealed on hover to keep it clean.
-                        if hovered == n.id || missing {
-                            if !missing {
-                                Button {
-                                    NSWorkspace.shared.activateFileViewerSelecting([store.url(of: n)])
-                                } label: { Image(systemName: "folder") }
-                                .buttonStyle(.borderless).foregroundStyle(.secondary)
-                                .help("Reveal in Finder")
-                            }
-                            if missing {
-                                // File is already gone — the only action is to
-                                // drop the stale row.
-                                Button {
-                                    if selID == n.id { selID = nil }
-                                    store.deleteNote(n.id)
-                                } label: { Image(systemName: "trash") }
-                                .buttonStyle(.borderless).foregroundStyle(.red)
-                                .help("Remove this missing entry from the catalog")
-                            } else {
-                                Menu {
-                                    Button("Remove from Catalog (keep file)") {
-                                        if selID == n.id { selID = nil }
-                                        store.deleteNote(n.id)
-                                    }
-                                    Button("Move Note to Trash…", role: .destructive) {
-                                        pendingTrash = n
-                                    }
-                                } label: { Image(systemName: "trash") }
-                                .menuStyle(.borderlessButton)
-                                .menuIndicator(.hidden)
-                                .fixedSize()
-                                .foregroundStyle(.secondary)
-                                .help("Remove from catalog, or move the note file to Trash")
-                            }
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                    }
+                    List(selection: $selID) {
+                        if searching {
+                            ForEach(filtered) { noteRow($0) }
+                        } else {
+                            DateGroupDisclosure(nodes: groups, expanded: $expanded) { noteRow($0) }
                         }
                     }
-                    .padding(.vertical, 3)
-                    .contentShape(Rectangle())
-                    .onHover { hovered = $0 ? n.id : (hovered == n.id ? nil : hovered) }
-                    .contextMenu {
-                        if !missing {
-                            Button("Open") { selID = n.id }
-                            Button("Reveal in Finder") {
-                                NSWorkspace.shared.activateFileViewerSelecting([store.url(of: n)])
-                            }
-                            Divider()
-                            Button("Move to Dictation…") { pendingDictation = n }
-                        }
-                        Button("Remove from Catalog") {
-                            if selID == n.id { selID = nil }
-                            store.deleteNote(n.id)
-                        }
-                        if !missing {
-                            Button("Move to Trash…", role: .destructive) { pendingTrash = n }
-                        }
-                    }
-                    .tag(n.id)
                 }
                 .overlay { if filtered.isEmpty { ContentUnavailableView.search } }
+                // Seed the open groups (newest year/month) once results arrive.
+                .onChange(of: groups.map(\.id)) { _, _ in
+                    if expanded.isEmpty { expanded = DateGrouping.defaultExpanded(groups) }
+                }
+                .onAppear { if expanded.isEmpty { expanded = DateGrouping.defaultExpanded(groups) } }
             }
         }
         .task(id: "\(scope)|\(trimmedQuery)") { await runSemantic() }
@@ -1476,6 +1439,87 @@ private struct NotesList: View {
         } message: {
             Text(trashError ?? "")
         }
+    }
+
+    /// A single note row — title, badges, date/tags, and hover/context actions.
+    /// Tagged with the note id so it participates in the List's selection whether
+    /// it sits in a flat search result or nested inside a date group.
+    @ViewBuilder private func noteRow(_ n: CatalogNote) -> some View {
+        let missing = !store.fileExists(n)
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(n.title).lineLimit(1).foregroundStyle(missing ? .secondary : .primary)
+                    if missing {
+                        CapsulePill(text: "File missing", color: .red)
+                    } else if store.isUnassigned(n) {
+                        CapsulePill(text: "Unassigned", color: .orange)
+                    }
+                }
+                HStack(spacing: 6) {
+                    if let d = n.date { Text(d.formatted(date: .abbreviated, time: .shortened)) }
+                    if !n.tagIDs.isEmpty { Text("· \(n.tagIDs.count) tags") }
+                }
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            // Row actions — always shown for missing rows (they need triage),
+            // otherwise revealed on hover to keep it clean.
+            if hovered == n.id || missing {
+                if !missing {
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([store.url(of: n)])
+                    } label: { Image(systemName: "folder") }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+                    .help("Reveal in Finder")
+                }
+                if missing {
+                    // File is already gone — the only action is to drop the stale row.
+                    Button {
+                        if selID == n.id { selID = nil }
+                        store.deleteNote(n.id)
+                    } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless).foregroundStyle(.red)
+                    .help("Remove this missing entry from the catalog")
+                } else {
+                    Menu {
+                        Button("Remove from Catalog (keep file)") {
+                            if selID == n.id { selID = nil }
+                            store.deleteNote(n.id)
+                        }
+                        Button("Move Note to Trash…", role: .destructive) {
+                            pendingTrash = n
+                        }
+                    } label: { Image(systemName: "trash") }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .foregroundStyle(.secondary)
+                    .help("Remove from catalog, or move the note file to Trash")
+                }
+            }
+        }
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 ? n.id : (hovered == n.id ? nil : hovered) }
+        .contextMenu {
+            if !missing {
+                Button("Open") { selID = n.id }
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([store.url(of: n)])
+                }
+                Divider()
+                Button("Move to Dictation…") { pendingDictation = n }
+            }
+            Button("Remove from Catalog") {
+                if selID == n.id { selID = nil }
+                store.deleteNote(n.id)
+            }
+            if !missing {
+                Button("Move to Trash…", role: .destructive) { pendingTrash = n }
+            }
+        }
+        .tag(n.id)
     }
 
 
@@ -1602,7 +1646,7 @@ private struct NoteAskView: View {
     private func fallbackExcerpts() -> NotesLibrary.ExcerptResult {
         var out = "", used: [NotesLibrary.MeetingFile] = []
         for f in files {
-            guard let body = try? String(contentsOf: f.url, encoding: .utf8) else { continue }
+            guard let body = f.url.readText() else { continue }
             let block = "\n=== Meeting \(f.displayName) ===\n\(body)\n"
             if out.count + block.count > 20_000 { break }
             out += block; used.append(f)
@@ -2002,13 +2046,7 @@ private struct MapTree: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
-                TextField("Filter organisations", text: $search).textFieldStyle(.plain)
-                if !search.isEmpty {
-                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain).foregroundStyle(.tertiary)
-                }
-                Divider().frame(height: 14)
+                EntitySearchBar(text: $search, placeholder: "Filter organisations")
                 Button { exp.open = allNodeIDs } label: { Image(systemName: "chevron.down.square") }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help("Expand all")
@@ -2158,6 +2196,9 @@ private struct OpenQuestionsList: View {
     @State private var query = ""
     @State private var fKind = ""   // "", "org", "project"
     @State private var fID = ""
+    @State private var fRange: DateRange = DateRange.defaultRange
+    // Open Year/Month/Day groups.
+    @State private var expanded: Set<String> = []
 
     struct QItem: Identifiable {
         let id = UUID()
@@ -2167,10 +2208,6 @@ private struct OpenQuestionsList: View {
         let url: URL
         let orgIDs: Set<String>
         let projIDs: Set<String>
-        // Where this note is filed — its primary project (or org), used to group
-        // the queue by account → project → note.
-        let groupKey: String     // "p:<id>" / "o:<id>" / "unassigned"
-        let groupTitle: String   // display path, e.g. "Acme › Platform › Phase 2"
     }
 
     // A note and its unanswered questions, inside an account/project group.
@@ -2181,51 +2218,35 @@ private struct OpenQuestionsList: View {
         let date: Date?
         var questions: [QItem]
     }
-    // An account/project bucket with its notes.
-    struct QGroup: Identifiable {
-        let key: String
-        var id: String { key }
-        let title: String
-        var notes: [NoteGroup]
-        var count: Int { notes.reduce(0) { $0 + $1.questions.count } }
-    }
-
     private var filtered: [QItem] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         return items.filter { item in
             (q.isEmpty || item.question.lowercased().contains(q) || item.title.lowercased().contains(q))
             && (fKind != "org" || item.orgIDs.contains(fID))
             && (fKind != "project" || item.projIDs.contains(fID))
+            && fRange.includes(item.date)
         }
     }
 
-    /// The filtered queue grouped by account/project, then by note. Groups sort
-    /// by their path (so same-org projects cluster together); "Unassigned" sinks
-    /// to the bottom; notes within a group are newest-first.
-    private var sections: [QGroup] {
-        var order: [String] = []
-        var groups: [String: QGroup] = [:]
+    /// The filtered questions collapsed into one entry per note (newest-first).
+    private var noteGroups: [NoteGroup] {
+        var order: [URL] = []
+        var byURL: [URL: NoteGroup] = [:]
         for q in filtered {
-            if groups[q.groupKey] == nil {
-                groups[q.groupKey] = QGroup(key: q.groupKey, title: q.groupTitle, notes: [])
-                order.append(q.groupKey)
-            }
-            if let ni = groups[q.groupKey]!.notes.firstIndex(where: { $0.url == q.url }) {
-                groups[q.groupKey]!.notes[ni].questions.append(q)
+            if let existing = byURL[q.url] {
+                var ng = existing; ng.questions.append(q); byURL[q.url] = ng
             } else {
-                groups[q.groupKey]!.notes.append(NoteGroup(url: q.url, title: q.title, date: q.date, questions: [q]))
+                byURL[q.url] = NoteGroup(url: q.url, title: q.title, date: q.date, questions: [q])
+                order.append(q.url)
             }
         }
-        var result = order.map { groups[$0]! }
-        result.sort { a, b in
-            if a.key == "unassigned" { return false }
-            if b.key == "unassigned" { return true }
-            return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
-        }
-        for i in result.indices {
-            result[i].notes.sort { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
-        }
-        return result
+        return order.compactMap { byURL[$0] }
+            .sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+    }
+
+    /// Notes grouped into the shared Year → Month → Day tree.
+    private var tree: [DateGroupNode<NoteGroup>] {
+        DateGrouping.tree(noteGroups) { $0.date }
     }
 
     var body: some View {
@@ -2240,25 +2261,17 @@ private struct OpenQuestionsList: View {
                         description: Text("Questions collect here from meeting notes that have an “Unanswered Questions” section (enable it in Settings → Meetings)."))
                 } else {
                     List {
-                        ForEach(sections) { group in
-                            Section {
-                                ForEach(group.notes) { ng in
-                                    noteHeader(ng)
-                                    ForEach(ng.questions) { q in questionRow(q) }
-                                }
-                            } header: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: group.key.hasPrefix("o:") ? "building.2"
-                                            : group.key == "unassigned" ? "tray" : "folder")
-                                        .font(.caption2)
-                                    Text(group.title).lineLimit(1)
-                                    Spacer()
-                                    Text("\(group.count)").monospacedDigit()
-                                }
-                                .font(.caption.bold())
+                        DateGroupDisclosure(nodes: tree, expanded: $expanded) { ng in
+                            VStack(alignment: .leading, spacing: 2) {
+                                noteHeader(ng)
+                                ForEach(ng.questions) { q in questionRow(q) }
                             }
                         }
                     }
+                    .onChange(of: tree.map(\.id)) { _, _ in
+                        if expanded.isEmpty { expanded = DateGrouping.defaultExpanded(tree) }
+                    }
+                    .onAppear { if expanded.isEmpty { expanded = DateGrouping.defaultExpanded(tree) } }
                 }
             }
         }
@@ -2302,8 +2315,13 @@ private struct OpenQuestionsList: View {
         HStack(spacing: 8) {
             Text("\(filtered.count) open").font(.headline)
             Spacer()
-            EntitySearchBar(text: $query, placeholder: "Search questions").frame(width: 180)
+            EntitySearchBar(text: $query, placeholder: "Search questions").frame(width: 160)
+            RangePicker(range: $fRange, compact: true)
             OrgProjectTreePicker(store: store, kind: $fKind, id: $fID, allLabel: "All accounts")
+            if !filtered.isEmpty {
+                ExpandCollapseButton(tree: tree, expanded: $expanded)
+                    .buttonStyle(.borderless).labelStyle(.iconOnly)
+            }
             Button { Task { await scan() } } label: { Image(systemName: "arrow.clockwise") }
                 .help("Rescan notes")
         }
@@ -2317,7 +2335,7 @@ private struct OpenQuestionsList: View {
         let root = AppSettings.shared.notesFolder.path + "/"
         var result: [QItem] = []
         for f in NotesLibrary.meetingFiles(limit: AppSettings.shared.searchDepth) {
-            guard let text = try? String(contentsOf: f.url, encoding: .utf8) else { continue }
+            guard let text = f.url.readText() else { continue }
             let qs = Self.unanswered(in: text)
             guard !qs.isEmpty else { continue }
             let title = FrontMatter.title(in: text) ?? f.displayName
@@ -2326,17 +2344,9 @@ private struct OpenQuestionsList: View {
             let orgIDs = Set(note.map { store.effectiveOrgIDs(of: $0) } ?? [])
             let projIDs = note.map { store.effectiveProjectIDs(of: $0) } ?? []
             let date = DateDisplay.posixDay.date(from: f.day)
-            // Primary filing → the group this note's questions belong to.
-            var groupKey = "unassigned", groupTitle = "Unassigned"
-            if let pid = note?.projectIDs.first, store.project(pid) != nil {
-                groupKey = "p:" + pid; groupTitle = store.projectPath(of: pid)
-            } else if let oid = note?.orgIDs.first, store.org(oid) != nil {
-                groupKey = "o:" + oid; groupTitle = store.orgPath(of: oid)
-            }
             for q in qs {
                 result.append(QItem(question: q, title: title, date: date, url: f.url,
-                                    orgIDs: orgIDs, projIDs: projIDs,
-                                    groupKey: groupKey, groupTitle: groupTitle))
+                                    orgIDs: orgIDs, projIDs: projIDs))
             }
         }
         items = result
@@ -2358,18 +2368,190 @@ private struct OpenQuestionsList: View {
     }
 }
 
+// MARK: POC Tracker (master list)
+
+/// How a project's POC stands, derived from its criteria. Drives the tracker's
+/// status filter, grouping, and per-row badge/tint.
+enum PocState: String, CaseIterable, Identifiable {
+    case atRisk = "At risk", inProgress = "In progress", complete = "Complete",
+         notStarted = "Not started", noCriteria = "No criteria"
+    var id: String { rawValue }
+
+    /// Classify from criteria tallies.
+    static func of(total: Int, passed: Int, failed: Int) -> PocState {
+        if total == 0 { return .noCriteria }
+        if failed > 0 { return .atRisk }
+        if passed == total { return .complete }
+        if passed == 0 { return .notStarted }
+        return .inProgress
+    }
+
+    var icon: String {
+        switch self {
+        case .atRisk: "exclamationmark.triangle.fill"
+        case .inProgress: "circle.lefthalf.filled"
+        case .complete: "checkmark.seal.fill"
+        case .notStarted: "circle"
+        case .noCriteria: "questionmark.circle"
+        }
+    }
+    var color: Color {
+        switch self {
+        case .atRisk: .red; case .inProgress: .accentColor; case .complete: .green
+        case .notStarted: .orange; case .noCriteria: .secondary
+        }
+    }
+    /// Sort weight so at-risk work floats up and finished/empty work sinks.
+    var priority: Int {
+        switch self {
+        case .atRisk: 0; case .inProgress: 1; case .notStarted: 2; case .complete: 3; case .noCriteria: 4
+        }
+    }
+}
+
+private enum PocSort: String, CaseIterable, Identifiable {
+    case priority = "At-risk first", name = "Name", progress = "Progress", recent = "Recent activity"
+    var id: String { rawValue }
+}
+private enum PocGroup: String, CaseIterable, Identifiable {
+    case status = "Status", account = "Account", stage = "Stage", date = "Date", none = "None"
+    var id: String { rawValue }
+}
+
+/// A project plus its computed POC tallies — the unit the tracker filters,
+/// sorts, and groups.
+private struct PocRow: Identifiable {
+    let project: CatalogProject
+    var id: String { project.id }
+    let total, passed, failed, pending: Int
+    let state: PocState
+    let accountPath: String
+    let lastActivity: Date?
+    var progress: Double { total == 0 ? 0 : Double(passed) / Double(total) }
+}
+
 private struct PocProjectList: View {
     @ObservedObject var store: CatalogStore
     @Binding var selID: String?
 
-    private func label(_ o: CatalogProject) -> String {
-        // Ancestor context (org › parent projects), excluding the project's own
-        // name — that's already on the line above.
+    @State private var query = ""
+    @State private var statusFilter: PocState? = nil     // nil = all states
+    @State private var accountFilter = ""                // org id ("" = all)
+    @State private var range: DateRange = .all           // by last meeting activity
+    @State private var sort: PocSort = .priority
+    @State private var grouping: PocGroup = .status
+    @State private var expanded: Set<String> = []          // open group keys (Y/M/D or bucket)
+    @State private var expandedProjects: Set<String> = []  // projects showing their linked notes
+    @State private var seeded = false
+    // Bulk selection
+    @State private var selectMode = false
+    @State private var picked: Set<String> = []
+    @State private var confirmClear = false
+
+    // MARK: Derived data
+
+    private func accountLabel(_ p: CatalogProject) -> String {
         var parts: [String] = []
-        if let org = store.org(forProject: o.id) { parts.append(store.orgPath(of: org.id)) }
-        parts.append(contentsOf: store.projectLineage(of: o.id).dropFirst().reversed().compactMap { store.project($0)?.name })
+        if let org = store.org(forProject: p.id) { parts.append(store.orgPath(of: org.id)) }
+        parts.append(contentsOf: store.projectLineage(of: p.id).dropFirst().reversed()
+            .compactMap { store.project($0)?.name })
         return parts.isEmpty ? "—" : parts.joined(separator: " › ")
     }
+
+    private func row(for p: CatalogProject) -> PocRow {
+        let total = p.pocCriteria.count
+        let passed = p.pocCriteria.filter { $0.status == .pass }.count
+        let failed = p.pocCriteria.filter { $0.status == .fail }.count
+        return PocRow(project: p, total: total, passed: passed, failed: failed,
+                      pending: total - passed - failed,
+                      state: .of(total: total, passed: passed, failed: failed),
+                      accountPath: accountLabel(p),
+                      lastActivity: store.notes(forProject: p.id).compactMap(\.date).max())
+    }
+
+    /// Every non-archived project as a computed row.
+    private var allRows: [PocRow] { store.doc.projects.filter { !$0.archived }.map(row(for:)) }
+
+    private var filtered: [PocRow] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let orgScope = accountFilter.isEmpty ? nil : store.orgSubtree(of: accountFilter)
+        return allRows.filter { r in
+            (q.isEmpty || r.project.name.lowercased().contains(q) || r.accountPath.lowercased().contains(q))
+            && (statusFilter == nil || r.state == statusFilter)
+            && (orgScope == nil || (store.org(forProject: r.project.id).map { orgScope!.contains($0.id) } ?? false))
+            && (range.days == nil || range.includes(r.lastActivity))
+        }
+    }
+
+    private var sorted: [PocRow] {
+        filtered.sorted { a, b in
+            switch sort {
+            case .priority:
+                if a.state.priority != b.state.priority { return a.state.priority < b.state.priority }
+                return a.progress > b.progress
+            case .name:     return a.project.name.localizedCaseInsensitiveCompare(b.project.name) == .orderedAscending
+            case .progress: return a.progress > b.progress
+            case .recent:   return (a.lastActivity ?? .distantPast) > (b.lastActivity ?? .distantPast)
+            }
+        }
+    }
+
+    /// The date tree (Year→Month→Day by last meeting activity) for date grouping.
+    private var dateTree: [DateGroupNode<PocRow>] {
+        DateGrouping.tree(sorted) { $0.lastActivity }
+    }
+
+    /// A project's linked meeting notes, newest-first — the "sub-group by note"
+    /// drill-down revealed when a project row is expanded.
+    private func linkedNotes(_ p: CatalogProject) -> [CatalogNote] {
+        store.notes(forProject: p.id).sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+    }
+
+    /// (key, title, tint, rows) buckets for the current grouping, ordered.
+    private var groups: [(key: String, title: String, tint: Color, rows: [PocRow])] {
+        switch grouping {
+        case .none, .date:
+            // .none renders flat; .date renders via `dateTree` (handled in `list`).
+            return [("all", "All POCs", .cyan, sorted)]
+        case .status:
+            return PocState.allCases.compactMap { st in
+                let rows = sorted.filter { $0.state == st }
+                return rows.isEmpty ? nil : (st.rawValue, st.rawValue, st.color, rows)
+            }
+        case .stage:
+            return OppStage.allCases.compactMap { stage in
+                let rows = sorted.filter { $0.project.stage == stage }
+                return rows.isEmpty ? nil : (stage.rawValue, stage.label, .secondary, rows)
+            }
+        case .account:
+            var order: [String] = []
+            var byKey: [String: [PocRow]] = [:]
+            for r in sorted {
+                let key = store.org(forProject: r.project.id)?.name ?? "No account"
+                if byKey[key] == nil { order.append(key) }
+                byKey[key, default: []].append(r)
+            }
+            return order.sorted { $0 == "No account" ? false : ($1 == "No account" ? true : $0 < $1) }
+                .map { ($0, $0, .cyan, byKey[$0]!) }
+        }
+    }
+
+    // MARK: Overall stats
+
+    private var stats: (pocs: Int, atRisk: Int, complete: Int, passed: Int, criteria: Int) {
+        let withCriteria = allRows.filter { $0.total > 0 }
+        return (withCriteria.count,
+                withCriteria.filter { $0.state == .atRisk }.count,
+                withCriteria.filter { $0.state == .complete }.count,
+                withCriteria.reduce(0) { $0 + $1.passed },
+                withCriteria.reduce(0) { $0 + $1.total })
+    }
+
+    private var activeFilters: Bool {
+        statusFilter != nil || !accountFilter.isEmpty || range != .all || !query.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    // MARK: Body
 
     var body: some View {
         Group {
@@ -2377,28 +2559,299 @@ private struct PocProjectList: View {
                 ContentUnavailableView("No projects", systemImage: "flask",
                     description: Text("Add a project under Records, then track its POC here."))
             } else {
-                List(store.doc.projects.sortedByName, selection: $selID) { o in
-                    let total = o.pocCriteria.count
-                    let passed = o.pocCriteria.filter { $0.status == .pass }.count
-                    HStack(spacing: 10) {
-                        Image(systemName: "flask")
-                            .foregroundStyle(.white).frame(width: 20, height: 20)
-                            .background(RoundedRectangle(cornerRadius: 5).fill(Color.cyan))
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(o.name)
-                            Text(label(o)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if total > 0 {
-                            Text("\(passed)/\(total)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(passed == total ? .green : .secondary)
-                        }
+                VStack(spacing: 0) {
+                    statsStrip
+                    controls
+                    if selectMode { selectBar }
+                    Divider()
+                    if sorted.isEmpty {
+                        ContentUnavailableView("No POCs match", systemImage: "line.3.horizontal.decrease.circle",
+                            description: Text("Adjust the filters or range to see more."))
+                    } else {
+                        list
                     }
-                    .tag(o.id)
                 }
             }
         }
+        .onAppear { if !seeded { expanded = allGroupKeys; seeded = true } }
+        .onChange(of: grouping) { _, _ in expanded = allGroupKeys }
+        .confirmationDialog("Clear POC criteria?",
+                            isPresented: $confirmClear, titleVisibility: .visible) {
+            Button("Clear \(pickedWithCriteria.count) POC\(pickedWithCriteria.count == 1 ? "" : "s")", role: .destructive) {
+                // The detail pane observes the store, so it refreshes on its own.
+                store.clearPocCriteria(from: picked)
+                picked = []; selectMode = false
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes every success criterion from the selected project\(pickedWithCriteria.count == 1 ? "" : "s"). The project\(pickedWithCriteria.count == 1 ? "" : "s") stay\(pickedWithCriteria.count == 1 ? "s" : "") in the Catalog — you can re-add criteria anytime.")
+        }
+    }
+
+    /// Selected projects that actually have criteria to clear.
+    private var pickedWithCriteria: Set<String> {
+        Set(allRows.filter { picked.contains($0.id) && $0.total > 0 }.map(\.id))
+    }
+
+    /// The bulk-action bar shown while in select mode.
+    private var selectBar: some View {
+        HStack(spacing: 10) {
+            Text("\(picked.count) selected").font(.caption.weight(.medium))
+            Button("Select all") { picked = Set(sorted.map(\.id)) }
+                .font(.caption).buttonStyle(.borderless)
+            if !picked.isEmpty {
+                Button("Clear") { picked = [] }
+                    .font(.caption).buttonStyle(.borderless)
+            }
+            Spacer()
+            Button(role: .destructive) { confirmClear = true } label: {
+                Label("Clear criteria", systemImage: "trash")
+            }
+            .font(.caption).buttonStyle(.borderless)
+            .disabled(pickedWithCriteria.isEmpty)
+            Button("Done") { selectMode = false; picked = [] }
+                .font(.caption).buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .background(Color.accentColor.opacity(0.08))
+    }
+
+    private var allGroupKeys: Set<String> {
+        grouping == .date ? DateGrouping.allKeys(dateTree) : Set(groups.map(\.key))
+    }
+
+    // MARK: Stats strip
+
+    private var statsStrip: some View {
+        let s = stats
+        let pct = s.criteria == 0 ? 0 : Double(s.passed) / Double(s.criteria)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                statPill("\(s.pocs)", "POCs", .cyan, "flask")
+                statPill("\(s.atRisk)", "at risk", .red, "exclamationmark.triangle.fill")
+                statPill("\(s.complete)", "complete", .green, "checkmark.seal.fill")
+                Spacer()
+            }
+            if s.criteria > 0 {
+                HStack(spacing: 6) {
+                    ProgressView(value: pct).tint(pct == 1 ? .green : .accentColor)
+                    Text("\(s.passed)/\(s.criteria)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 6)
+    }
+
+    private func statPill(_ value: String, _ label: String, _ tint: Color, _ icon: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon).font(.caption2).foregroundStyle(tint)
+            Text(value).font(.subheadline.weight(.semibold).monospacedDigit())
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(Capsule().fill(tint.opacity(0.12)))
+    }
+
+    // MARK: Controls
+
+    private var controls: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                EntitySearchBar(text: $query, placeholder: "Search POCs…")
+                filterMenu
+            }
+            HStack(spacing: 6) {
+                menu("Group", grouping.rawValue) {
+                    Picker("", selection: $grouping) { ForEach(PocGroup.allCases) { Text($0.rawValue).tag($0) } }
+                        .pickerStyle(.inline).labelsHidden()
+                }
+                menu("Sort", sort.rawValue) {
+                    Picker("", selection: $sort) { ForEach(PocSort.allCases) { Text($0.rawValue).tag($0) } }
+                        .pickerStyle(.inline).labelsHidden()
+                }
+                RangePicker(range: $range, compact: true)
+                Spacer(minLength: 0)
+                if grouping != .none {
+                    Button {
+                        let all = allGroupKeys
+                        expanded = expanded.isSuperset(of: all) && !all.isEmpty ? [] : all
+                    } label: {
+                        Image(systemName: expanded.isSuperset(of: allGroupKeys) && !allGroupKeys.isEmpty
+                              ? "chevron.up.circle" : "chevron.down.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Expand or collapse all groups")
+                }
+                Button {
+                    selectMode.toggle(); if !selectMode { picked = [] }
+                } label: {
+                    Image(systemName: selectMode ? "checkmark.circle.fill" : "checklist")
+                }
+                .buttonStyle(.borderless)
+                .help(selectMode ? "Exit selection" : "Select POCs to bulk-clear criteria")
+            }
+        }
+        .padding(.horizontal, 10).padding(.bottom, 8)
+    }
+
+    /// Status + account + range live under one badged Filter menu.
+    private var filterMenu: some View {
+        Menu {
+            Picker("Status", selection: $statusFilter) {
+                Text("All statuses").tag(PocState?.none)
+                ForEach(PocState.allCases) { Text($0.rawValue).tag(PocState?.some($0)) }
+            }
+            Divider()
+            Button("Clear filters") {
+                statusFilter = nil; accountFilter = ""; range = .all; query = ""
+            }
+            .disabled(!activeFilters)
+        } label: {
+            Label("Filter", systemImage: activeFilters
+                  ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                .labelStyle(.iconOnly)
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .overlay(alignment: .topTrailing) {
+            if activeFilters {
+                Circle().fill(Color.accentColor).frame(width: 6, height: 6).offset(x: 2, y: -1)
+            }
+        }
+    }
+
+    private func menu<Content: View>(_ title: String, _ value: String,
+                                     @ViewBuilder content: () -> Content) -> some View {
+        Menu {
+            content()
+        } label: {
+            HStack(spacing: 3) {
+                Text(title).foregroundStyle(.secondary)
+                Text(value).fontWeight(.medium)
+            }
+            .font(.caption)
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+    }
+
+    // MARK: List
+
+    @ViewBuilder private var list: some View {
+        List {
+            if grouping == .date {
+                DateGroupDisclosure(nodes: dateTree, expanded: $expanded) { projectBlock($0) }
+            } else {
+                ForEach(groups, id: \.key) { g in
+                    if grouping == .none {
+                        ForEach(g.rows) { projectBlock($0) }
+                    } else {
+                        DisclosureGroup(isExpanded: binding(g.key)) {
+                            ForEach(g.rows) { projectBlock($0) }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Circle().fill(g.tint).frame(width: 7, height: 7)
+                                Text(g.title).font(.subheadline.weight(.semibold))
+                                Spacer()
+                                Text("\(g.rows.count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func binding(_ key: String) -> Binding<Bool> {
+        Binding(get: { expanded.contains(key) },
+                set: { if $0 { expanded.insert(key) } else { expanded.remove(key) } })
+    }
+
+    /// A project row plus, when expanded, its linked meeting notes beneath it.
+    @ViewBuilder private func projectBlock(_ r: PocRow) -> some View {
+        let notes = linkedNotes(r.project)
+        VStack(spacing: 0) {
+            projectRow(r, noteCount: notes.count)
+            if expandedProjects.contains(r.id) {
+                ForEach(notes) { noteSubRow($0) }
+            }
+        }
+    }
+
+    private func projectRow(_ r: PocRow, noteCount: Int) -> some View {
+        HStack(spacing: 10) {
+            if selectMode {
+                Button {
+                    if picked.contains(r.id) { picked.remove(r.id) } else { picked.insert(r.id) }
+                } label: {
+                    Image(systemName: picked.contains(r.id) ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(picked.contains(r.id) ? Color.accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            Image(systemName: r.state.icon)
+                .foregroundStyle(r.state.color)
+                .font(.system(size: 15))
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(r.project.name).lineLimit(1)
+                Text(r.accountPath).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                if r.total > 0 {
+                    HStack(spacing: 6) {
+                        ProgressView(value: r.progress)
+                            .tint(r.state.color).frame(width: 60)
+                        Text("\(r.passed)/\(r.total)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        if r.failed > 0 {
+                            Text("\(r.failed) failed").font(.caption2).foregroundStyle(.red)
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 4)
+            if let d = r.lastActivity {
+                Text(d.formatted(.relative(presentation: .named)))
+                    .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+            }
+            // Drill-down toggle to reveal this project's linked notes.
+            if noteCount > 0 {
+                Button {
+                    if expandedProjects.contains(r.id) { expandedProjects.remove(r.id) }
+                    else { expandedProjects.insert(r.id) }
+                } label: {
+                    Image(systemName: expandedProjects.contains(r.id) ? "chevron.down" : "chevron.right")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("\(noteCount) linked note\(noteCount == 1 ? "" : "s")")
+            }
+        }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        .background(RoundedRectangle(cornerRadius: 6)
+            .fill(!selectMode && selID == r.id ? Color.accentColor.opacity(0.14) : .clear))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if selectMode {
+                if picked.contains(r.id) { picked.remove(r.id) } else { picked.insert(r.id) }
+            } else {
+                selID = r.id
+            }
+        }
+    }
+
+    /// One linked meeting note, indented under its project; opens on click.
+    private func noteSubRow(_ n: CatalogNote) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "doc.text").font(.caption2).foregroundStyle(.secondary)
+            Text(n.title).font(.caption).lineLimit(1)
+            if let d = n.date {
+                Text(d.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "arrow.up.forward.square").font(.caption2).foregroundStyle(.tertiary)
+        }
+        .padding(.leading, 34).padding(.trailing, 6).padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture { NotesViewerWindowController.present(fileURL: store.url(of: n)) }
     }
 }
 
@@ -2556,7 +3009,7 @@ private struct PocDetail: View {
     /// added is editable/removable like a hand-typed criterion.
     private func suggestFromMeetings(_ opp: CatalogProject) {
         let notes = store.notes(forProject: opp.id)
-        let transcripts = notes.compactMap { try? String(contentsOf: store.url(of: $0), encoding: .utf8) }
+        let transcripts = notes.compactMap { store.url(of: $0).readText() }
         guard !transcripts.isEmpty else { status = "No readable meetings linked to this project."; return }
         // Cap the combined text so a busy project doesn't blow the context.
         let combined = String(transcripts.joined(separator: "\n\n---\n\n").prefix(40_000))

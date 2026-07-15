@@ -164,7 +164,7 @@ actor SemanticIndex {
             let mtime = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? nil
             guard let mtime else { continue }
             if let existing = cache[path], abs(existing.mtime.timeIntervalSince(mtime)) < 1 { continue }
-            guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            guard let content = url.readText() else { continue }
 
             let chunks = Self.chunk(content).map { text -> Chunk in
                 let fv = embedding?.vector(for: text).map { $0.map(Float.init) }

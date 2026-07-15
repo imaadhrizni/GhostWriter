@@ -170,7 +170,7 @@ final class MeetingNotesWriter {
         let yaml = Self.yamlScalar
         var lines = ["---",
                      "title: Dictation \(stamp)",
-                     "date: \(ISO8601DateFormatter().string(from: now))",
+                     "date: \(DateDisplay.iso8601.string(from: now))",
                      "app: \(yaml(app))"]
         if let host, !host.isEmpty { lines.append("host: \(yaml(host))") }
         lines.append("style: \(yaml(style))")
@@ -229,7 +229,7 @@ final class MeetingNotesWriter {
     /// Rewrite every occurrence of a speaker label in a finished notes file.
     static func renameSpeaker(from old: String, to new: String, in file: URL) {
         guard old != new, !new.isEmpty,
-              var content = try? String(contentsOf: file, encoding: .utf8) else { return }
+              var content = file.readText() else { return }
         content = content
             .replacingOccurrences(of: "**\(old)**:", with: "**\(new)**:")
             .replacingOccurrences(of: "_\(old)_:", with: "_\(new)_:")
@@ -238,7 +238,7 @@ final class MeetingNotesWriter {
 
     /// Distinct speaker labels appearing in a notes file, in first-seen order.
     static func speakerLabels(in file: URL) -> [String] {
-        guard let content = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+        guard let content = file.readText() else { return [] }
         var labels: [String] = []
         let pattern = #/\*\*\[\d{2}:\d{2}:\d{2}\]\*\* (?:\*\*(.+?)\*\*|_(.+?)_):/#
         for line in content.split(whereSeparator: \.isNewline) {
@@ -277,7 +277,7 @@ final class MeetingNotesWriter {
 
         var content = ""
         if AppSettings.shared.frontMatterEnabled {
-            let iso = ISO8601DateFormatter().string(from: recordedAt)
+            let iso = DateDisplay.iso8601.string(from: recordedAt)
             var fm = ["---",
                       "title: \(yaml(noteTitle))",
                       "date: \(iso)",
@@ -325,15 +325,14 @@ final class MeetingNotesWriter {
 
             var header = ""
             if AppSettings.shared.frontMatterEnabled {
-                // Obsidian/Notion-friendly YAML front-matter
-                let isoFormatter = ISO8601DateFormatter()
+                // Obsidian/Notion-friendly YAML front-matter.
                 // Record the meeting type so the note viewer can suggest the
                 // right draft documents without guessing from headings.
                 let meetingType = AppSettings.shared.selectedTemplateID
                 header += """
                 ---
                 title: Meeting \(timestamp)
-                date: \(isoFormatter.string(from: Date()))
+                date: \(DateDisplay.iso8601.string(from: Date()))
                 gw_meeting_type: \(meetingType)
                 tags: [meeting, ghostwriter]
                 ---
@@ -427,7 +426,7 @@ final class MeetingNotesWriter {
     static func setFrontMatterTitle(_ title: String, to fileURL: URL) {
         let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty,
-              var content = try? String(contentsOf: fileURL, encoding: .utf8),
+              var content = fileURL.readText(),
               content.hasPrefix("---") else { return }
         var lines = content.components(separatedBy: "\n")
         guard let i = lines.firstIndex(where: { $0.hasPrefix("title:") }) else { return }
@@ -478,7 +477,7 @@ final class MeetingNotesWriter {
     static func addFrontMatterTags(_ tags: [String], to fileURL: URL) {
         let newTags = tags.filter { !$0.isEmpty }
         guard !newTags.isEmpty,
-              var content = try? String(contentsOf: fileURL, encoding: .utf8),
+              var content = fileURL.readText(),
               content.hasPrefix("---") else { return }
 
         var lines = content.components(separatedBy: "\n")
@@ -516,7 +515,7 @@ final class MeetingNotesWriter {
         addFrontMatterTags(tagTokens.filter { !$0.isEmpty }, to: fileURL)
 
         // Structured fields for Dataview / Notion-style filtering.
-        guard var content = try? String(contentsOf: fileURL, encoding: .utf8),
+        guard var content = fileURL.readText(),
               content.hasPrefix("---") else { return }
         var lines = content.components(separatedBy: "\n")
         guard let tagsIdx = lines.firstIndex(where: { $0.hasPrefix("tags:") }) else { return }
@@ -544,7 +543,7 @@ final class MeetingNotesWriter {
     static func addFrontMatterFields(_ pairs: [(key: String, value: String)], to fileURL: URL) {
         let clean = pairs.filter { !$0.value.isEmpty }
         guard !clean.isEmpty,
-              var content = try? String(contentsOf: fileURL, encoding: .utf8),
+              var content = fileURL.readText(),
               content.hasPrefix("---") else { return }
         var lines = content.components(separatedBy: "\n")
         // Anchor after tags:, else after title:, else right under the opening ---.
@@ -591,7 +590,7 @@ final class MeetingNotesWriter {
 
     /// Full text of a notes file (for summarization).
     func transcriptText(of fileURL: URL) -> String? {
-        try? String(contentsOf: fileURL, encoding: .utf8)
+        fileURL.readText()
     }
 
     // MARK: - Appending Transcripts

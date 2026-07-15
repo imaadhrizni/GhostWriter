@@ -184,8 +184,11 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Import / export templates", section: .meetingTemplates, keywords: ["backup", "share", "bundle", "json", "house style", "merge", "replace"]),
         .init(label: "Per-app recording overrides", section: .meeting, keywords: ["app", "override", "delete", "remove", "default", "unrecognized"]),
         .init(label: "Auto-detect poll interval", section: .meeting, keywords: ["advanced", "detection", "poll", "interval", "how often", "call detection", "timing"]),
+        .init(label: "Meeting-end sensitivity", section: .meeting, keywords: ["advanced", "end", "quiet", "polls", "detection", "hang up", "timing"]),
         .init(label: "Transcription request timeout", section: .meeting, keywords: ["advanced", "timeout", "groq", "network", "seconds", "retry", "stt"]),
+        .init(label: "Audio-import request timeout", section: .meeting, keywords: ["advanced", "timeout", "import", "file", "upload", "seconds", "stt"]),
         .init(label: "Live-brief refresh threshold", section: .meeting, keywords: ["advanced", "growth", "chars", "brief", "refresh", "how much"]),
+        .init(label: "Summary context budget", section: .meeting, keywords: ["advanced", "summary", "context", "tokens", "chars", "budget", "length", "ai"]),
         .init(label: "Push-to-talk tap threshold", section: .dictation, keywords: ["tap", "hold", "lock", "threshold", "latch", "hands-free", "ptt", "timing"]),
         // Notes & summaries
         .init(label: "Auto-title notes", section: .notes, keywords: ["heading", "name", "smart title"]),
@@ -1618,7 +1621,7 @@ private struct MeetingPane: View {
                 }
             }
 
-            SettingsGroup("During the Meeting") {
+            SettingsGroup("Live Assistance") {
                 Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
                 Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
                     .font(.caption).foregroundColor(.secondary)
@@ -1768,6 +1771,16 @@ private struct MeetingPane: View {
                             defaultValue: AppSettings.Default.meetingDetectInterval
                         )
                         HStack {
+                            Text("Meeting-end sensitivity")
+                            Spacer()
+                            Stepper("\(settings.meetingEndQuietPolls) quiet poll\(settings.meetingEndQuietPolls == 1 ? "" : "s")",
+                                    value: $settings.meetingEndQuietPolls, in: 1...5)
+                                .frame(width: 170)
+                            DefaultResetButton(isDefault: settings.meetingEndQuietPolls == AppSettings.Default.meetingEndQuietPolls) {
+                                settings.meetingEndQuietPolls = AppSettings.Default.meetingEndQuietPolls
+                            }
+                        }
+                        HStack {
                             Text("Transcription request timeout")
                             Spacer()
                             Picker("", selection: $settings.transcriptionTimeout) {
@@ -1776,6 +1789,17 @@ private struct MeetingPane: View {
                             .labelsHidden().frame(width: 80)
                             DefaultResetButton(isDefault: settings.transcriptionTimeout == AppSettings.Default.transcriptionTimeout) {
                                 settings.transcriptionTimeout = AppSettings.Default.transcriptionTimeout
+                            }
+                        }
+                        HStack {
+                            Text("Audio-import request timeout")
+                            Spacer()
+                            Picker("", selection: $settings.importTranscriptionTimeout) {
+                                ForEach([30, 60, 120, 180, 300], id: \.self) { Text("\($0)s").tag($0) }
+                            }
+                            .labelsHidden().frame(width: 80)
+                            DefaultResetButton(isDefault: settings.importTranscriptionTimeout == AppSettings.Default.importTranscriptionTimeout) {
+                                settings.importTranscriptionTimeout = AppSettings.Default.importTranscriptionTimeout
                             }
                         }
                         HStack {
@@ -1788,7 +1812,17 @@ private struct MeetingPane: View {
                                 settings.liveBriefMinGrowth = AppSettings.Default.liveBriefMinGrowth
                             }
                         }
-                        Text("How often GhostWriter checks whether a call has started, how long a transcription request may take before retrying, and how much new speech triggers a fresh live brief.")
+                        HStack {
+                            Text("Summary context budget")
+                            Spacer()
+                            Stepper("\(settings.summaryContextChars / 1000)k chars", value: $settings.summaryContextChars,
+                                    in: 8000...60000, step: 4000)
+                                .frame(width: 170)
+                            DefaultResetButton(isDefault: settings.summaryContextChars == AppSettings.Default.summaryContextChars) {
+                                settings.summaryContextChars = AppSettings.Default.summaryContextChars
+                            }
+                        }
+                        Text("How often GhostWriter polls for a call, how many quiet polls end one, request timeouts for live vs. imported audio, how much new speech triggers a fresh live brief, and how much transcript is fed into AI summaries (higher = more complete, higher token cost).")
                             .font(.caption).foregroundColor(.secondary)
                     }
                 }

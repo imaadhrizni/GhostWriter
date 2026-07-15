@@ -18,6 +18,27 @@ enum DateDisplay {
         return f
     }()
 
+    /// Shared ISO-8601 formatter for writing front-matter `date:` stamps —
+    /// one instance instead of the ad-hoc `ISO8601DateFormatter()` that was
+    /// scattered across the note writer.
+    static let iso8601 = ISO8601DateFormatter()
+
+    /// Parse an ISO-8601 `date:` string, tolerating fractional seconds. Used by
+    /// the PDF export and note viewer (previously duplicated `isoDate(_:)`
+    /// helpers). Uses its own formatters so no shared mutable state is toggled.
+    static func parseISO(_ s: String) -> Date? {
+        if let d = isoPlain.date(from: s) { return d }
+        return isoFractional.date(from: s)
+    }
+    private static let isoPlain: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]; return f
+    }()
+    private static let isoFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
     /// Fixed formatter for the full `yyyy-MM-dd_HH-mm-ss` filename timestamp.
     static let posixTimestamp: DateFormatter = {
         let f = DateFormatter()

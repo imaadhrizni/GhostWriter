@@ -47,7 +47,7 @@ enum RadarInsights {
         let files = NotesLibrary.meetingFiles(limit: limit)   // newest-first
 
         for f in files {
-            guard let text = try? String(contentsOf: f.url, encoding: .utf8) else { continue }
+            guard let text = f.url.readText() else { continue }
             let body = FrontMatter.body(text)
             let title = FrontMatter.title(in: text) ?? f.displayName
             let counts = MeetingNotesWriter.mentionCounts(in: body, terms: watchlist)

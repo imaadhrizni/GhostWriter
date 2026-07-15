@@ -177,7 +177,7 @@ enum NotesLibrary {
     /// Returns false when the line is gone (file edited elsewhere).
     @discardableResult
     static func toggleDone(_ item: ActionItem) -> Bool {
-        guard let content = try? String(contentsOf: item.file.url, encoding: .utf8) else { return false }
+        guard let content = item.file.url.readText() else { return false }
         var lines = content.components(separatedBy: "\n")
         guard let idx = lines.firstIndex(where: {
             $0.trimmingCharacters(in: .whitespaces) == item.rawLine
@@ -200,7 +200,7 @@ enum NotesLibrary {
     /// Action items parsed from a single notes file — bullets under the
     /// "## Action Items" heading. Used by the Catalog note editor.
     static func actionItems(inFile url: URL) -> [ActionItem] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        guard let content = url.readText() else { return [] }
         let file = MeetingFile(url: url)
         var items: [ActionItem] = [], inSection = false
         for rawLine in content.split(whereSeparator: \.isNewline) {

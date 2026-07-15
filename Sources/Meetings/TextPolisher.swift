@@ -371,7 +371,7 @@ final class TextPolisher {
         // Long meetings exceed the context window. Rather than dropping the
         // opening (a tail-only clip), map-reduce: condense the whole meeting in
         // chunks first, so early decisions survive into the summary.
-        let clipped = await condenseIfNeeded(transcript, cap: 24_000)
+        let clipped = await condenseIfNeeded(transcript, cap: AppSettings.shared.summaryContextChars)
 
         var sections: [String] = []
         if includeSummary {
@@ -475,7 +475,7 @@ final class TextPolisher {
     /// Returns Markdown bullet lines, or "" when there's too little to segment.
     func chapters(transcript: String) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
-        let clipped = String(transcript.suffix(24_000))
+        let clipped = String(transcript.suffix(AppSettings.shared.summaryContextChars))
 
         let requestBody = ChatRequest(
             model: model,
@@ -632,7 +632,7 @@ final class TextPolisher {
     func answer(question: String, transcript: String) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
 
-        let clipped = String(transcript.suffix(24_000))
+        let clipped = String(transcript.suffix(AppSettings.shared.summaryContextChars))
         let requestBody = ChatRequest(
             model: model,
             messages: [
@@ -656,7 +656,7 @@ final class TextPolisher {
     func answerAcrossMeetings(question: String, excerpts: String) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
 
-        let clipped = String(excerpts.suffix(24_000))
+        let clipped = String(excerpts.suffix(AppSettings.shared.summaryContextChars))
         let requestBody = ChatRequest(
             model: model,
             messages: [
@@ -759,7 +759,7 @@ final class TextPolisher {
 
         // Discovery reads the whole meeting, not just the tail, so a topic from
         // early on isn't forgotten once it scrolls out of the recent window.
-        let clipped = String(transcript.suffix(24_000))
+        let clipped = String(transcript.suffix(AppSettings.shared.summaryContextChars))
         let numberedAgenda = items.isEmpty
             ? "(none provided)"
             : items.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
@@ -834,7 +834,7 @@ final class TextPolisher {
     /// Shared drafting core: build on the notes, obey `guidance`, cache by
     /// guidance + content so each document type has its own entry.
     private func draft(transcript: String, guidance: String, forceRefresh: Bool) async throws -> String {
-        let clipped = String(Self.summarizableBody(transcript).suffix(24_000))
+        let clipped = String(Self.summarizableBody(transcript).suffix(AppSettings.shared.summaryContextChars))
         let cacheSource = guidance + "\u{0}" + clipped
         let body = ChatRequest(
             model: model,

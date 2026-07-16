@@ -97,12 +97,6 @@ enum PocExport {
         return s
     }
 
-    /// Just the criteria as a plain nested checklist — for a quick "copy the
-    /// criteria" that pastes cleanly into any doc or ticket.
-    static func checklist(_ poc: Poc) -> String {
-        poc.criteria.isEmpty ? "" : criteriaChecklist(poc)
-    }
-
     /// A roll-up document for many POCs: a summary line, then each POC as a
     /// section. Used by the tracker's "Export all" over the current filter.
     static func markdown(_ items: [(project: CatalogProject, poc: Poc, accountPath: String)],
@@ -142,13 +136,6 @@ enum PocExport {
     @discardableResult
     static func copy(_ markdown: String) -> String {
         Clipboard.markdown(markdown)
-        return "Copied to clipboard."
-    }
-
-    /// Copy plain text (no rich formatting) — used for "copy criteria".
-    @discardableResult
-    static func copyPlain(_ text: String) -> String {
-        Clipboard.plain(text)
         return "Copied to clipboard."
     }
 

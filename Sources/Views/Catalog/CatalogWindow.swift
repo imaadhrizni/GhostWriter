@@ -3258,20 +3258,11 @@ private struct PocDetail: View {
         return parts.joined(separator: " › ")
     }
 
-    /// Export / share this POC: copy (rich or just the criteria checklist),
-    /// save as Markdown, or export a paginated PDF.
+    /// Export / share this POC: save as Markdown or export a paginated PDF.
     private func shareMenu(_ opp: CatalogProject, _ poc: Poc) -> some View {
         let doc = PocExport.markdown(project: opp, poc: poc, accountPath: accountPath(opp))
         let base = PocExport.fileBase(poc.name)
         return Menu {
-            Button { status = PocExport.copy(PocExport.titled(doc, poc.name)) } label: {
-                Label("Copy POC", systemImage: "doc.on.doc")
-            }
-            Button { status = PocExport.copyPlain(PocExport.checklist(poc)) } label: {
-                Label("Copy criteria only", systemImage: "checklist")
-            }
-            .disabled(poc.criteria.isEmpty)
-            Divider()
             Button {
                 status = PocPDF.export(PocDocBuilder.single(project: opp, poc: poc,
                                                              accountPath: accountPath(opp)), base: base)

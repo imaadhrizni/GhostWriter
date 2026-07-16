@@ -7,8 +7,8 @@ import UniformTypeIdentifiers
 final class SettingsWindowController: NSWindowController {
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 660, height: 480),
-            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -17,6 +17,8 @@ final class SettingsWindowController: NSWindowController {
         window.title = "GhostWriter Settings"
         window.titlebarAppearsTransparent = true
         window.toolbarStyle = .unified
+        // Remember a resized/dragged window so the sidebar width sticks.
+        window.setFrameAutosaveName("SettingsWindow")
 
         self.init(window: window)
 
@@ -33,6 +35,7 @@ final class SettingsWindowController: NSWindowController {
 // MARK: - Sections
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
+    case essentials  = "Essentials"
     case general     = "General"
     case ai          = "AI & Models"
     case dictation   = "Dictation"
@@ -40,11 +43,13 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case quickNotes  = "Quick Notes"
     case meeting     = "Recording"
     case notes       = "Notes & Summaries"
+    case meetingTemplates = "Meeting Templates"
     case draftTemplates = "Draft Templates"
     case digest      = "Digest"
     case privacy     = "Privacy"
     case permissions = "Permissions"
     case shortcuts   = "Shortcuts"
+    case integrations = "Integrations"
     case stats       = "Usage & Cost"
     case diagnostics = "Diagnostics"
     case about       = "About"
@@ -54,16 +59,20 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     /// Sidebar layout: related panes grouped under headers, the way
     /// System Settings clusters its domains.
     static let sidebarGroups: [(title: String?, sections: [SettingsSection])] = [
-        (nil,                  [.general, .ai]),
+        (nil,                  [.essentials, .general, .ai]),
         ("Capture",            [.dictation, .styles, .quickNotes]),
-        ("Meetings",           [.meeting, .notes, .draftTemplates, .digest]),
+        ("Meetings",           [.meeting, .notes, .meetingTemplates, .draftTemplates]),
+        // Digest + hooks are both scheduled/outbound automation, not meeting capture.
+        ("Automation",         [.digest, .integrations]),
         ("Privacy & Security", [.privacy, .permissions]),
-        ("System",             [.shortcuts, .stats, .diagnostics]),
-        ("About",              [.about]),
+        ("System",             [.shortcuts, .diagnostics]),
+        // Usage/cost is account-scoped; About folds in here rather than a lone group.
+        ("Account",            [.stats, .about]),
     ]
 
     var icon: String {
         switch self {
+        case .essentials:  return "sparkles"
         case .general:     return "gearshape.fill"
         case .ai:          return "cpu.fill"
         case .dictation:   return "mic.fill"
@@ -71,11 +80,13 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return "square.and.pencil"
         case .meeting:     return "person.2.wave.2.fill"
         case .notes:       return "doc.text.fill"
+        case .meetingTemplates: return "doc.on.doc.fill"
         case .draftTemplates: return "doc.badge.gearshape"
         case .digest:      return "newspaper.fill"
         case .privacy:     return "hand.raised.fill"
         case .permissions: return "lock.shield.fill"
         case .shortcuts:   return "command"
+        case .integrations: return "bolt.horizontal.circle.fill"
         case .stats:       return "chart.bar.fill"
         case .diagnostics: return "stethoscope"
         case .about:       return "info.circle.fill"
@@ -84,6 +95,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 
     var iconColor: Color {
         switch self {
+        case .essentials:  return .accentColor
         case .general:     return .gray
         case .ai:          return .mint
         case .dictation:   return .blue
@@ -91,15 +103,146 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .quickNotes:  return .yellow
         case .meeting:     return .purple
         case .notes:       return .indigo
+        case .meetingTemplates: return .teal
         case .draftTemplates: return .teal
         case .digest:      return .brown
         case .privacy:     return .pink
         case .permissions: return .green
         case .shortcuts:   return .orange
+        case .integrations: return .indigo
         case .stats:       return .teal
         case .diagnostics: return .red
         case .about:       return .secondary
         }
+    }
+}
+
+// MARK: - Global Settings Search
+
+/// One searchable setting, mapped to the pane that hosts it. The index is
+/// curated (rather than reflected from the views) so results stay meaningful
+/// and stable: `label` is what the user reads, `keywords` widen the match to
+/// synonyms and adjacent terms the label doesn't contain.
+fileprivate struct SettingsSearchEntry: Identifiable {
+    let label: String
+    let section: SettingsSection
+    let keywords: [String]
+    var id: String { "\(section.rawValue)·\(label)" }
+
+    /// True if every whitespace-separated token of `query` appears in the
+    /// label, the section name, or any keyword (all case-insensitive).
+    func matches(_ query: String) -> Bool {
+        let haystack = ([label, section.rawValue] + keywords)
+            .joined(separator: " ").lowercased()
+        let tokens = query.lowercased().split(separator: " ")
+        return tokens.allSatisfy { haystack.contains($0) }
+    }
+}
+
+fileprivate enum SettingsSearchIndex {
+    // Cross-cutting action vocabulary. Almost every field pane carries an
+    // inline "reset to default" affordance (DefaultResetButton), so a bare
+    // "reset" / "default" / "restore" query should surface those panes rather
+    // than returning nothing. Sections listed here get a synthetic action row.
+    static let resettableSections: [SettingsSection] =
+        [.general, .ai, .dictation, .quickNotes, .meeting, .notes, .digest, .shortcuts]
+
+    static let all: [SettingsSearchEntry] = [
+        // Essentials
+        .init(label: "Getting started / setup checklist", section: .essentials, keywords: ["onboarding", "first run", "essentials", "setup", "get started", "welcome", "readiness", "api key", "permissions"]),
+        // General
+        .init(label: "Launch at login", section: .general, keywords: ["startup", "boot", "open at login", "autostart", "default", "reset"]),
+        .init(label: "Notes folder location", section: .general, keywords: ["storage", "save", "directory", "path", "choose", "change", "default", "reset"]),
+        .init(label: "Back up & restore notes", section: .general, keywords: ["backup", "restore", "export", "import", "archive", "recover"]),
+        .init(label: "Date format", section: .general, keywords: ["timestamp", "filename", "default", "reset"]),
+        .init(label: "PDF paper size (Letter / A4)", section: .general, keywords: ["pdf", "export", "paper", "a4", "letter", "page size", "print", "report", "poc"]),
+        .init(label: "Menu-bar icon", section: .general, keywords: ["status item", "tray", "default", "reset"]),
+        // AI & Models
+        .init(label: "Groq API key", section: .ai, keywords: ["token", "account", "authentication", "credential", "change", "clear", "remove"]),
+        .init(label: "Transcription model", section: .ai, keywords: ["whisper", "speech to text", "stt", "default", "reset"]),
+        .init(label: "Polishing model", section: .ai, keywords: ["llama", "qwen", "summaries", "llm", "chat", "default", "reset"]),
+        .init(label: "Lightweight-tasks model", section: .ai, keywords: ["fast", "cheap", "background", "live brief", "default", "reset"]),
+        .init(label: "Transcription language", section: .ai, keywords: ["iso", "locale", "tamil", "sinhala", "german", "default", "reset"]),
+        .init(label: "Offline fallback", section: .ai, keywords: ["on-device", "apple", "no network", "private"]),
+        .init(label: "Prefer on-device AI", section: .ai, keywords: ["apple intelligence", "private", "local llm"]),
+        // Dictation
+        .init(label: "Dictation hotkey", section: .dictation, keywords: ["shortcut", "push to talk", "trigger", "default", "reset"]),
+        .init(label: "Activation (hold / tap-to-lock / toggle)", section: .dictation, keywords: ["hands-free", "hands free", "toggle", "tap to lock", "latch", "hold", "long dictation", "push to talk", "ptt"]),
+        .init(label: "Skip silent recordings", section: .dictation, keywords: ["silence", "silent", "vad", "voice activity", "threshold", "dbfs", "noise gate", "skip", "save api", "hallucination"]),
+        .init(label: "Audio import (max size)", section: .dictation, keywords: ["import", "transcribe file", "audio file", "wav", "mp3", "ogg", "opus", "m4a", "drag drop", "voice note", "chat"]),
+        .init(label: "Voice commands", section: .styles, keywords: ["dictation commands", "new paragraph", "scratch that", "phrase", "effect", "rules"]),
+        .init(label: "Per-app style overrides", section: .styles, keywords: ["app", "bundle id", "override", "force style", "slack", "vscode", "per app"]),
+        // Writing styles
+        .init(label: "Writing styles", section: .styles, keywords: ["tone", "prompt", "rewrite", "voice", "custom style"]),
+        .init(label: "Add or delete a writing style", section: .styles, keywords: ["new", "remove", "delete", "create", "edit"]),
+        // Quick notes
+        .init(label: "Quick note hotkey", section: .quickNotes, keywords: ["shortcut", "capture", "default", "reset"]),
+        // Recording
+        .init(label: "Meeting audio source", section: .meeting, keywords: ["microphone", "system audio", "input device", "default", "reset"]),
+        .init(label: "Live brief", section: .meeting, keywords: ["real-time", "assistant", "coaching", "agenda coverage", "refresh interval", "during the meeting"]),
+        .init(label: "Prep card on start", section: .meeting, keywords: ["prep", "recent notes", "linked", "org", "project", "during the meeting"]),
+        .init(label: "Meeting templates", section: .meetingTemplates, keywords: ["agenda", "type", "prep", "add", "delete", "default", "sections", "follow-up"]),
+        .init(label: "Import / export templates", section: .meetingTemplates, keywords: ["backup", "share", "bundle", "json", "house style", "merge", "replace"]),
+        .init(label: "Per-app recording overrides", section: .meeting, keywords: ["app", "override", "delete", "remove", "default", "unrecognized"]),
+        .init(label: "Auto-detect poll interval", section: .meeting, keywords: ["advanced", "detection", "poll", "interval", "how often", "call detection", "timing"]),
+        .init(label: "Meeting-end sensitivity", section: .meeting, keywords: ["advanced", "end", "quiet", "polls", "detection", "hang up", "timing"]),
+        .init(label: "Transcription request timeout", section: .meeting, keywords: ["advanced", "timeout", "groq", "network", "seconds", "retry", "stt"]),
+        .init(label: "Audio-import request timeout", section: .meeting, keywords: ["advanced", "timeout", "import", "file", "upload", "seconds", "stt"]),
+        .init(label: "Live-brief refresh threshold", section: .meeting, keywords: ["advanced", "growth", "chars", "brief", "refresh", "how much"]),
+        .init(label: "Summary context budget", section: .meeting, keywords: ["advanced", "summary", "context", "tokens", "chars", "budget", "length", "ai"]),
+        .init(label: "Push-to-talk tap threshold", section: .dictation, keywords: ["tap", "hold", "lock", "threshold", "latch", "hands-free", "ptt", "timing"]),
+        // Notes & summaries
+        .init(label: "Auto-title notes", section: .notes, keywords: ["heading", "name", "smart title"]),
+        .init(label: "Summary generation", section: .notes, keywords: ["recap", "overview", "abstract"]),
+        .init(label: "Unanswered questions", section: .notes, keywords: ["follow-up", "open items", "action"]),
+        .init(label: "Entity tags", section: .notes, keywords: ["people", "org", "topics", "auto-tag"]),
+        .init(label: "Chapters", section: .notes, keywords: ["sections", "timestamps", "outline"]),
+        .init(label: "Reset note prompts to default", section: .notes, keywords: ["default", "reset", "prompt", "restore"]),
+        // Draft templates
+        .init(label: "Draft templates", section: .draftTemplates, keywords: ["follow-up email", "reply", "message", "add", "delete", "reset to default"]),
+        .init(label: "Follow-Up Packet", section: .draftTemplates, keywords: ["packet", "bundle", "one-click", "poc plan", "action items", "follow-up email", "sections", "reorder", "order", "confirm", "ai usage", "cloud"]),
+        // Digest
+        .init(label: "Relationship digest", section: .digest, keywords: ["daily", "weekly", "summary email", "rollup", "default", "reset"]),
+        // Privacy
+        .init(label: "Local-only mode", section: .privacy, keywords: ["offline", "no cloud", "private", "network"]),
+        .init(label: "Data retention", section: .privacy, keywords: ["delete", "history", "purge", "clear", "remove"]),
+        // Permissions
+        .init(label: "Microphone permission", section: .permissions, keywords: ["access", "privacy", "tcc"]),
+        .init(label: "Accessibility permission", section: .permissions, keywords: ["auto-paste", "keystroke", "tcc"]),
+        .init(label: "Screen recording permission", section: .permissions, keywords: ["system audio", "capture"]),
+        // Shortcuts
+        .init(label: "Keyboard shortcuts", section: .shortcuts, keywords: ["hotkeys", "bindings", "keys", "reset", "default", "clear"]),
+        // Usage & cost
+        .init(label: "Usage & cost", section: .stats, keywords: ["spend", "tokens", "billing", "minutes", "statistics"]),
+        .init(label: "Clear usage statistics", section: .stats, keywords: ["reset", "clear", "delete", "wipe", "history"]),
+        // Integrations
+        .init(label: "Meeting-finished webhook", section: .integrations, keywords: ["http", "post", "zapier", "slack", "notion", "event", "hook", "url"]),
+        .init(label: "Local script hook", section: .integrations, keywords: ["shell", "script", "automation", "event", "stdin", "run"]),
+        // Diagnostics
+        .init(label: "Diagnostics & logs", section: .diagnostics, keywords: ["debug", "troubleshoot", "console"]),
+        .init(label: "Export logs", section: .diagnostics, keywords: ["save", "share", "report", "clear logs"]),
+        // About
+        .init(label: "Version & updates", section: .about, keywords: ["build", "changelog", "credits"]),
+    ]
+
+    static func results(for query: String) -> [SettingsSearchEntry] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return [] }
+        var hits = all.filter { $0.matches(q) }
+
+        // Bare action words (reset / default / restore) apply to nearly every
+        // field pane. Add a synthetic row for each resettable pane not already
+        // surfaced, so the user can jump to the pane and use its inline reset.
+        let lower = q.lowercased()
+        let isResetQuery = ["reset", "default", "defaults", "restore"].contains { lower.contains($0) }
+        if isResetQuery {
+            let already = Set(hits.map(\.section))
+            for section in resettableSections where !already.contains(section) {
+                hits.append(.init(label: "Reset \(section.rawValue) to defaults",
+                                  section: section, keywords: []))
+            }
+        }
+        return hits
     }
 }
 
@@ -122,35 +265,74 @@ private struct SmallSwitchToggleStyle: ToggleStyle {
 }
 
 struct SettingsView: View {
-    @State private var selection: SettingsSection = .general
+    @State private var selection: SettingsSection = .essentials
+    @State private var searchText = ""
+
+    private func sidebarRow(_ section: SettingsSection) -> some View {
+        Label {
+            Text(section.rawValue)
+        } icon: {
+            Image(systemName: section.icon)
+                .foregroundColor(.white)
+                .frame(width: 22, height: 22)
+                .background(RoundedRectangle(cornerRadius: 5).fill(section.iconColor))
+        }
+        .tag(section)
+    }
 
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
-                ForEach(SettingsSection.sidebarGroups, id: \.sections.first!.id) { group in
-                    Section {
-                        ForEach(group.sections) { section in
-                            Label {
-                                Text(section.rawValue)
-                            } icon: {
-                                Image(systemName: section.icon)
-                                    .foregroundColor(.white)
-                                    .frame(width: 22, height: 22)
-                                    .background(RoundedRectangle(cornerRadius: 5).fill(section.iconColor))
+                if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                    ForEach(SettingsSection.sidebarGroups, id: \.title) { group in
+                        Section {
+                            ForEach(group.sections) { section in
+                                sidebarRow(section)
                             }
-                            .tag(section)
+                        } header: {
+                            if let title = group.title { Text(title) }
                         }
-                    } header: {
-                        if let title = group.title { Text(title) }
+                    }
+                } else {
+                    let results = SettingsSearchIndex.results(for: searchText)
+                    if results.isEmpty {
+                        Text("No settings match “\(searchText)”")
+                            .font(.callout).foregroundColor(.secondary)
+                            .padding(.vertical, 8)
+                    } else {
+                        Section("Results") {
+                            ForEach(results) { entry in
+                                Button {
+                                    selection = entry.section
+                                    searchText = ""
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: entry.section.icon)
+                                            .foregroundColor(.white)
+                                            .frame(width: 20, height: 20)
+                                            .background(RoundedRectangle(cornerRadius: 5).fill(entry.section.iconColor))
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(entry.label)
+                                            Text(entry.section.rawValue)
+                                                .font(.caption2).foregroundColor(.secondary)
+                                        }
+                                        Spacer(minLength: 0)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
                 }
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 195, max: 230)
+            .navigationSplitViewColumnWidth(min: 215, ideal: 235, max: 300)
+            .searchable(text: $searchText, placement: .sidebar, prompt: "Search settings")
         } detail: {
             ScrollView {
                 Group {
                     switch selection {
+                    case .essentials:  EssentialsPane(navigate: { selection = $0 })
                     case .general:     GeneralPane()
                     case .ai:          AIPane()
                     case .dictation:   DictationPane()
@@ -158,11 +340,13 @@ struct SettingsView: View {
                     case .quickNotes:  QuickNotesPane()
                     case .meeting:     MeetingPane()
                     case .notes:       MeetingNotesPane()
+                    case .meetingTemplates: MeetingTemplatesPane()
                     case .draftTemplates: DraftTemplatesPane()
                     case .digest:      DigestPane()
                     case .privacy:     PrivacyPane()
                     case .permissions: PermissionsPane()
                     case .shortcuts:   ShortcutsPane()
+                    case .integrations: IntegrationsPane()
                     case .stats:       StatsPane()
                     case .diagnostics: DiagnosticsPane()
                     case .about:       AboutPane()
@@ -173,10 +357,159 @@ struct SettingsView: View {
             }
             .navigationTitle(selection.rawValue)
         }
-        .frame(width: 660, height: 480)
+        .frame(minWidth: 760, idealWidth: 760, minHeight: 520, idealHeight: 520)
         // Use macOS switches for every Toggle in Settings (cascades to all panes),
         // sized small so they sit proportionally next to labels and fields.
         .toggleStyle(SmallSwitchToggleStyle())
+    }
+}
+
+// MARK: - Essentials (first-run / at-a-glance readiness)
+
+/// The landing pane: a live readiness checklist of the few things that must be
+/// set up before GhostWriter works, plus a reminder of the main dictation
+/// gesture. Every row deep-links into the pane that owns the full controls, so
+/// this stays a *dashboard*, not a duplicate settings surface.
+private struct EssentialsPane: View {
+    let navigate: (SettingsSection) -> Void
+
+    @ObservedObject private var settings = AppSettings.shared
+    private let permissionGuard = PermissionGuard()
+
+    @State private var hasAPIKey = KeychainService.groqAPIKey() != nil
+    @State private var hasMic = false
+    @State private var hasA11y = false
+
+    /// The hard requirements for the app to function at all.
+    private var readyCount: Int { [hasAPIKey, hasMic, hasA11y].filter { $0 }.count }
+    private var allReady: Bool { readyCount == 3 }
+
+    private var pttKeyName: String {
+        (PTTKey(rawValue: settings.pttKeyCode) ?? .rightOption).displayName
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            banner
+
+            SettingsGroup("Set Up") {
+                ChecklistRow(
+                    done: hasAPIKey,
+                    title: "Connect your Groq API key",
+                    detail: hasAPIKey ? "API key configured." : "Required for transcription and AI summaries.",
+                    actionTitle: hasAPIKey ? "Change…" : "Set Up…"
+                ) { NotificationCenter.default.post(name: .showAPIKeyWindow, object: nil) }
+
+                Divider()
+
+                ChecklistRow(
+                    done: hasMic,
+                    title: "Grant Microphone access",
+                    detail: hasMic ? "Granted." : "Required to hear your voice and meetings.",
+                    actionTitle: hasMic ? "Manage…" : "Grant…"
+                ) { navigate(.permissions) }
+
+                Divider()
+
+                ChecklistRow(
+                    done: hasA11y,
+                    title: "Grant Accessibility access",
+                    detail: hasA11y ? "Granted." : "Required for the push-to-talk key and typing at your cursor.",
+                    actionTitle: hasA11y ? "Manage…" : "Grant…"
+                ) { navigate(.permissions) }
+            }
+
+            SettingsGroup("How to Dictate") {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "mic.fill")
+                        .foregroundColor(.blue)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(dictationSummary)
+                        Text("Place your cursor in any text field, in any app, then use the key above. Esc cancels.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button("Configure…") { navigate(.dictation) }
+                }
+            }
+
+            SettingsGroup("Where Notes Are Saved") {
+                HStack {
+                    Image(systemName: "folder.fill")
+                        .foregroundColor(.indigo)
+                        .frame(width: 20)
+                    Text(settings.notesFolder.path.abbreviatingHome())
+                        .font(.callout).foregroundColor(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Button("Change…") { navigate(.notes) }
+                }
+            }
+
+            Text("This page just links to the full settings — explore the sidebar for meetings, styles, privacy, and more.")
+                .font(.caption).foregroundColor(.secondary)
+        }
+        .onAppear(perform: refresh)
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in refresh() }
+    }
+
+    private var dictationSummary: String {
+        switch settings.pttActivation {
+        case .hold:    return "Hold \(pttKeyName) to record, release to type."
+        case .tapLock: return "Tap \(pttKeyName) to lock hands-free (or hold for a quick phrase)."
+        case .toggle:  return "Press \(pttKeyName) to start, press again to stop."
+        }
+    }
+
+    @ViewBuilder private var banner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: allReady ? "checkmark.seal.fill" : "sparkles")
+                .font(.title2)
+                .foregroundColor(allReady ? .green : .accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(allReady ? "You're all set." : "Welcome to GhostWriter")
+                    .font(.headline)
+                Text(allReady
+                     ? "Everything's connected — you're ready to dictate and record meetings."
+                     : "\(3 - readyCount) of 3 setup steps left before you can start.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10)
+            .fill((allReady ? Color.green : Color.accentColor).opacity(0.10)))
+    }
+
+    private func refresh() {
+        hasAPIKey = KeychainService.groqAPIKey() != nil
+        hasMic = permissionGuard.hasMicrophonePermission
+        hasA11y = permissionGuard.hasAccessibilityPermission
+    }
+}
+
+/// A setup-step row: a status glyph, a title + detail, and a trailing action.
+private struct ChecklistRow: View {
+    let done: Bool
+    let title: String
+    let detail: String
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(done ? .green : .orange)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(detail).font(.caption).foregroundColor(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button(actionTitle, action: action)
+        }
     }
 }
 
@@ -323,6 +656,18 @@ private struct GeneralPane: View {
                 DateFormatField()
             }
 
+            SettingsGroup("PDF Export") {
+                Picker("Paper size", selection: $settings.pdfPaperSize) {
+                    Text("US Letter").tag("letter")
+                    Text("A4").tag("a4")
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 260)
+                Text("Page size for exported PDFs — meeting notes, Reports, and POCs. A4 is the standard outside North America.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             SettingsGroup("Startup") {
                 Toggle("Start GhostWriter at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in
@@ -396,12 +741,7 @@ private struct BackupRow: View {
     }
 
     private func pickRestore() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.zip]
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.prompt = "Restore"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = FilePanels.openFile(contentTypes: [.zip], prompt: "Restore") else { return }
         pendingArchive = url
         confirmRestore = true
     }
@@ -517,7 +857,34 @@ private struct DictationPane: View {
                         settings.pttKeyCode = AppSettings.Default.pttKeyCode
                     }
                 }
-                Text("Hold to record, release to transcribe and type at your cursor. Takes effect immediately.")
+                Divider()
+                HStack {
+                    Text("Activation")
+                    Spacer()
+                    Picker("", selection: $settings.pttActivation) {
+                        ForEach(PTTActivation.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 220)
+                    DefaultResetButton(isDefault: settings.pttActivation == .hold) {
+                        settings.pttActivation = .hold
+                    }
+                }
+                Text(settings.pttActivation.detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if settings.pttActivation == .tapLock {
+                    DurationSlider(
+                        title: "Tap vs. hold threshold",
+                        value: $settings.pttTapThreshold, range: 0.15...1.0, step: 0.05, unit: "s",
+                        defaultValue: AppSettings.Default.pttTapThreshold
+                    )
+                    Text("A press shorter than this locks hands-free; longer counts as hold-to-talk.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                Text("Applies immediately — no restart needed.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -537,20 +904,37 @@ private struct DictationPane: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
+            SettingsGroup("Silence") {
+                Toggle("Skip silent recordings", isOn: $settings.skipSilentDictation)
+                Text("Don't upload a recording (or streaming chunk) to Groq unless it actually contains speech — saves API calls and avoids Whisper inventing text from silence.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.skipSilentDictation {
+                    ThresholdSlider(
+                        title: "Silence threshold",
+                        value: $settings.dictationSilenceThreshold, range: -60...(-25),
+                        defaultValue: AppSettings.Default.dictationSilenceThreshold,
+                        help: "Audio quieter than this the whole time counts as silence. Lower = uploads quieter speech; higher = skips more aggressively.")
+                }
+            }
+
+            SettingsGroup("Audio Import") {
+                Stepper(value: $settings.audioImportMaxMB, in: 5...200, step: 5) {
+                    Text("Max import size: \(settings.audioImportMaxMB) MB")
+                }
+                Text("“Transcribe Audio File…” (menu bar) and dropping an audio file onto the Catalog transcribe it into a meeting note, filed under the file's own date. Larger files are rejected before upload. Formats: wav, mp3, m4a, ogg/opus, flac, webm.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
             SettingsGroup("Accuracy") {
                 Text("Custom vocabulary").font(.caption.bold())
-                TextEditor(text: $settings.vocabulary)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                MultilineField(text: $settings.vocabulary,
+                               placeholder: "Kubernetes, Grafana, PostgreSQL")
                 Text("Names, acronyms, jargon — comma or newline separated. Whisper biases toward these terms (e.g. Kubernetes, Grafana, PostgreSQL).")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Text("Replacements").font(.caption.bold())
-                TextEditor(text: $settings.replacements)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                MultilineField(text: $settings.replacements,
+                               placeholder: "cuber netties => Kubernetes")
                 Text("Applied after transcription, one rule per line: wrong => right (e.g. cuber netties => Kubernetes).")
                     .font(.caption).foregroundColor(.secondary)
             }
@@ -624,22 +1008,13 @@ private struct WritingStylesPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Voice Commands") {
-                HStack {
-                    Toggle("Voice commands", isOn: $settings.voiceCommandsEnabled)
-                    Spacer()
-                    DefaultResetButton(isDefault: settings.voiceCommandRules == AppSettings.Default.voiceCommandRules) {
-                        settings.voiceCommandRules = AppSettings.Default.voiceCommandRules
-                    }
-                }
+                Toggle("Voice commands", isOn: $settings.voiceCommandsEnabled)
                 Text("Say \"new paragraph\", \"comma\", \"scratch that\", or \"all caps … end caps\" while dictating.")
                     .font(.caption).foregroundColor(.secondary)
                 if settings.voiceCommandsEnabled {
-                    Text("Rules — one per line, \"spoken phrase → effect\". Edit freely; the polishing model follows them.")
+                    Text("Each rule is a spoken phrase and the effect it triggers. Edit freely; the polishing model follows them.")
                         .font(.caption).foregroundColor(.secondary)
-                    TextEditor(text: $settings.voiceCommandRules)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(height: 90)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                    VoiceCommandEditor()
                 }
             }
 
@@ -648,12 +1023,9 @@ private struct WritingStylesPane: View {
             }
 
             SettingsGroup("Per-App Style Overrides") {
-                TextEditor(text: $settings.appProfiles)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
-                Text("Force a built-in style per app, one per line: bundle.id: style — styles: messaging, email, code, browser, notes, general (e.g. com.tinyspeck.slackmacgap: messaging). Custom styles apply via the default above.")
+                Text("Force a built-in style for a specific app. Use “Add current app” to grab the frontmost app's ID. Custom styles apply via the default above.")
                     .font(.caption).foregroundColor(.secondary)
+                AppProfileEditor()
             }
 
             SettingsGroup("Browser Tab Styles") {
@@ -661,21 +1033,319 @@ private struct WritingStylesPane: View {
                 Text("Reads the frontmost browser tab's address (Safari and Chromium browsers; not Firefox) so a website can get its own style — e.g. Gmail uses the Email style instead of the generic Browser one. Needs the Automation permission (prompted once). Off: every browser uses the Browser style.")
                     .font(.caption).foregroundColor(.secondary)
                 if settings.browserTabDetection {
-                    Text("Rules — one per line, host: style. Style is a built-in (messaging / email / code / browser / notes / general) or a custom style's name. First matching host wins; unmatched tabs use the Browser style.")
+                    Text("Give a website its own style. First matching host wins; unmatched tabs use the Browser style.")
                         .font(.caption).foregroundColor(.secondary)
-                    TextEditor(text: $settings.domainStyleRules)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(height: 80)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
-                    HStack {
-                        Spacer()
-                        DefaultResetButton(isDefault: settings.domainStyleRules == AppSettings.Default.domainStyleRules) {
-                            settings.domainStyleRules = AppSettings.Default.domainStyleRules
-                        }
-                    }
+                    DomainStyleEditor()
                 }
             }
         }
+    }
+}
+
+/// Row-based editor for browser-tab style rules. The host stays free text, but
+/// the style is a Picker over the closed set of built-in + custom styles, so it
+/// can't be mistyped. Backed by the same newline `host: style` string, with a
+/// collapsible bulk-edit box; a bulk edit re-hydrates the rows and vice-versa.
+private struct DomainStyleEditor: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var rules: [Rule] = []
+    @State private var showBulk = false
+
+    private struct Rule: Identifiable, Equatable {
+        let id = UUID()
+        var host: String
+        var style: String
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if rules.isEmpty {
+                Text("No site rules yet.").font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach($rules) { $rule in
+                    HStack(spacing: 8) {
+                        TextField("mail.google.com", text: $rule.host)
+                            .textFieldStyle(.roundedBorder)
+                        Image(systemName: "arrow.right").font(.caption2).foregroundColor(.secondary)
+                        Picker("", selection: $rule.style) {
+                            ForEach(styleOptions(including: rule.style), id: \.key) { opt in
+                                Text(opt.label).tag(opt.key)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 130)
+                        Button { rules.removeAll { $0.id == rule.id } } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .buttonStyle(.plain).foregroundColor(.secondary).help("Remove")
+                    }
+                }
+            }
+
+            HStack {
+                Button {
+                    rules.append(Rule(host: "", style: settings.dictationStyleKeys.first?.key ?? "email"))
+                } label: {
+                    Label("Add rule", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                Spacer()
+                DefaultResetButton(isDefault: settings.domainStyleRules == AppSettings.Default.domainStyleRules) {
+                    settings.domainStyleRules = AppSettings.Default.domainStyleRules
+                    hydrate()
+                }
+            }
+
+            DisclosureGroup(isExpanded: $showBulk) {
+                MultilineField(text: $settings.domainStyleRules,
+                               placeholder: "mail.google.com: email\ngithub.com: code",
+                               minHeight: 70,
+                               font: .system(.caption, design: .monospaced))
+                Text("One rule per line, host: style. Edits here stay in sync with the rows above.")
+                    .font(.caption2).foregroundColor(.secondary)
+            } label: {
+                Text("Paste or edit as a list").font(.caption)
+            }
+        }
+        .onAppear(perform: hydrate)
+        // Rows → storage. Guard against echoing our own write back into hydrate.
+        .onChange(of: rules) { _, new in
+            let serialized = serialize(new)
+            if serialized != settings.domainStyleRules { settings.domainStyleRules = serialized }
+        }
+        // Storage → rows, for external edits (bulk box, reset) only.
+        .onChange(of: settings.domainStyleRules) { _, new in
+            if new != serialize(rules) { hydrate() }
+        }
+    }
+
+    /// The style menu, guaranteeing the row's current key is present even if it
+    /// points at a since-deleted custom style (so the Picker still shows it).
+    private func styleOptions(including current: String) -> [(key: String, label: String)] {
+        var opts = settings.dictationStyleKeys
+        if !current.isEmpty && !opts.contains(where: { $0.key == current }) {
+            opts.append((current, "\(current) (missing)"))
+        }
+        return opts
+    }
+
+    private func hydrate() {
+        rules = settings.domainStyleList.map { Rule(host: $0.host, style: $0.style) }
+    }
+    private func serialize(_ list: [Rule]) -> String {
+        list.map { ($0.host.trimmingCharacters(in: .whitespaces), $0.style) }
+            .filter { !$0.0.isEmpty }
+            .map { "\($0.0): \($0.1)" }
+            .joined(separator: "\n")
+    }
+}
+
+/// Row-based editor for per-app style overrides. Same shape as the browser-tab
+/// editor — a bundle-ID field + a style Picker (built-ins only) — plus an
+/// "Add app…" menu of running apps so you don't have to hunt for bundle IDs.
+/// Backed by the same newline `bundle.id: style` string, kept in sync with a
+/// collapsible bulk-edit box.
+private struct AppProfileEditor: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var rules: [Rule] = []
+    @State private var showBulk = false
+
+    private struct Rule: Identifiable, Equatable {
+        let id = UUID()
+        var bundleID: String
+        var style: String
+    }
+
+    private var defaultStyle: String { settings.builtInStyleKeys.first?.key ?? "general" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if rules.isEmpty {
+                Text("No app overrides yet.").font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach($rules) { $rule in
+                    HStack(spacing: 8) {
+                        TextField("com.tinyspeck.slackmacgap", text: $rule.bundleID)
+                            .textFieldStyle(.roundedBorder)
+                        Image(systemName: "arrow.right").font(.caption2).foregroundColor(.secondary)
+                        Picker("", selection: $rule.style) {
+                            ForEach(styleOptions(including: rule.style), id: \.key) { opt in
+                                Text(opt.label).tag(opt.key)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 130)
+                        Button { rules.removeAll { $0.id == rule.id } } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .buttonStyle(.plain).foregroundColor(.secondary).help("Remove")
+                    }
+                }
+            }
+
+            HStack {
+                Menu {
+                    ForEach(runningApps(), id: \.bundleID) { app in
+                        Button(app.name) { add(bundleID: app.bundleID) }
+                    }
+                    Divider()
+                    Button("Blank row") { add(bundleID: "") }
+                } label: {
+                    Label("Add app…", systemImage: "plus")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                Spacer()
+                DefaultResetButton(isDefault: settings.appProfiles.isEmpty) {
+                    settings.appProfiles = ""
+                    hydrate()
+                }
+            }
+
+            DisclosureGroup(isExpanded: $showBulk) {
+                MultilineField(text: $settings.appProfiles,
+                               placeholder: "com.tinyspeck.slackmacgap: messaging\ncom.microsoft.VSCode: code",
+                               minHeight: 70,
+                               font: .system(.caption, design: .monospaced))
+                Text("One override per line, bundle.id: style. Edits here stay in sync with the rows above.")
+                    .font(.caption2).foregroundColor(.secondary)
+            } label: {
+                Text("Paste or edit as a list").font(.caption)
+            }
+        }
+        .onAppear(perform: hydrate)
+        .onChange(of: rules) { _, new in
+            let serialized = serialize(new)
+            if serialized != settings.appProfiles { settings.appProfiles = serialized }
+        }
+        .onChange(of: settings.appProfiles) { _, new in
+            if new != serialize(rules) { hydrate() }
+        }
+    }
+
+    private func add(bundleID: String) {
+        // Don't add a duplicate; just focus stays where it is if already present.
+        guard bundleID.isEmpty || !rules.contains(where: { $0.bundleID == bundleID }) else { return }
+        rules.append(Rule(bundleID: bundleID, style: defaultStyle))
+    }
+
+    /// Currently-running regular apps (excluding GhostWriter itself), by name.
+    private func runningApps() -> [(name: String, bundleID: String)] {
+        NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app -> (String, String)? in
+                guard let id = app.bundleIdentifier, id != Bundle.main.bundleIdentifier,
+                      let name = app.localizedName else { return nil }
+                return (name, id)
+            }
+            .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+            .map { (name: $0.0, bundleID: $0.1) }
+    }
+
+    private func styleOptions(including current: String) -> [(key: String, label: String)] {
+        var opts = settings.builtInStyleKeys
+        if !current.isEmpty && !opts.contains(where: { $0.key == current }) {
+            opts.append((current, "\(current) (missing)"))
+        }
+        return opts
+    }
+
+    private func hydrate() {
+        rules = settings.appProfileList.map { Rule(bundleID: $0.bundleID, style: $0.style) }
+    }
+    private func serialize(_ list: [Rule]) -> String {
+        list.map { ($0.bundleID.trimmingCharacters(in: .whitespaces), $0.style) }
+            .filter { !$0.0.isEmpty }
+            .map { "\($0.0): \($0.1)" }
+            .joined(separator: "\n")
+    }
+}
+
+/// Row-based editor for voice commands. Each rule is a spoken phrase and the
+/// effect it triggers, shown as a two-column row. There's no structured model
+/// behind this — the rows serialize back to the same free-form
+/// "phrase → effect" lines the polishing model reads, so the LLM keeps its
+/// latitude to interpret fuzzy phrasing. Collapsible bulk-edit box included.
+private struct VoiceCommandEditor: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var rules: [Rule] = []
+    @State private var showBulk = false
+
+    private struct Rule: Identifiable, Equatable {
+        let id = UUID()
+        var phrase: String
+        var effect: String
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if rules.isEmpty {
+                Text("No voice commands yet.").font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach($rules) { $rule in
+                    HStack(spacing: 8) {
+                        TextField("spoken phrase", text: $rule.phrase)
+                            .textFieldStyle(.roundedBorder)
+                        Image(systemName: "arrow.right").font(.caption2).foregroundColor(.secondary)
+                        TextField("effect", text: $rule.effect)
+                            .textFieldStyle(.roundedBorder)
+                        Button { rules.removeAll { $0.id == rule.id } } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .buttonStyle(.plain).foregroundColor(.secondary).help("Remove")
+                    }
+                }
+            }
+
+            HStack {
+                Button { rules.append(Rule(phrase: "", effect: "")) } label: {
+                    Label("Add command", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                Spacer()
+                DefaultResetButton(isDefault: settings.voiceCommandRules == AppSettings.Default.voiceCommandRules) {
+                    settings.voiceCommandRules = AppSettings.Default.voiceCommandRules
+                    hydrate()
+                }
+            }
+
+            DisclosureGroup(isExpanded: $showBulk) {
+                MultilineField(text: $settings.voiceCommandRules,
+                               placeholder: "new paragraph → line break\nscratch that → delete last sentence",
+                               minHeight: 70,
+                               font: .system(.caption, design: .monospaced))
+                Text("One rule per line, phrase → effect. Edits here stay in sync with the rows above.")
+                    .font(.caption2).foregroundColor(.secondary)
+            } label: {
+                Text("Paste or edit as a list").font(.caption)
+            }
+        }
+        .onAppear(perform: hydrate)
+        .onChange(of: rules) { _, new in
+            let serialized = serialize(new)
+            if serialized != settings.voiceCommandRules { settings.voiceCommandRules = serialized }
+        }
+        .onChange(of: settings.voiceCommandRules) { _, new in
+            if new != serialize(rules) { hydrate() }
+        }
+    }
+
+    private func hydrate() {
+        rules = settings.voiceCommandRules
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line in
+                let parts = line.components(separatedBy: "→")
+                let phrase = parts.first?.trimmingCharacters(in: .whitespaces) ?? ""
+                let effect = parts.count > 1 ? parts[1...].joined(separator: "→").trimmingCharacters(in: .whitespaces) : ""
+                guard !phrase.isEmpty else { return nil }
+                return Rule(phrase: phrase, effect: effect)
+            }
+    }
+    private func serialize(_ list: [Rule]) -> String {
+        list.map { ($0.phrase.trimmingCharacters(in: .whitespaces), $0.effect.trimmingCharacters(in: .whitespaces)) }
+            .filter { !$0.0.isEmpty }
+            .map { $0.1.isEmpty ? $0.0 : "\($0.0) → \($0.1)" }
+            .joined(separator: "\n")
     }
 }
 
@@ -801,10 +1471,10 @@ private struct DictationStyleEditor: View {
                     }
                 }
             }
-            TextEditor(text: $text)
-                .font(.system(.caption, design: .monospaced))
-                .frame(height: 90)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+            MultilineField(text: $text,
+                           placeholder: "Describe how the model should clean up and format this text…",
+                           minHeight: 90,
+                           font: .system(.caption, design: .monospaced))
                 .onChange(of: text) { _, newValue in save(newValue) }
         }
         .onAppear { text = style.instruction }
@@ -869,10 +1539,18 @@ private struct ShortcutsPane: View {
         (PTTKey(rawValue: settings.pttKeyCode) ?? .rightOption).displayName
     }
 
+    private var pttRow: (keys: String, detail: String) {
+        switch settings.pttActivation {
+        case .hold:    return ("Hold \(pttKeyName)", "Push-to-talk — record while held, type on release")
+        case .tapLock: return ("\(pttKeyName)", "Hold to talk, or tap to lock hands-free — tap again (or Esc) to stop")
+        case .toggle:  return ("\(pttKeyName)", "Press to start recording, press again to stop")
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Dictation") {
-                ShortcutRow(keys: "Hold \(pttKeyName)", detail: "Push-to-talk — record while held, type on release")
+                ShortcutRow(keys: pttRow.keys, detail: pttRow.detail)
                 ShortcutRow(keys: "Esc", detail: "Cancel an in-progress dictation (types nothing)")
                 ShortcutRow(keys: "⌃⌥V", detail: "Type the most recent dictation again")
                 ShortcutRow(keys: "⌃⌥J", detail: "Quick note — dictate into today's notes file (press again to save, Esc to cancel)")
@@ -949,6 +1627,32 @@ private struct MeetingPane: View {
                         defaultValue: AppSettings.Default.captionLingerSeconds
                     )
                 }
+            }
+
+            SettingsGroup("Live Assistance") {
+                Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
+                Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.liveAssistantEnabled {
+                    HStack {
+                        Text("Refresh every")
+                        Spacer()
+                        Picker("", selection: $settings.liveBriefInterval) {
+                            ForEach([15, 25, 45, 60, 90], id: \.self) { Text("\($0)s").tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 90)
+                        DefaultResetButton(isDefault: settings.liveBriefInterval == AppSettings.Default.liveBriefInterval) {
+                            settings.liveBriefInterval = AppSettings.Default.liveBriefInterval
+                        }
+                    }
+                    Text("How often the brief updates. Longer intervals mean fewer AI calls — lower cost, less frequent refreshes.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                Divider()
+                Toggle("Show prep card on start", isOn: $settings.meetingPrepCard)
+                Text("When a meeting is linked to an organisation or project, a floating panel of that entity's recent notes appears as the meeting starts. This is the default for the per-meeting switch in the start dialog.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Echo Suppression") {
@@ -1067,6 +1771,68 @@ private struct MeetingPane: View {
                         Text("Segments that fail to transcribe (network blips) are retried; exhausted ones become visible markers in the notes.")
                             .font(.caption).foregroundColor(.secondary)
                     }
+
+                    SettingsGroup("Detection & Timing") {
+                        DurationSlider(
+                            title: "Auto-detect poll interval",
+                            value: $settings.meetingDetectInterval, range: 1...10, step: 0.5, unit: "s",
+                            defaultValue: AppSettings.Default.meetingDetectInterval
+                        )
+                        HStack {
+                            Text("Meeting-end sensitivity")
+                            Spacer()
+                            Stepper("\(settings.meetingEndQuietPolls) quiet poll\(settings.meetingEndQuietPolls == 1 ? "" : "s")",
+                                    value: $settings.meetingEndQuietPolls, in: 1...5)
+                                .frame(width: 170)
+                            DefaultResetButton(isDefault: settings.meetingEndQuietPolls == AppSettings.Default.meetingEndQuietPolls) {
+                                settings.meetingEndQuietPolls = AppSettings.Default.meetingEndQuietPolls
+                            }
+                        }
+                        HStack {
+                            Text("Transcription request timeout")
+                            Spacer()
+                            Picker("", selection: $settings.transcriptionTimeout) {
+                                ForEach([15, 30, 45, 60, 90, 120], id: \.self) { Text("\($0)s").tag($0) }
+                            }
+                            .labelsHidden().frame(width: 80)
+                            DefaultResetButton(isDefault: settings.transcriptionTimeout == AppSettings.Default.transcriptionTimeout) {
+                                settings.transcriptionTimeout = AppSettings.Default.transcriptionTimeout
+                            }
+                        }
+                        HStack {
+                            Text("Audio-import request timeout")
+                            Spacer()
+                            Picker("", selection: $settings.importTranscriptionTimeout) {
+                                ForEach([30, 60, 120, 180, 300], id: \.self) { Text("\($0)s").tag($0) }
+                            }
+                            .labelsHidden().frame(width: 80)
+                            DefaultResetButton(isDefault: settings.importTranscriptionTimeout == AppSettings.Default.importTranscriptionTimeout) {
+                                settings.importTranscriptionTimeout = AppSettings.Default.importTranscriptionTimeout
+                            }
+                        }
+                        HStack {
+                            Text("Live-brief refresh threshold")
+                            Spacer()
+                            Stepper("\(settings.liveBriefMinGrowth) chars", value: $settings.liveBriefMinGrowth,
+                                    in: 100...2000, step: 50)
+                                .frame(width: 170)
+                            DefaultResetButton(isDefault: settings.liveBriefMinGrowth == AppSettings.Default.liveBriefMinGrowth) {
+                                settings.liveBriefMinGrowth = AppSettings.Default.liveBriefMinGrowth
+                            }
+                        }
+                        HStack {
+                            Text("Summary context budget")
+                            Spacer()
+                            Stepper("\(settings.summaryContextChars / 1000)k chars", value: $settings.summaryContextChars,
+                                    in: 8000...60000, step: 4000)
+                                .frame(width: 170)
+                            DefaultResetButton(isDefault: settings.summaryContextChars == AppSettings.Default.summaryContextChars) {
+                                settings.summaryContextChars = AppSettings.Default.summaryContextChars
+                            }
+                        }
+                        Text("How often GhostWriter polls for a call, how many quiet polls end one, request timeouts for live vs. imported audio, how much new speech triggers a fresh live brief, and how much transcript is fed into AI summaries (higher = more complete, higher token cost).")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
                 }
                 .padding(.top, 8)
             } label: {
@@ -1115,10 +1881,6 @@ private struct MeetingNotesPane: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
-            SettingsGroup("Templates") {
-                TemplateManager()
-            }
-
             SettingsGroup("Summary Content") {
                 Toggle("Append AI summary when a meeting ends", isOn: $settings.summariesEnabled)
                 Text("Adds the template's sections to the notes file.")
@@ -1127,38 +1889,31 @@ private struct MeetingNotesPane: View {
                 Toggle("Append action items", isOn: $settings.actionItemsEnabled)
                 Text("Adds an Action Items checklist (with owners when identifiable). Shown per note in the Catalog, with export to Reminders.")
                     .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("AI Extraction") {
+                Text("Extra passes that enrich the summary. Each needs network access and is skipped in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
                 Divider()
-                Toggle("Extract decisions, risks & open questions", isOn: $settings.structuredExtraction)
-                Text("Adds Decisions, Risks & Blockers, and Open Questions sections to the summary. Requires network access.")
+                Toggle("Extract decisions & risks", isOn: $settings.structuredExtraction)
+                Text("Adds Decisions and Risks & Blockers sections to the summary. (Open Questions has its own toggle below.)")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Extract key fields per meeting type", isOn: $settings.extractKeyFields)
-                Text("Pulls the fields that matter for the chosen template — a customer call's deal stage, budget, timeline, and next step; an interview's recommendation; a 1:1's sentiment — into a Key Details section and machine-readable front-matter. Categorical fields (deal stage, recommendation, sentiment) are mirrored into tags so you can filter by them in the Catalog. Requires network access.")
+                Text("Pulls the fields that matter for the chosen template — a customer call's deal stage, budget, timeline, and next step; an interview's recommendation; a 1:1's sentiment — into a Key Details section and machine-readable front-matter. Categorical fields (deal stage, recommendation, sentiment) are mirrored into tags so you can filter by them in the Catalog.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Extract unanswered questions", isOn: $settings.extractUnanswered)
-                Text("Adds an Unanswered Questions section — questions raised in the meeting that never got a clear answer, i.e. your follow-up list. One extra AI call; disabled in Local-only mode.")
+                Text("Fills the note's Open Questions section — questions raised in the meeting that never got a clear answer, i.e. your follow-up list — as tickable checkboxes you can mark answered in the Catalog. Merges with the summary's own Open Questions if that's enabled. One extra AI call.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Add topic chapters", isOn: $settings.topicChapters)
-                Text("Appends a timestamped jump-list segmenting the meeting into topics. One extra AI call per meeting; disabled in Local-only mode.")
+                Text("Appends a timestamped jump-list segmenting the meeting into topics. One extra AI call per meeting.")
                     .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Keyword Radar") {
-                Text("A watchlist of terms to flag — competitors, product names, risk phrases. One per line. Each finished meeting is scanned locally (works offline); matches appear in a Mentions section and, with front-matter on, as tags you can filter in the Catalog.")
-                    .font(.caption).foregroundColor(.secondary)
-                TextEditor(text: $settings.watchlistKeywords)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 90)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
-                if settings.watchlist().isEmpty {
-                    Text("Empty — no scanning is performed.")
-                        .font(.caption).foregroundColor(.secondary)
-                } else {
-                    Text("\(settings.watchlist().count) term\(settings.watchlist().count == 1 ? "" : "s") tracked.")
-                        .font(.caption).foregroundColor(.secondary)
-                }
+                KeywordRadarEditor()
             }
 
             SettingsGroup("Metadata & Notifications") {
@@ -1167,32 +1922,6 @@ private struct MeetingNotesPane: View {
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 Toggle("Notify when notes are saved", isOn: $settings.notifyOnMeetingEnd)
-            }
-
-            SettingsGroup("During the Meeting") {
-                Toggle("Live brief during meetings", isOn: $settings.liveAssistantEnabled)
-                Text("Shows a small floating panel with a rolling TL;DR and the open action items while a meeting runs, refreshed as the conversation develops. Makes periodic AI calls during the meeting (a little extra cost); disabled automatically in Local-only mode.")
-                    .font(.caption).foregroundColor(.secondary)
-                if settings.liveAssistantEnabled {
-                    HStack {
-                        Text("Refresh every")
-                        Spacer()
-                        Picker("", selection: $settings.liveBriefInterval) {
-                            ForEach([15, 25, 45, 60, 90], id: \.self) { Text("\($0)s").tag($0) }
-                        }
-                        .labelsHidden()
-                        .frame(width: 90)
-                        DefaultResetButton(isDefault: settings.liveBriefInterval == AppSettings.Default.liveBriefInterval) {
-                            settings.liveBriefInterval = AppSettings.Default.liveBriefInterval
-                        }
-                    }
-                    Text("How often the brief updates. Longer intervals mean fewer AI calls — lower cost, less frequent refreshes.")
-                        .font(.caption).foregroundColor(.secondary)
-                }
-                Divider()
-                Toggle("Show prep card on start", isOn: $settings.meetingPrepCard)
-                Text("When a meeting is linked to an organisation or opportunity, a floating panel of that entity's recent notes appears as the meeting starts. This is the default for the per-meeting switch in the start dialog.")
-                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Catalog Search") {
@@ -1223,9 +1952,218 @@ private struct MeetingNotesPane: View {
     }
 }
 
+/// Keyword Radar watchlist editor — a friendly chip UI: type a term and press
+/// Return (or Add) to append it, tap a chip's ✕ to remove it, with a bulk
+/// paste/edit box tucked into a disclosure for power users. Backed by the same
+/// newline-separated `watchlistKeywords` string, so scanning is unaffected.
+private struct KeywordRadarEditor: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var newTerm = ""
+    @State private var showBulk = false
+    @FocusState private var addFocused: Bool
+
+    private var terms: [String] { settings.watchlist() }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Flag terms — competitors, product names, risk phrases. Every finished meeting is scanned locally (works offline); matches surface in a Mentions section and, with front-matter on, as filterable tags. See the cross-meeting rollup in Catalog → Tools → Keyword Radar.")
+                .font(.caption).foregroundColor(.secondary)
+
+            // Add a term — type and press Return, or hit Add.
+            HStack {
+                TextField("Add a term…", text: $newTerm)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($addFocused)
+                    .onSubmit(add)
+                Button("Add", action: add)
+                    .disabled(newTerm.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            // Current terms as removable chips.
+            if terms.isEmpty {
+                Text("No terms yet — nothing is scanned.")
+                    .font(.caption).foregroundColor(.secondary)
+            } else {
+                FlowLayout(spacing: 6) {
+                    ForEach(terms, id: \.self) { term in
+                        KeywordChip(term: term) { settings.removeWatchlistTerm(term) }
+                    }
+                }
+                HStack {
+                    Text("\(terms.count) term\(terms.count == 1 ? "" : "s") tracked")
+                        .font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                    Button("Clear All", role: .destructive) { settings.watchlistKeywords = "" }
+                        .font(.caption)
+                }
+            }
+
+            // Power-user bulk edit — same underlying list.
+            DisclosureGroup(isExpanded: $showBulk) {
+                MultilineField(text: $settings.watchlistKeywords,
+                               placeholder: "Acme Corp\nlatency\nrenewal",
+                               minHeight: 80,
+                               font: .system(.caption, design: .monospaced))
+                Text("One term per line (commas also work). Edits here stay in sync with the chips above.")
+                    .font(.caption).foregroundColor(.secondary)
+            } label: {
+                Text("Paste or edit as a list").font(.caption)
+            }
+        }
+    }
+
+    private func add() {
+        settings.addWatchlistTerms(newTerm)
+        newTerm = ""
+        addFocused = true
+    }
+}
+
+/// A single removable watchlist term pill.
+private struct KeywordChip: View {
+    let term: String
+    let onRemove: () -> Void
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(term).font(.callout).lineLimit(1)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill").font(.caption2)
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.secondary)
+            .help("Remove")
+        }
+        .pillBackground(.accentColor, opacity: 0.12, hPad: 8, vPad: 3, stroke: 0.25)
+    }
+}
+
 /// Draft Templates — edit the drafting guidance behind each output document
 /// type (the Draft… menu in the note viewer). Each type has an editable
 /// instruction with a per-item reset to the built-in default.
+/// Meeting templates — split out of Notes & Summaries (which had grown to eight
+/// groups). Owns the meeting-type template editor and the shared template
+/// import/export, sitting beside Draft Templates under Meetings.
+private struct MeetingTemplatesPane: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Meeting Templates") {
+                Text("Each meeting type shapes what the summary extracts and how a follow-up is drafted. Edit the built-ins or add your own.")
+                    .font(.caption).foregroundColor(.secondary)
+                TemplateManager()
+            }
+            TemplateTransferSection()
+        }
+    }
+}
+
+/// Pick-and-reorder editor for the Follow-Up Packet's sections. The packet is
+/// one composed document, so order is meaningful — sections render top-to-bottom
+/// in this list. Any draft-document type can be added; the curated three
+/// (email / POC plan / action items) keep their special grounding at generation
+/// time regardless of position.
+private struct PacketSectionsEditor: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    private var ids: [String] { settings.packetSectionIDs }
+
+    /// Draft docs not already in the packet, for the "Add section" menu.
+    private var availableGroups: [(title: String, docs: [DraftDoc])] {
+        settings.groupedDraftDocs.compactMap { group in
+            let docs = group.docs.filter { !ids.contains($0.id) }
+            return docs.isEmpty ? nil : (group.title, docs)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("The note viewer's one-click packet assembles these sections, in this order, into a single document grounded in the meeting.")
+                .font(.caption).foregroundColor(.secondary)
+
+            if ids.isEmpty {
+                Text("No sections — the packet would be empty. Add at least one below.")
+                    .font(.caption).foregroundColor(.orange)
+            } else {
+                ForEach(Array(ids.enumerated()), id: \.element) { index, id in
+                    row(index: index, id: id)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Menu {
+                    ForEach(availableGroups, id: \.title) { group in
+                        Section(group.title) {
+                            ForEach(group.docs) { doc in
+                                Button(doc.displayName) { settings.packetSectionIDs = ids + [doc.id] }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Add section", systemImage: "plus")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(availableGroups.isEmpty)
+
+                Spacer()
+
+                Text("\(ids.count) section\(ids.count == 1 ? "" : "s") · each is a separate AI call")
+                    .font(.caption2).foregroundColor(.secondary)
+
+                DefaultResetButton(isDefault: ids == AppSettings.defaultPacketSections) {
+                    settings.packetSectionIDs = AppSettings.defaultPacketSections
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func row(index: Int, id: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon(for: id)).foregroundColor(.secondary).frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label(for: id))
+                if let note = groundingNote(for: id) {
+                    Text(note).font(.caption2).foregroundColor(.secondary)
+                }
+            }
+            Spacer()
+            Button { move(index, by: -1) } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.plain).foregroundColor(.secondary)
+                .disabled(index == 0)
+            Button { move(index, by: 1) } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.plain).foregroundColor(.secondary)
+                .disabled(index == ids.count - 1)
+            Button { settings.packetSectionIDs = ids.filter { $0 != id } } label: {
+                Image(systemName: "minus.circle.fill")
+            }
+            .buttonStyle(.plain).foregroundColor(.secondary).help("Remove")
+        }
+    }
+
+    private func move(_ index: Int, by offset: Int) {
+        var list = ids
+        let target = index + offset
+        guard list.indices.contains(index), list.indices.contains(target) else { return }
+        list.swapAt(index, target)
+        settings.packetSectionIDs = list
+    }
+
+    private func label(for id: String) -> String {
+        settings.allDraftDocs.first { $0.id == id }?.displayName ?? id
+    }
+    private func icon(for id: String) -> String {
+        settings.allDraftDocs.first { $0.id == id }?.icon ?? "doc"
+    }
+    /// A one-line hint for the sections that get bespoke grounding.
+    private func groundingNote(for id: String) -> String? {
+        switch id {
+        case "pocPlan":        return "Grounded in the linked project's success criteria."
+        case "actionItemList": return "Reuses the note's own checklist when it has one."
+        case "followUpEmail":  return "Shaped by the meeting type."
+        default:               return nil
+        }
+    }
+}
+
 private struct DraftTemplatesPane: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var selectedID: String = FollowUpKind.minutes.rawValue
@@ -1245,6 +2183,12 @@ private struct DraftTemplatesPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            SettingsGroup("Follow-Up Packet") {
+                PacketSectionsEditor()
+                Divider()
+                Toggle("Confirm before generating (uses several cloud-AI calls)", isOn: $settings.packetConfirmBeforeRun)
+            }
+
             SettingsGroup("Document Type") {
                 HStack {
                     Picker("Type", selection: $selectedID) {
@@ -1297,10 +2241,10 @@ private struct DraftTemplatesPane: View {
             }
 
             SettingsGroup("\(current.displayName) guidance") {
-                TextEditor(text: $text)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 200)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+                MultilineField(text: $text,
+                               placeholder: "Describe the recipient, tone, sections, and format the model should use…",
+                               minHeight: 200,
+                               font: .system(.caption, design: .monospaced))
                     .onChange(of: text) { _, newValue in
                         switch current {
                         case .builtIn(let k): settings.setDraftGuidance(newValue, for: k)
@@ -1324,9 +2268,13 @@ private struct DraftTemplatesPane: View {
                 Text("The instruction the AI follows for this document — recipient, tone, sections, and format. Draw only from the meeting's notes. Changing it regenerates the document the next time you draft it (each type caches separately).")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
-                Text("Looking for a follow-up that adapts to the meeting type (including your custom meeting templates)? That's the note viewer's “Auto — match meeting type” draft, edited under Notes & Summaries → Templates → follow-up guidance.")
+                Text("Looking for a follow-up that adapts to the meeting type (including your custom meeting templates)? That's the note viewer's “Auto — match meeting type” draft, edited under Meeting Templates → follow-up guidance.")
                     .font(.caption).foregroundColor(.secondary)
             }
+
+            // Same shared bundle as Meeting Templates — surfaced here too so
+            // email/document templates can be backed up or shared from this pane.
+            TemplateTransferSection()
         }
         .onAppear { load() }
     }
@@ -1334,6 +2282,168 @@ private struct DraftTemplatesPane: View {
     private func load() {
         text = current.guidance
         if case .user(let t) = current { name = t.name }
+    }
+}
+
+/// Export / import for all custom template data (meeting templates, custom
+/// document types, and built-in guidance overrides) as one portable `.json`.
+/// Shown in both template panes since one bundle carries everything. Mirrors
+/// the Catalog's export/import UX (save/open panel + merge/replace choice).
+private struct TemplateTransferSection: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var pendingImportData: Data?
+    @State private var showImportChoice = false
+    @State private var status: String?
+
+    var body: some View {
+        SettingsGroup("Backup & Sharing") {
+            HStack {
+                Button("Export Templates…") { export() }
+                    .disabled(!settings.hasExportableTemplates)
+                Button("Import Templates…") { beginImport() }
+                Spacer()
+            }
+            if let status {
+                Text(status).font(.caption).foregroundColor(.secondary)
+            }
+            Text("Save your custom meeting templates, custom document types, and any edits to built-in guidance as one .json file — a backup, or a house style to share with teammates. Built-in templates aren't included; only your additions and edits.")
+                .font(.caption).foregroundColor(.secondary)
+        }
+        .confirmationDialog("Import templates", isPresented: $showImportChoice, titleVisibility: .visible) {
+            Button("Merge") { runImport(.merge) }
+            Button("Replace", role: .destructive) { runImport(.replace) }
+            Button("Cancel", role: .cancel) { pendingImportData = nil }
+        } message: {
+            Text("Merge adds and updates templates from the file, keeping your others. Replace swaps all your custom template data for the file's.")
+        }
+    }
+
+    private func export() {
+        guard let data = try? settings.exportTemplates() else {
+            status = "Nothing to export yet."
+            return
+        }
+        if let s = FilePanels.save(defaultName: "GhostWriter-Templates.json", contentTypes: [.json],
+                                   successVerb: "Exported to", failVerb: "Export",
+                                   write: { try data.write(to: $0, options: .atomic) }) {
+            status = s
+        }
+    }
+
+    private func beginImport() {
+        guard let url = FilePanels.openFile(contentTypes: [.json]),
+              let data = try? Data(contentsOf: url) else { return }
+        guard settings.isValidTemplateBundle(data) else {
+            status = "That file isn't a GhostWriter template export."
+            return
+        }
+        pendingImportData = data
+        showImportChoice = true
+    }
+
+    private func runImport(_ mode: AppSettings.TemplateImportMode) {
+        guard let data = pendingImportData else { return }
+        pendingImportData = nil
+        do {
+            let n = try settings.importTemplates(data, mode: mode)
+            status = "Imported \(n) template item\(n == 1 ? "" : "s")."
+        } catch {
+            status = "Import failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+/// Integrations — outbound event hooks fired when a meeting finishes, so users
+/// can wire GhostWriter into their own tools. Both destinations are opt-in and
+/// suppressed in Local-only mode (a banner explains why they're disabled).
+private struct IntegrationsPane: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    private var scriptIsValid: Bool {
+        let p = settings.scriptHookPath.trimmingCharacters(in: .whitespaces)
+        return !p.isEmpty && FileManager.default.isExecutableFile(atPath: p)
+    }
+    private var webhookIsValid: Bool {
+        let u = settings.webhookURL.trimmingCharacters(in: .whitespaces)
+        return URL(string: u)?.scheme?.lowercased() == "https"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if settings.localOnlyMode {
+                Label("Local-only mode is on, so outbound integrations are disabled — they'd send data off your Mac. Turn off Local-only mode in Privacy to use these.",
+                      systemImage: "hand.raised.fill")
+                    .font(.caption).foregroundColor(.orange)
+            }
+
+            SettingsGroup("When a Meeting Finishes") {
+                Text("Fire an event the moment a meeting is saved, carrying the note's metadata (title, date, meeting type, linked org/project, tags) — never the audio. Free-text fields are run through your redaction settings first. Use these to post into Notion, Slack, Zapier, or your own scripts.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Local Script Hook") {
+                Toggle("Run a script when a meeting finishes", isOn: $settings.scriptHookEnabled)
+                    .disabled(settings.localOnlyMode)
+                Text("Runs your executable with the event JSON on stdin. No network — the easiest option to trust.")
+                    .font(.caption).foregroundColor(.secondary)
+                HStack {
+                    TextField("/path/to/script.sh", text: $settings.scriptHookPath)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(!settings.scriptHookEnabled)
+                    Button("Choose…") { chooseScript() }
+                        .disabled(!settings.scriptHookEnabled)
+                }
+                if settings.scriptHookEnabled && !settings.scriptHookPath.isEmpty && !scriptIsValid {
+                    Label("Not an executable file — run `chmod +x` on it.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundColor(.orange)
+                }
+            }
+
+            SettingsGroup("Outgoing Webhook") {
+                Toggle("POST to a webhook when a meeting finishes", isOn: $settings.webhookEnabled)
+                    .disabled(settings.localOnlyMode)
+                Text("Sends the event JSON as an HTTP POST. Must be an https URL.")
+                    .font(.caption).foregroundColor(.secondary)
+                TextField("https://example.com/hooks/ghostwriter", text: $settings.webhookURL)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!settings.webhookEnabled)
+                if settings.webhookEnabled && !settings.webhookURL.isEmpty && !webhookIsValid {
+                    Label("Enter a valid https:// URL.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundColor(.orange)
+                }
+            }
+
+            SettingsGroup("Payload") {
+                Text("""
+                {
+                  "event": "meeting.finished",
+                  "title": "Acme SSO Scoping",
+                  "file": "…/Meeting_2026-07-13.md",
+                  "date": "2026-07-13T10:00:00Z",
+                  "durationSeconds": 1830,
+                  "meetingType": "Solution Scoping",
+                  "organisation": "Acme",
+                  "project": "SSO Migration",
+                  "project": "Platform",
+                  "tags": ["meeting", "sso"]
+                }
+                """)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func chooseScript() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose an executable script to run when a meeting finishes."
+        if panel.runModal() == .OK, let url = panel.url {
+            settings.scriptHookPath = url.path
+        }
     }
 }
 
@@ -1410,7 +2520,7 @@ private struct DigestPane: View {
                     }
                     .labelsHidden().frame(width: 110)
                 }
-                Text("An open opportunity with no note in this window is surfaced under \u{201C}Quiet Relationships\u{201D} in the digest.")
+                Text("An open project with no note in this window is surfaced under \u{201C}Quiet Relationships\u{201D} in the digest.")
                     .font(.caption).foregroundColor(.secondary)
             }
             .disabled(!settings.digestEnabled)
@@ -1537,10 +2647,10 @@ private struct TemplateSectionsEditor: View {
                     }
                 }
             }
-            TextEditor(text: $text)
-                .font(.system(.caption, design: .monospaced))
-                .frame(height: 90)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+            MultilineField(text: $text,
+                           placeholder: "## Summary\n## Action Items\n## Decisions",
+                           minHeight: 90,
+                           font: .system(.caption, design: .monospaced))
                 .onChange(of: text) { _, newValue in save(newValue) }
         }
         .onAppear { text = template.sectionsText }
@@ -1585,10 +2695,10 @@ private struct TemplateFollowUpEditor: View {
                     }
                 }
             }
-            TextEditor(text: $text)
-                .font(.system(.caption, design: .monospaced))
-                .frame(height: 70)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+            MultilineField(text: $text,
+                           placeholder: "Recipient, tone, and what the follow-up should include…",
+                           minHeight: 70,
+                           font: .system(.caption, design: .monospaced))
                 .onChange(of: text) { _, newValue in save(newValue) }
             Text("For explicit document types (Minutes, Follow-up Email, Status Update, …), see Meetings → Draft Templates.")
                 .font(.caption).foregroundColor(.secondary)
@@ -1948,6 +3058,36 @@ private struct PermissionRow: View {
 }
 
 // MARK: - Reusable Controls
+
+/// A multi-line text box with a greyed placeholder shown while it's empty —
+/// SwiftUI's `TextEditor` has no prompt of its own, so an empty field otherwise
+/// reads as a broken blank box. Centralizes the monospaced font + border styling
+/// every settings editor was hand-rolling. Grows past `minHeight` as text wraps.
+private struct MultilineField: View {
+    @Binding var text: String
+    var placeholder: String = ""
+    var minHeight: CGFloat = 54
+    var font: Font = .system(.caption, design: .monospaced)
+
+    var body: some View {
+        TextEditor(text: $text)
+            .font(font)
+            .frame(minHeight: minHeight)
+            // Placeholder sits on top but only while empty (so it never covers
+            // real text) and ignores hits so clicks fall through to the editor.
+            .overlay(alignment: .topLeading) {
+                if text.isEmpty && !placeholder.isEmpty {
+                    Text(placeholder)
+                        .font(font)
+                        .foregroundColor(.secondary.opacity(0.5))
+                        .padding(.horizontal, 5)
+                        .padding(.top, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+    }
+}
 
 /// Card-style settings group with a header, mimicking System Settings.
 private struct SettingsGroup<Content: View>: View {

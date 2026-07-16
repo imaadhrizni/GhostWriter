@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - App Delegate
 
@@ -217,9 +218,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DigestWindowController.present()
     }
 
-    @MainActor @objc private func showPocTracker() {
-        PocTrackerWindowController.present()
-    }
 
     private func finishInitialization() {
         // Note: hotkeyManager.start() is deliberately NOT called here — it creates a
@@ -241,6 +239,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             dictationsWindowController = DictationsWindowController()
         }
         dictationsWindowController?.bringToFront()
+    }
+
+    // MARK: - Audio File Import
+
+    private var importWindowController: ImportAudioWindowController?
+
+    /// Menu action / drag-drop entry: open the Import Audio window, optionally
+    /// pre-loading dropped files. Transcription, note-writing and Catalog
+    /// linking all run inside the window via AudioImportService.
+    @objc private func importAudioFile() { showAudioImport() }
+
+    func showAudioImport(urls: [URL] = []) {
+        MainActor.assumeIsolated {
+            if importWindowController == nil {
+                importWindowController = ImportAudioWindowController()
+            }
+            if !urls.isEmpty { AudioImportService.shared.add(urls) }
+            importWindowController?.bringToFront()
+        }
     }
 
     private var catalogWindowController: CatalogWindowController?
@@ -394,9 +411,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quickNoteItem)
         self.quickNoteMenuItem = quickNoteItem
 
+        // Transcribe an existing audio file — an ingest verb that *creates* a
+        // note, so it belongs with the capture actions, not the browse list.
+        let importItem = NSMenuItem(title: "Transcribe Audio File…", action: #selector(importAudioFile), keyEquivalent: "")
+        importItem.image = NSImage(systemSymbolName: "waveform.badge.plus", accessibilityDescription: nil)
+        importItem.target = self
+        menu.addItem(importItem)
+
+        // Split the Live Brief *display* toggles from the capture verbs above —
+        // they act on an already-running meeting's panel, a distinct concern.
+        menu.addItem(NSMenuItem.separator())
+
         // Live Brief is a display toggle (show/hide the floating panel), not a
-        // capture verb, so it follows the capture cluster. Hidden unless a
-        // meeting's live assistant is active (see menuNeedsUpdate).
+        // capture verb. Hidden unless a meeting's live assistant is active
+        // (see menuNeedsUpdate).
         let liveBriefItem = NSMenuItem(title: "Hide Live Brief", action: #selector(toggleLiveBrief), keyEquivalent: "")
         liveBriefItem.image = NSImage(systemSymbolName: "sparkles.rectangle.stack", accessibilityDescription: nil)
         liveBriefItem.target = self
@@ -413,28 +441,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        // ── Notes & history ─────────────────────────────────────
-        // Notes submenu — current notes, quick notes, recent meetings, folder —
-        // rebuilt on open via menuNeedsUpdate
-        let meetingNotesItem = NSMenuItem(title: "Notes & History", action: nil, keyEquivalent: "")
-        meetingNotesItem.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)
-        let meetingNotesMenu = NSMenu(title: "Notes & History")
-        meetingNotesMenu.delegate = self
-        meetingNotesItem.submenu = meetingNotesMenu
-        menu.addItem(meetingNotesItem)
-
-        // Catalog is the primary organiser — it sits directly under Notes,
-        // above the raw dictation archive.
+        // ── Browse ──────────────────────────────────────────────
+        // Catalog is the primary organiser and the main browse surface, so it
+        // leads the cluster; then the quick file-open submenu, then the raw
+        // dictation archive.
         let catalogItem = NSMenuItem(title: "Catalog…", action: #selector(showCatalog), keyEquivalent: "")
         catalogItem.image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: nil)
         catalogItem.target = self
         menu.addItem(catalogItem)
+
+        // Notes submenu — current notes, quick notes, recent meetings, folder —
+        // rebuilt on open via menuNeedsUpdate. Labelled "Recent Notes" to signal
+        // it's the quick day-by-day file opener, distinct from the Catalog browse.
+        let meetingNotesItem = NSMenuItem(title: "Recent Notes", action: nil, keyEquivalent: "")
+        meetingNotesItem.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)
+        let meetingNotesMenu = NSMenu(title: "Recent Notes")
+        meetingNotesMenu.delegate = self
+        meetingNotesItem.submenu = meetingNotesMenu
+        menu.addItem(meetingNotesItem)
 
         let dictationsItem = NSMenuItem(title: "Dictations…", action: #selector(showDictations), keyEquivalent: "")
         dictationsItem.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)
         dictationsItem.target = self
         menu.addItem(dictationsItem)
 
+        // ── Insights ────────────────────────────────────────────
         // AI-over-notes actions, set apart from the raw browse/archive items above.
         menu.addItem(NSMenuItem.separator())
 
@@ -448,11 +479,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         askItem.target = self
         menu.addItem(askItem)
 
-        let pocItem = NSMenuItem(title: "POC Tracker…", action: #selector(showPocTracker), keyEquivalent: "")
-        pocItem.image = NSImage(systemSymbolName: "flask", accessibilityDescription: nil)
-        pocItem.target = self
-        menu.addItem(pocItem)
-
         menu.addItem(NSMenuItem.separator())
 
         // ── Configuration ───────────────────────────────────────
@@ -464,9 +490,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
-        // Permissions and the API key live in Settings (Permissions pane /
-        // General pane) — no need to duplicate them at the top level.
-        menu.addItem(NSMenuItem.separator())
+        // Settings + Quit form one trailing utility group (HIG) — no separator
+        // between them. Permissions/API key live inside Settings, not here.
 
         // ── Quit ────────────────────────────────────────────────
         let quitItem = NSMenuItem(title: "Quit GhostWriter", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -673,13 +698,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Log.dictation.debug("📝 Quick note cancelled")
     }
 
+    /// Whether a dictation blob is worth uploading to Groq: it must contain
+    /// voiced audio above the configured floor (unless the guard is disabled).
+    /// Skips the wasted round-trip — and the Whisper hallucinations it invites —
+    /// on recordings that are pure silence.
+    private func dictationHasSpeech(_ audio: Data) -> Bool {
+        guard settings.skipSilentDictation else { return true }
+        return voiceActivityDetector.containsVoice(
+            in: audio, aboveDBFS: settings.dictationSilenceThreshold)
+    }
+
     private func finishQuickNote() {
         audioCapture.stop()
         let captured = audioBuffer
         audioBuffer = Data()
         endQuickNoteRecording()
 
-        guard !captured.isEmpty else {
+        guard !captured.isEmpty, dictationHasSpeech(captured) else {
+            if !captured.isEmpty { Log.dictation.debug("🔇 Quick note was silent — skipping upload") }
             appState.recordingState = .idle
             hideOverlayUnlessMeeting()
             return
@@ -690,7 +726,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 let rawText = try await transcribeWithFallback(captured)
                 let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else {
+                guard !trimmed.isEmpty, !whisperHallucinations.contains(trimmed.lowercased()) else {
                     await MainActor.run {
                         appState.recordingState = .idle
                         hideOverlayUnlessMeeting()
@@ -704,8 +740,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let fileURL = MeetingNotesWriter.appendQuickNote(polished) else {
                     // The note must not vanish: park it on the clipboard and say so.
                     await MainActor.run {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(polished, forType: .string)
+                        Clipboard.plain(polished)
                         appState.recordingState = .error("Couldn't save quick note — copied to clipboard. Check the Quick Notes folder in Settings.")
                     }
                     try? await Task.sleep(for: .seconds(3))
@@ -745,46 +780,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .reduce(0) { $0 + $1.count }
     }
 
-    /// Cleans a model-produced summary: drops the refusal sentinel, empty
-    /// sections, and duplicated headings. Returns nil when nothing real remains.
-    private static func sanitizedSummary(_ raw: String) -> String? {
-        let trimmedRaw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Only bail when the model says the WHOLE meeting was too thin — a
-        // stray token inside one section must not discard the entire summary.
-        guard !trimmedRaw.isEmpty, trimmedRaw != "NOT_ENOUGH_CONTENT" else { return nil }
-
-        // Split into (heading, body) sections
-        var sections: [(heading: String?, body: [String])] = [(nil, [])]
-        for line in trimmedRaw.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("#") {
-                sections.append((String(line), []))
-            } else {
-                sections[sections.count - 1].body.append(String(line))
-            }
-        }
-
-        var seenHeadings = Set<String>()
-        var output: [String] = []
-        var sawHeading = false
-        for section in sections {
-            let body = section.body.joined(separator: "\n")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let heading = section.heading {
-                // Keep every distinct heading — even with an empty body, so the
-                // structure (Summary / Decisions / Action Items …) is always
-                // visible. Blank sections render an explicit "_None_".
-                let key = heading.trimmingCharacters(in: CharacterSet(charactersIn: "# ")).lowercased()
-                guard !seenHeadings.contains(key) else { continue }
-                seenHeadings.insert(key)
-                output.append(heading)
-                output.append(body.isEmpty ? "_None_" : body)
-                sawHeading = true
-            } else if !body.isEmpty {
-                output.append(body)
-            }
-        }
-        return sawHeading ? output.joined(separator: "\n\n") : nil
-    }
 
     /// The single transcription choke point for dictation, quick notes, and
     /// meetings. Local-only mode goes straight to on-device recognition; other-
@@ -830,7 +825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task { [weak self] in
             guard let self else { return }
 
-            // Link the note into the Catalog under the opportunity/org chosen at
+            // Link the note into the Catalog under the project/org chosen at
             // start (if any), creating its catalog row from the file path.
             await MainActor.run {
                 guard let target = catalogTarget else { return }
@@ -840,7 +835,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let note = store.note(forRelativePath: rel,
                                       title: fileURL.deletingPathExtension().lastPathComponent,
                                       date: start)
-                if target.kind == "opp" { store.setOpportunity(target.id, on: note.id, true) }
+                if target.kind == "project" { store.setProject(target.id, on: note.id, true) }
                 else if target.kind == "org" { store.setOrg(target.id, on: note.id, true) }
 
                 // Mirror the link into the note's front-matter so the file
@@ -848,11 +843,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // survives independently of the Catalog database).
                 if AppSettings.shared.frontMatterEnabled {
                     var fields: [(key: String, value: String)] = []
-                    if target.kind == "opp", let opp = store.opportunity(target.id) {
-                        fields.append(("opportunity", opp.name))
-                        // Org sits above the opportunity via its project.
-                        if let pid = opp.projectID, let oid = store.project(pid)?.orgID,
-                           let org = store.org(oid) {
+                    if target.kind == "project", let proj = store.project(target.id) {
+                        fields.append(("project", proj.name))
+                        // Org sits above the project (walking the hierarchy).
+                        if let org = store.org(forProject: proj.id) {
                             fields.append(("org", org.name))
                         }
                     } else if target.kind == "org", let org = store.org(target.id) {
@@ -875,6 +869,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let wantsSummary = self.settings.summariesEnabled
             let wantsActions = self.settings.actionItemsEnabled
             let wantsStructured = self.settings.structuredExtraction
+            let wantsOpenQuestions = self.settings.extractUnanswered
             let wantsChapters = self.settings.topicChapters
             // Enough real speech to work with? (measure dialogue, not header/markers)
             if let transcript = self.meetingNotes.transcriptText(of: fileURL),
@@ -902,15 +897,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                             wantsSummary: wantsSummary, wantsActions: wantsActions)
             } else {
                 // Cloud path. Each feature below is independently toggleable.
-                if wantsSummary || wantsActions || wantsStructured {
+                if wantsSummary || wantsActions || wantsStructured || wantsOpenQuestions {
                     do {
                         let raw = try await self.textPolisher.summarize(
                             transcript: transcript,
                             template: self.settings.selectedTemplate,
                             includeSummary: wantsSummary,
                             includeActionItems: wantsActions,
-                            includeStructured: wantsStructured)
-                        if let summary = Self.sanitizedSummary(raw) {
+                            includeStructured: wantsStructured,
+                            includeOpenQuestions: wantsOpenQuestions)
+                        if let summary = MeetingNotesWriter.sanitizedSummary(raw) {
                             self.meetingNotes.appendSummary(summary, to: fileURL)
                         } else {
                             Log.meeting.info("⏭ Summary skipped — not enough content")
@@ -921,23 +917,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 }
 
-                // A concise AI title for the note's front-matter (the on-disk
-                // filename stays Meeting_<timestamp> so Catalog links hold).
-                if self.settings.frontMatterEnabled {
-                    if let title = try? await self.textPolisher.meetingTitle(transcript: transcript) {
-                        MeetingNotesWriter.setFrontMatterTitle(title, to: fileURL)
+                // Meeting facts — title (front-matter), topic/entity metadata,
+                // and per-type key fields — in ONE fast structured call rather
+                // than three separate round-trips. Each piece is applied under
+                // its own setting; metadata falls back to on-device NER.
+                let wantsTitle = self.settings.frontMatterEnabled
+                let wantsMeta  = self.settings.autoTagging && self.settings.frontMatterEnabled
+                let wantsFields = self.settings.extractKeyFields
+                if wantsTitle || wantsMeta || wantsFields {
+                    let includePeople = !self.settings.redactionEnabled
+                    let schema = wantsFields ? self.settings.selectedTemplate.keyFields : []
+                    let facts = await self.textPolisher.extractMeetingFacts(
+                        transcript: transcript, includeTitle: wantsTitle,
+                        includePeople: includePeople, fields: schema)
+
+                    // Title → front-matter + Catalog row (filename stays Meeting_<ts>).
+                    if wantsTitle, !facts.title.isEmpty {
+                        MeetingNotesWriter.setFrontMatterTitle(facts.title, to: fileURL)
+                        await MainActor.run {
+                            let root = AppSettings.shared.notesFolder.path + "/"
+                            CatalogStore.shared.renameNote(relativePath: fileURL.path.replacingOccurrences(of: root, with: ""), to: facts.title)
+                        }
+                    }
+
+                    // Topics/people/customer/project → front-matter (on-device
+                    // fallback when the cloud call came back empty).
+                    if wantsMeta {
+                        var meta = facts.metadata
+                        if meta.isEmpty {
+                            meta = OnDeviceNLP.extractMetadata(transcript: transcript, includePeople: includePeople)
+                        }
+                        if !meta.isEmpty {
+                            let customer = await self.validatedCustomer(meta.customer)
+                            MeetingNotesWriter.addMeetingMetadata(
+                                topics: meta.topics, people: meta.people,
+                                customer: customer, project: meta.project, to: fileURL)
+                        }
+                    }
+
+                    // Key fields → Key Details section + machine-readable
+                    // front-matter; category fields mirror into tags.
+                    if wantsFields, !facts.keyFields.isEmpty {
+                        self.meetingNotes.appendKeyDetails(
+                            facts.keyFields.map { ($0.field.label, $0.value) }, to: fileURL)
+                        if self.settings.frontMatterEnabled {
+                            MeetingNotesWriter.addFrontMatterFields(
+                                facts.keyFields.map { ($0.field.key, $0.value) }, to: fileURL)
+                            let categories = facts.keyFields
+                                .filter { $0.field.kind == .category }
+                                .map { ($0.field.key, $0.value) }
+                            MeetingNotesWriter.mirrorFieldsToTags(categories, to: fileURL)
+                        }
                     }
                 }
 
-                // Unanswered questions: raised-but-not-resolved follow-up items.
-                if self.settings.extractUnanswered {
-                    do {
-                        let qs = try await self.textPolisher.unansweredQuestions(transcript: transcript)
-                        if !qs.isEmpty { self.meetingNotes.appendUnansweredQuestions(qs, to: fileURL) }
-                    } catch {
-                        Log.meeting.error("❌ Unanswered-questions extraction failed: \(error.localizedDescription)")
-                    }
-                }
+                // (Open Questions are produced by the summary pass above — see
+                // `includeOpenQuestions` — so there's no separate call here.)
 
                 // Topic chapters: a timestamped jump-list segmenting the meeting.
                 if wantsChapters {
@@ -968,45 +1003,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.meetingNotes.appendAgenda(userEntries + dynEntries, to: fileURL)
                 }
 
-                // Auto-tag topics + entities into the front-matter (needs front-matter on).
-                // Person names are only harvested when redaction is off.
-                if self.settings.autoTagging, self.settings.frontMatterEnabled {
-                    let includePeople = !self.settings.redactionEnabled
-                    var meta = await self.textPolisher.extractMetadata(
-                        transcript: transcript, includePeople: includePeople)
-                    // Fall back to on-device NER when the cloud call came back empty
-                    // (e.g. Groq rate-limited) so tagging still happens.
-                    if meta.isEmpty {
-                        meta = OnDeviceNLP.extractMetadata(transcript: transcript, includePeople: includePeople)
-                    }
-                    if !meta.isEmpty {
-                        MeetingNotesWriter.addMeetingMetadata(
-                            topics: meta.topics, people: meta.people,
-                            customer: meta.customer, project: meta.project, to: fileURL)
-                    }
-                }
-
-                // Per-meeting-type key fields (deal stage, recommendation, …):
-                // a readable Key Details section, plus machine-readable
-                // front-matter fields; category fields are mirrored into tags
-                // so they're filterable in the Catalog.
-                if self.settings.extractKeyFields {
-                    let schema = self.settings.selectedTemplate.keyFields
-                    let extracted = await self.textPolisher.extractKeyFields(
-                        transcript: transcript, fields: schema)
-                    if !extracted.isEmpty {
-                        self.meetingNotes.appendKeyDetails(
-                            extracted.map { ($0.field.label, $0.value) }, to: fileURL)
-                        if self.settings.frontMatterEnabled {
-                            let pairs = extracted.map { ($0.field.key, $0.value) }
-                            MeetingNotesWriter.addFrontMatterFields(pairs, to: fileURL)
-                            let categories = extracted
-                                .filter { $0.field.kind == .category }
-                                .map { ($0.field.key, $0.value) }
-                            MeetingNotesWriter.mirrorFieldsToTags(categories, to: fileURL)
-                        }
-                    }
-                }
             }   // end cloud path
             }   // end "enough speech"
 
@@ -1014,7 +1010,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NotificationManager.shared.notifyMeetingSaved(duration: duration, fileURL: fileURL)
             }
             self.warnIfOverBudget()
+
+            // Fire user-configured integrations (local script hook / outgoing
+            // webhook). Runs last, so the payload reflects the finished note.
+            // Metadata only, redaction-aware, and a no-op in Local-only mode.
+            await MainActor.run {
+                self.dispatchMeetingEvent(fileURL: fileURL, start: start, durationSeconds: elapsed)
+            }
         }
+    }
+
+    /// Build the "meeting finished" event payload from the saved note and hand
+    /// it to `EventDispatcher`. Catalog resolution and front-matter reads happen
+    /// here (on the main actor); the dispatcher itself does the redaction,
+    /// script launch, and webhook POST off the main thread.
+    @MainActor
+    private func dispatchMeetingEvent(fileURL: URL, start: Date, durationSeconds: Int) {
+        let s = AppSettings.shared
+        guard !s.localOnlyMode, (s.scriptHookEnabled || s.webhookEnabled) else { return }
+
+        let markdown = (fileURL.readText()) ?? ""
+        let title = FrontMatter.title(in: markdown)
+            ?? fileURL.deletingPathExtension().lastPathComponent
+        let tags = FrontMatter.tags(in: markdown)
+        let typeID = FrontMatter.field("gw_meeting_type", in: markdown)
+        let meetingType = typeID.flatMap { id in
+            AppSettings.shared.allTemplates.first { $0.id == id }?.displayName
+        } ?? typeID
+
+        // Resolve the org / project chain from the Catalog link.
+        var org: String?, project: String?
+        let store = CatalogStore.shared
+        let root = s.notesFolder.path + "/"
+        let rel = fileURL.path.replacingOccurrences(of: root, with: "")
+        if let note = store.doc.notes.first(where: { $0.filePath == rel }) {
+            if let projID = note.projectIDs.first, let proj = store.project(projID) {
+                project = proj.name
+                org = store.org(forProject: proj.id)?.name
+            } else if let orgID = note.orgIDs.first {
+                org = store.org(orgID)?.name
+            }
+        }
+
+        let payload = EventDispatcher.MeetingFinishedPayload(
+            title: title,
+            file: fileURL.path,
+            date: DateDisplay.iso8601.string(from: start),
+            durationSeconds: durationSeconds,
+            meetingType: meetingType,
+            organisation: org,
+            project: project,
+            tags: tags)
+        EventDispatcher.dispatch(payload)
     }
 
     /// Local-only finalize: summarize and tag entirely on-device (Apple
@@ -1027,7 +1074,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let sections = wantsSummary ? settings.selectedTemplate.summarySections : []
             if let raw = await AppleIntelligence.summarizeMeeting(
                 transcript: transcript, sections: sections, includeActionItems: wantsActions),
-               let summary = Self.sanitizedSummary(raw) {
+               let summary = MeetingNotesWriter.sanitizedSummary(raw) {
                 meetingNotes.appendSummary(
                     summary + "\n\n_— generated on-device with Apple Intelligence_", to: fileURL)
             } else {
@@ -1040,11 +1087,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let meta = OnDeviceNLP.extractMetadata(
                 transcript: transcript, includePeople: !settings.redactionEnabled)
             if !meta.isEmpty {
+                let customer = await validatedCustomer(meta.customer)
                 MeetingNotesWriter.addMeetingMetadata(
                     topics: meta.topics, people: meta.people,
-                    customer: meta.customer, project: meta.project, to: fileURL)
+                    customer: customer, project: meta.project, to: fileURL)
             }
         }
+    }
+
+    /// Guard against low-confidence `customer` guesses from entity extraction.
+    /// Accepts a name that matches a known Catalog org/project (or alias);
+    /// otherwise drops a lone short token or an all-caps acronym — almost always
+    /// transcript noise (e.g. a mis-heard "Wwe") rather than a real customer.
+    /// Multi-word names pass through so genuinely new customers aren't lost.
+    @MainActor
+    private func validatedCustomer(_ raw: String?) -> String? {
+        guard let name = raw?.trimmingCharacters(in: .whitespaces), !name.isEmpty else { return nil }
+        let store = CatalogStore.shared
+        let known = store.doc.orgs.flatMap { [$0.name] + $0.aliases }
+            + store.doc.projects.map(\.name)
+        if known.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) { return name }
+        let tokens = name.split(whereSeparator: { $0 == " " })
+        if tokens.count == 1 {
+            let t = String(tokens[0])
+            if t.count <= 3 || t == t.uppercased() { return nil }
+        }
+        return name
     }
 
     /// Fire a single monthly notification the first time the estimated spend
@@ -1194,6 +1262,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if streaming, self.audioBuffer.count >= chunkBytes {
                 let chunk = self.audioBuffer
                 self.audioBuffer = Data()
+                // Don't spend a Groq call on a chunk that's all silence.
+                guard self.dictationHasSpeech(chunk) else {
+                    Log.dictation.debug("🔇 Silent chunk — skipping upload")
+                    return
+                }
                 self.streamTasks.append(Task { [weak self] in
                     try? await self?.transcribeWithFallback(chunk)
                 })
@@ -1228,6 +1301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         audioBuffer = Data()
         pttStartTime = nil
         appState.recordingState = .idle
+        hotkeyManager.recordingDidEnd()
         if !appState.isMeetingMode { overlayPanel?.orderOut(nil) }
         Log.dictation.debug("🎤 Dictation cancelled (Esc)")
     }
@@ -1236,6 +1310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // PTT key-up fires even when key-down was refused (e.g. a quick note
         // owns the engine) — don't hijack the quick note's capture.
         guard !quickNoteActive else { return }
+        hotkeyManager.recordingDidEnd()
         audioCapture.stop()
         meetingDetector.suppressed = appState.isMeetingMode
         stopDictationTimer()
@@ -1266,7 +1341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         parts.append(piece)
                     }
                 }
-                if !capturedAudio.isEmpty {
+                if !capturedAudio.isEmpty, dictationHasSpeech(capturedAudio) {
                     // Prime the final tail with the chunks already transcribed
                     // in this same dictation, so terms stay consistent.
                     let tail = try await transcribeWithFallback(capturedAudio, context: parts.joined(separator: " "))
@@ -1274,7 +1349,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     if !tail.isEmpty { parts.append(tail) }
                 }
                 let rawText = parts.joined(separator: " ")
-                guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                let rawTrimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !rawTrimmed.isEmpty, !whisperHallucinations.contains(rawTrimmed.lowercased()) else {
                     await MainActor.run {
                         appState.recordingState = .idle
                         if !appState.isMeetingMode { overlayPanel?.orderOut(nil) }
@@ -1381,7 +1457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: declineTitle)
         alert.alertStyle = .informational
 
-        // Inline controls: a catalog link (opportunity/org to file the note
+        // Inline controls: a catalog link (project/org to file the note
         // under), the template (shapes the summary), an optional agenda, and the
         // per-meeting live-brief switch.
         let accessory = Self.makeStartAccessory(selectedID: settings.selectedTemplateID,
@@ -1411,20 +1487,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Build the start-dialog catalog picker options: opportunities, orgs, and
-    /// two quick-add entries. Runs on the main actor (CatalogStore is isolated).
+    /// Build the start-dialog catalog picker options: projects, orgs, and two
+    /// quick-add entries. Runs on the main actor (CatalogStore is isolated).
     private static func catalogLinkOptions() -> [(title: String, repr: String)] {
         MainActor.assumeIsolated {
             let store = CatalogStore.shared
             var opts: [(String, String)] = [("No link", "")]
-            let opps = store.doc.opportunities.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            let orgs = store.orgsSorted
-            if !opps.isEmpty { opts.append(("__sep__", "__sep__")) }
-            for o in opps { opts.append(("◆ \(o.name)", "opp:\(o.id)")) }
-            if !orgs.isEmpty { opts.append(("__sep__", "__sep__")) }
-            for o in orgs { opts.append(("🏢 \(store.orgPath(of: o.id))", "org:\(o.id)")) }
+            // One consistent org→project tree, indented by depth (same shape the
+            // SwiftUI OrgProjectTreePicker renders elsewhere).
+            let rows = store.orgProjectRows()
+            if !rows.isEmpty { opts.append(("__sep__", "__sep__")) }
+            for r in rows {
+                let indent = String(repeating: "    ", count: r.depth)
+                let icon = r.kind == "org" ? "🏢" : "◆"
+                opts.append(("\(indent)\(icon) \(r.name)", "\(r.kind):\(r.id)"))
+            }
             opts.append(("__sep__", "__sep__"))
-            opts.append(("➕ New Opportunity…", "new:opp"))
+            opts.append(("➕ New Project…", "new:project"))
             opts.append(("➕ New Organisation…", "new:org"))
             return opts.map { (title: $0.0, repr: $0.1) }
         }
@@ -1434,9 +1513,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// quick-add entries by prompting for a name and creating the entity.
     private func resolveCatalogTarget(_ repr: String?) -> (kind: String, id: String)? {
         guard let repr, !repr.isEmpty else { return nil }
-        // A new opportunity gets the full Quick Add (org → project → opp → …).
-        if repr == "new:opp" {
-            return runQuickAddForOpportunity().map { ("opp", $0) }
+        // A new project gets the full Quick Add (org → project → …).
+        if repr == "new:project" {
+            return runQuickAddForProject().map { ("project", $0) }
         }
         if repr == "new:org" {
             guard let name = promptNewCatalogName("New Organisation") else { return nil }
@@ -1448,7 +1527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Proper-noun glossary for the meeting in progress — the linked entity
-    /// (opportunity / project / org), the people on its recent notes, and the
+    /// (project / org), the people on its recent notes, and the
     /// voice identities taught so far — capped and formatted for the Whisper
     /// prompt. CatalogStore is main-actor isolated, so this is too.
     @MainActor
@@ -1458,11 +1537,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var scope: [CatalogNote] = []
 
         if let target {
-            if target.kind == "opp", let opp = store.opportunity(target.id) {
-                terms.append(opp.name)
-                if let proj = store.project(opp.projectID) { terms.append(proj.name) }
-                if let org = store.org(forOpportunity: opp) { terms.append(org.name) }
-                scope = store.notes(forOpportunity: opp)
+            if target.kind == "project", let proj = store.project(target.id) {
+                terms.append(proj.name)
+                if let org = store.org(forProject: proj.id) { terms.append(org.name) }
+                scope = store.notes(forProject: proj.id)
             } else if target.kind == "org", let org = store.org(target.id) {
                 terms.append(org.name)
                 scope = store.notes(forOrg: org.id, includingDescendants: true)
@@ -1488,7 +1566,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Meeting prep card: a quick, non-editable recap of recent context for the
-    /// org/opportunity chosen in the Start dialog, shown just before recording.
+    /// org/project chosen in the Start dialog, shown just before recording.
     /// Reuses the catalog's relationship timeline (recent notes). Skipped when
     /// there's no prior history to show.
     private func showMeetingPrepCard(for target: (kind: String, id: String)) {
@@ -1496,8 +1574,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let store = CatalogStore.shared
             let name: String
             let notes: [CatalogNote]
-            if target.kind == "opp", let o = store.opportunity(target.id) {
-                name = o.name; notes = store.notes(forOpportunity: o)
+            if target.kind == "project", let o = store.project(target.id) {
+                name = o.name; notes = store.notes(forProject: o.id)
             } else if target.kind == "org", let o = store.org(target.id) {
                 name = store.orgPath(of: o.id); notes = store.notes(forOrg: o.id, includingDescendants: true)
             } else { return nil }
@@ -1509,13 +1587,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MeetingPrepWindowController.present(entityName: prep.name, notes: prep.notes)
     }
 
-    /// Present the Quick Add sheet modally and return the created opportunity's
-    /// id (nil if cancelled or no opportunity was named).
-    private func runQuickAddForOpportunity() -> String? {
+    /// Present the Quick Add sheet modally and return the created project's id
+    /// (nil if cancelled or no project was named).
+    private func runQuickAddForProject() -> String? {
         MainActor.assumeIsolated {
             var result: String?
-            let controller = NSHostingController(rootView: QuickAddSheet(store: CatalogStore.shared) { oppID in
-                result = oppID
+            let controller = NSHostingController(rootView: QuickAddSheet(store: CatalogStore.shared) { projID in
+                result = projID
                 NSApp.stopModal()
             })
             let window = NSWindow(contentViewController: controller)
@@ -1559,14 +1637,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var allOptions: [(title: String, repr: String)] = []
 
         /// Repopulate the link popup, keeping "No link" and the quick-add rows
-        /// while narrowing the org/opportunity rows to those matching `filter`.
+        /// while narrowing the org/project rows to those matching `filter`.
         func rebuildCatalogMenu(filter: String) {
             let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
             let prevRepr = catalog.selectedItem?.representedObject as? String
 
             // Keep an entity row only when it matches; leave fixed rows alone.
             var shown = allOptions.filter { opt in
-                let isEntity = opt.repr.hasPrefix("opp:") || opt.repr.hasPrefix("org:")
+                let isEntity = opt.repr.hasPrefix("project:") || opt.repr.hasPrefix("org:")
                 return !isEntity || q.isEmpty || opt.title.lowercased().contains(q)
             }
             // Collapse separators left dangling by filtering.
@@ -1594,7 +1672,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         @objc func searchChanged() { rebuildCatalogMenu(filter: search.stringValue) }
 
         /// The prep card only makes sense with a catalog link — enable the
-        /// switch (and un-dim its label) only when an org/opportunity is chosen.
+        /// switch (and un-dim its label) only when an org/project is chosen.
         @objc func catalogChanged() {
             let repr = catalog.selectedItem?.representedObject as? String ?? ""
             let linked = !repr.isEmpty && repr != "__sep__"
@@ -1604,7 +1682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// The catalog entity to link the resulting note to (chosen at start).
-    /// kind is "opp" or "org".
+    /// kind is "project" or "org".
     private var meetingCatalogTarget: (kind: String, id: String)?
 
     /// Build the start-dialog accessory. An accessory view without explicit
@@ -1640,12 +1718,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             top += capGap
         }
 
-        // Catalog link (top) — file this meeting's note under an opportunity or
+        // Catalog link (top) — file this meeting's note under a project or
         // org. A search field narrows the list as the Catalog grows.
         caption("Link to (optional)")
         let search = container.search
         search.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
-        search.placeholderString = "Search organisations & opportunities…"
+        search.placeholderString = "Search organisations & projects…"
         search.sendsWholeSearchString = false
         search.target = container
         search.action = #selector(StartAccessory.searchChanged)
@@ -1748,7 +1826,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         prepLabel.frame = NSRect(x: 0, y: prepRowY + (rowH - 16) / 2,
                                  width: width - prep.frame.width - 8, height: 16)
         prepLabel.font = .systemFont(ofSize: 12)
-        let prepTip = "When linked to an org/opportunity, pops a panel of its recent notes as the meeting starts. Applies to this meeting only."
+        let prepTip = "When linked to an org/project, pops a panel of its recent notes as the meeting starts. Applies to this meeting only."
         prep.toolTip = prepTip
         prepLabel.toolTip = prepTip
         container.addSubview(prepLabel)
@@ -1775,21 +1853,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// The tracked call released the mic while Meeting Mode is still running —
-    /// offer to stop instead of transcribing an empty room.
+    /// offer to stop instead of transcribing an empty room. Routes through the
+    /// same coverage check as a manual end so the open-items list is folded into
+    /// this one prompt rather than shown as a second dialog afterwards.
     private func offerToStopMeeting() {
         guard appState.isMeetingMode else { return }
-
-        let alert = NSAlert()
-        alert.messageText = "Call ended"
-        alert.informativeText = "The call seems to be over, but Meeting Mode is still recording. Stop and finalize the notes?"
-        alert.addButton(withTitle: "Stop & Save Notes")
-        alert.addButton(withTitle: "Keep Recording")
-        alert.alertStyle = .informational
-
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            Task { @MainActor in await confirmEndAndStopMeeting() }
-        }
+        Task { @MainActor in await confirmEndAndStopMeeting(callEnded: true) }
     }
 
     // MARK: - Meeting Mode
@@ -1802,12 +1871,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// "Ask before it ends": when the user deliberately ends a meeting, warn
-    /// about anything still open — the user's uncovered agenda items AND any
-    /// dynamically-discovered topics raised but left unresolved — and offer to
-    /// keep recording. Stops straight away if there's nothing outstanding.
+    /// "Ask before it ends": when a meeting ends, warn about anything still
+    /// open — the user's uncovered agenda items AND any dynamically-discovered
+    /// topics raised but left unresolved — and offer to keep recording.
+    ///
+    /// `callEnded` marks the auto-detect path (a tracked call released the mic):
+    /// there we always confirm (detection can misfire), and the open-items list,
+    /// if any, is folded into that single "Call ended" prompt. A manual end
+    /// (menu / ⌃⌥M) stops straight away when nothing is outstanding.
     @MainActor
-    private func confirmEndAndStopMeeting() async {
+    private func confirmEndAndStopMeeting(callEnded: Bool = false) async {
         guard !endCoverageChecking else { return }
 
         let assistant = LiveMeetingAssistant.shared
@@ -1823,37 +1896,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let settings = AppSettings.shared
             let transcript = meetingNotes.currentFilePath.flatMap { meetingNotes.transcriptText(of: $0) } ?? ""
             let spoken = Self.dialogueLength(of: transcript)
-            guard !settings.localOnlyMode, KeychainService.groqAPIKey() != nil, spoken > 200 else {
+            if !settings.localOnlyMode, KeychainService.groqAPIKey() != nil, spoken > 200 {
+                endCoverageChecking = true
+                meetingModeMenuItem?.title = "Checking coverage…"
+                let status = await textPolisher.agendaStatus(
+                    userAgenda: meetingAgenda,
+                    transcript: transcript.trimmingCharacters(in: .whitespacesAndNewlines),
+                    preferFast: false)
+                endCoverageChecking = false
+                meetingModeMenuItem?.title = appState.isMeetingMode ? "End Meeting" : "Start Meeting"
+                let userUncovered = zip(meetingAgenda, status.userCovered).filter { !$0.1 }.map { $0.0 }
+                let openTopics = status.newTopics.map { "\($0) (raised, unresolved)" }
+                uncovered = userUncovered + openTopics
+                Log.meeting.info("🔎 End-coverage (model): flagged=\(uncovered.count)")
+            } else {
                 Log.meeting.info("⏭ End-coverage skipped (local=\(settings.localOnlyMode), spoken=\(spoken))")
-                stopMeetingMode(); return
+                uncovered = []
             }
-            endCoverageChecking = true
-            meetingModeMenuItem?.title = "Checking coverage…"
-            let status = await textPolisher.agendaStatus(
-                userAgenda: meetingAgenda,
-                transcript: transcript.trimmingCharacters(in: .whitespacesAndNewlines),
-                preferFast: false)
-            endCoverageChecking = false
-            meetingModeMenuItem?.title = appState.isMeetingMode ? "End Meeting" : "Start Meeting"
-            let userUncovered = zip(meetingAgenda, status.userCovered).filter { !$0.1 }.map { $0.0 }
-            let openTopics = status.newTopics.map { "\($0) (raised, unresolved)" }
-            uncovered = userUncovered + openTopics
-            Log.meeting.info("🔎 End-coverage (model): flagged=\(uncovered.count)")
         }
 
         // The meeting may have been stopped another way while we were checking.
         guard appState.isMeetingMode else { return }
-        guard !uncovered.isEmpty else { stopMeetingMode(); return }
 
+        // Manual end with nothing outstanding: stop, no dialog. (An auto-detected
+        // call always confirms — detection can be wrong.)
+        if !callEnded && uncovered.isEmpty { stopMeetingMode(); return }
+
+        let bullets = uncovered.map { "•  \($0)" }.joined(separator: "\n")
         let alert = NSAlert()
-        alert.messageText = "Before you end this meeting"
-        alert.informativeText = "These points still look open:\n\n" + uncovered.map { "•  \($0)" }.joined(separator: "\n")
-        alert.addButton(withTitle: "Keep Recording")
-        alert.addButton(withTitle: "End Anyway")
         alert.alertStyle = .informational
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() != .alertFirstButtonReturn {
-            stopMeetingMode()   // "End Anyway"
+        if callEnded {
+            alert.messageText = "Call ended"
+            alert.informativeText = uncovered.isEmpty
+                ? "The call seems to be over, but Meeting Mode is still recording. Stop and finalize the notes?"
+                : "The call seems to be over. These points still look open:\n\n\(bullets)\n\nStop and finalize the notes?"
+            alert.addButton(withTitle: "Stop & Save Notes")   // default: the call really is over
+            alert.addButton(withTitle: "Keep Recording")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn { stopMeetingMode() }
+        } else {
+            alert.messageText = "Before you end this meeting"
+            alert.informativeText = "These points still look open:\n\n\(bullets)"
+            alert.addButton(withTitle: "Keep Recording")      // default: guard against an accidental end
+            alert.addButton(withTitle: "End Anyway")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() != .alertFirstButtonReturn { stopMeetingMode() }
         }
     }
 
@@ -2406,7 +2493,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 errorMenuItem?.isHidden = true
             }
 
-        case "Notes & History":
+        case "Recent Notes":
             menu.removeAllItems()
 
             // Current (or latest) meeting notes — same action as ⌃⌥N —

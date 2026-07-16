@@ -5,10 +5,32 @@ import Foundation
 /// Injects text at the cursor using AXUIElement. Falls back to clipboard paste.
 final class TextInjector {
 
+    /// Browsers where the AX text path is unreliable — their web `contenteditable`
+    /// fields (Gmail compose & chat, Google Docs, etc.) report a successful
+    /// `AXSelectedText` set but often insert nothing, so dictation silently
+    /// drops. Paste (⌘V) lands reliably, so we route these straight to it.
+    private static let browserBundleIDs: Set<String> = [
+        "com.apple.safari", "com.apple.safaritechnologypreview",
+        "com.google.chrome", "com.google.chrome.canary",
+        "com.brave.browser", "com.microsoft.edgemac",
+        "company.thebrowser.browser", "org.mozilla.firefox",
+        "com.operasoftware.opera", "com.vivaldi.vivaldi",
+    ]
+
     func inject(text: String) {
+        if isFrontmostBrowser() {
+            injectViaClipboard(text: text)
+            return
+        }
         if !injectViaAccessibility(text: text) {
             injectViaClipboard(text: text)
         }
+    }
+
+    private func isFrontmostBrowser() -> Bool {
+        guard let id = NSWorkspace.shared.frontmostApplication?
+            .bundleIdentifier?.lowercased() else { return false }
+        return Self.browserBundleIDs.contains(id)
     }
 
     private func injectViaAccessibility(text: String) -> Bool {

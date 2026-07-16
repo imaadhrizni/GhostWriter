@@ -17,8 +17,8 @@ final class GroqService {
     private let baseURL = "https://api.groq.com/openai/v1"
     private let session = URLSession.shared
 
-    /// Proper nouns for the meeting in progress — the linked org / project /
-    /// opportunity, its people, and taught voice-identity names — set when a
+    /// Proper nouns for the meeting in progress — the linked org / project,
+    /// its people, and taught voice-identity names — set when a
     /// meeting starts and cleared when it ends. Merged into the Whisper prompt
     /// so these names transcribe correctly from the very first mention (vs.
     /// self-priming, which only helps *after* a term first appears). Set/read
@@ -47,7 +47,7 @@ final class GroqService {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
+        request.timeoutInterval = TimeInterval(AppSettings.shared.transcriptionTimeout)
 
         var body = Data()
 
@@ -101,6 +101,62 @@ final class GroqService {
         UsageStats.shared.recordTranscription(audioSeconds: audioSeconds)
 
         // Parse response, then apply the user's find→replace rules
+        let result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
+        return AppSettings.shared.applyReplacements(to: result.text)
+    }
+
+    /// Transcribe an audio *file* (wav/mp3/m4a/ogg/flac/webm…) by uploading it
+    /// to Groq Whisper directly — no local decode, so container formats Core
+    /// Audio can't read (notably ogg/opus from chat apps) still work.
+    /// - Parameters:
+    ///   - fileURL: the audio file on disk
+    ///   - mimeType: MIME for the multipart part (e.g. "audio/ogg")
+    ///   - audioSeconds: duration for the usage/cost estimate (0 if unknown)
+    ///   - context: optional priming text
+    func transcribe(fileURL: URL, mimeType: String, audioSeconds: Double, context: String = "") async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+
+        let fileData = try Data(contentsOf: fileURL)
+
+        let boundary = UUID().uuidString
+        var request = URLRequest(url: URL(string: "\(baseURL)/audio/transcriptions")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        // Whole files are larger than live chunks — use the dedicated (longer),
+        // user-configurable import timeout.
+        request.timeoutInterval = TimeInterval(AppSettings.shared.importTranscriptionTimeout)
+
+        var body = Data()
+        body.appendMultipart(name: "model", value: AppSettings.shared.transcriptionModel, boundary: boundary)
+
+        let glossary = [AppSettings.shared.vocabularyHint(), Self.sessionGlossary]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let promptHint = Self.composePrompt(vocabulary: glossary, context: context)
+        if !promptHint.isEmpty {
+            body.appendMultipart(name: "prompt", value: promptHint, boundary: boundary)
+        }
+
+        let language = AppSettings.shared.transcriptionLanguage.trimmingCharacters(in: .whitespaces)
+        if !language.isEmpty {
+            body.appendMultipart(name: "language", value: language, boundary: boundary)
+        }
+
+        body.appendMultipart(name: "response_format", value: "json", boundary: boundary)
+        body.appendMultipartFile(name: "file", filename: fileURL.lastPathComponent,
+                                 mimeType: mimeType, data: fileData, boundary: boundary)
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+        guard httpResponse.statusCode == 200 else {
+            let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw GroqError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
+        }
+
+        if audioSeconds > 0 { UsageStats.shared.recordTranscription(audioSeconds: audioSeconds) }
         let result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
         return AppSettings.shared.applyReplacements(to: result.text)
     }

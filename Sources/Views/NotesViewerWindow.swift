@@ -40,7 +40,7 @@ final class NotesViewerWindowController: NSWindowController {
 
     /// Open an existing notes file for viewing/editing.
     convenience init(fileURL: URL) {
-        let text = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+        let text = (fileURL.readText()) ?? ""
         self.init(title: fileURL.lastPathComponent, fileURL: fileURL, initialText: text)
     }
 
@@ -129,6 +129,7 @@ private struct NotesViewerView: View {
     @State private var savedText: String
     @State private var status: String = ""
     @State private var drafting = false
+    @State private var showPacketConfirm = false
     @State private var summarizing = false
     @State private var regenerating = false
     /// Locked (read-only) by default; unlock to edit. Drafts with no backing
@@ -138,7 +139,11 @@ private struct NotesViewerView: View {
     @State private var showFind = false
     @State private var findQuery = ""
     @State private var findIndex = 0
+    @FocusState private var findFocused: Bool
     @State private var outlineTarget: Int?
+    @State private var showOutline = false
+    /// Bumped on every jump (outline click / find step) to force a re-scroll.
+    @State private var scrollNonce = 0
 
     init(fileURL: URL?, initialText: String,
          regenerate: (@MainActor () async throws -> String)? = nil,
@@ -182,12 +187,20 @@ private struct NotesViewerView: View {
             if isEditable {
                 FindableTextEditor(text: $text, isEditable: true)
             } else {
-                VStack(spacing: 0) {
-                    if showFind { findBar; Divider() }
-                    MarkdownReadView(markdown: text, interactive: fileURL != nil,
-                                     onToggleTask: toggleTask,
-                                     matchedBlocks: showFind ? Set(findMatches) : [],
-                                     activeBlock: showFind ? activeMatchBlock : outlineTarget)
+                HStack(spacing: 0) {
+                    if showOutline && !outline.isEmpty {
+                        outlineSidebar
+                        Divider()
+                    }
+                    VStack(spacing: 0) {
+                        if showFind { findBar; Divider() }
+                        MarkdownReadView(markdown: text, interactive: fileURL != nil,
+                                         onToggleTask: toggleTask,
+                                         onChapterTap: jumpToTimestamp,
+                                         scrollTarget: showFind ? activeMatchBlock : outlineTarget,
+                                         scrollNonce: scrollNonce,
+                                         highlightQuery: showFind ? findQuery : "")
+                    }
                 }
                 .background(
                     Button("") { if !isEditable { showFind = true } }
@@ -198,6 +211,8 @@ private struct NotesViewerView: View {
             if isDraft { draftToolbar } else { fileToolbar }
         }
         .frame(minWidth: 460, minHeight: 380)
+        // Focus the find field whenever find opens (footer icon, ⌘F, or toggle).
+        .onChange(of: showFind) { _, on in findFocused = on }
     }
 
     // MARK: Preview find + outline
@@ -218,24 +233,103 @@ private struct NotesViewerView: View {
         return findMatches[min(findIndex, findMatches.count - 1)]
     }
 
-    /// Headings (≤ H3) and timestamped chapter bullets, as jump targets.
-    private var outline: [(idx: Int, title: String, indent: Int)] {
-        previewBlocks.enumerated().compactMap { i, b in
+    /// Headings (≤ H3) and timestamped chapter bullets, as jump targets for the
+    /// table-of-contents sidebar. `isChapter` marks the timestamped bullets so
+    /// the sidebar can badge them with a clock. A chapter's `idx` points at the
+    /// matching transcript line (same `[timestamp]`), not the bullet in the
+    /// Chapters list — so clicking it jumps into the conversation.
+    private var outline: [(idx: Int, title: String, indent: Int, isChapter: Bool)] {
+        let stamps = timestampedTranscriptBlocks
+        return previewBlocks.enumerated().compactMap { i, b in
             switch b {
             case .heading(let level, let t) where level <= 3:
-                return (i, t, level - 1)
-            case .bullet(let t, _, _)
-                where t.range(of: #"^\[\d{1,2}:\d{2}(:\d{2})?\]"#, options: .regularExpression) != nil:
-                return (i, t, 1)
+                return (i, t, level - 1, false)
+            case .bullet(let t, _, _) where MarkdownParse.leadingTimestampSeconds(t) != nil:
+                let target = chapterTarget(for: t, in: stamps) ?? i
+                return (target, t, 1, true)
             default:
                 return nil
             }
         }
     }
 
+    /// Transcript body lines (paragraphs) that begin with a `[timestamp]`,
+    /// paired with their block index — the candidates a chapter can jump to.
+    /// Chapter-list bullets are excluded (they're `.bullet`, not `.paragraph`).
+    private var timestampedTranscriptBlocks: [(secs: Int, idx: Int)] {
+        previewBlocks.enumerated().compactMap { i, b in
+            guard case .paragraph(let t) = b,
+                  let s = MarkdownParse.leadingTimestampSeconds(t) else { return nil }
+            return (s, i)
+        }
+    }
+
+    /// The transcript block for a chapter bullet: the last line at or before the
+    /// chapter's timestamp (exact match when timestamps align, as they usually
+    /// do), else the first line.
+    private func chapterTarget(for bulletText: String,
+                               in stamps: [(secs: Int, idx: Int)]) -> Int? {
+        guard let secs = MarkdownParse.leadingTimestampSeconds(bulletText), !stamps.isEmpty else { return nil }
+        return (stamps.last { $0.secs <= secs } ?? stamps.first)?.idx
+    }
+
+    /// Jump the reading view to the transcript line at (or just before) a
+    /// timestamp in seconds — used when a rendered chapter bullet is tapped.
+    private func jumpToTimestamp(_ secs: Int) {
+        let stamps = timestampedTranscriptBlocks
+        guard let idx = (stamps.last { $0.secs <= secs } ?? stamps.first)?.idx else { return }
+        jump(to: idx)
+    }
+
     private func stepMatch(_ delta: Int) {
         guard !findMatches.isEmpty else { return }
         findIndex = (findIndex + delta + findMatches.count) % findMatches.count
+        scrollNonce += 1
+    }
+
+    /// Jump the reading view to an outline entry (and re-scroll on repeat taps).
+    private func jump(to idx: Int) {
+        outlineTarget = idx
+        scrollNonce += 1
+    }
+
+    /// A table-of-contents sidebar — sections (headings) and chapters
+    /// (timestamped bullets) as click-to-jump rows, indented by level.
+    private var outlineSidebar: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Contents")
+                    .font(.system(size: 10, weight: .semibold)).tracking(0.6)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 5)
+                ForEach(outline, id: \.idx) { item in
+                    Button {
+                        jump(to: item.idx)
+                    } label: {
+                        HStack(spacing: 6) {
+                            if item.isChapter {
+                                Image(systemName: "clock").font(.system(size: 9))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(item.title)
+                                .font(.system(size: 12,
+                                               weight: item.indent == 0 ? .semibold : .regular))
+                                .lineLimit(1).truncationMode(.tail)
+                                .foregroundStyle(item.indent == 0 ? .primary : .secondary)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.leading, CGFloat(item.indent) * 12 + 12)
+                        .padding(.trailing, 10).padding(.vertical, 3)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 210)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var findBar: some View {
@@ -243,8 +337,9 @@ private struct NotesViewerView: View {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
             TextField("Find in note", text: $findQuery)
                 .textFieldStyle(.roundedBorder).frame(maxWidth: 240)
+                .focused($findFocused)
                 .onSubmit { stepMatch(1) }
-                .onChange(of: findQuery) { _, _ in findIndex = 0 }
+                .onChange(of: findQuery) { _, _ in findIndex = 0; scrollNonce += 1 }
             if !findQuery.isEmpty {
                 Text(findMatches.isEmpty ? "0/0" : "\(min(findIndex, findMatches.count - 1) + 1)/\(findMatches.count)")
                     .font(.caption).monospacedDigit().foregroundStyle(.secondary)
@@ -265,21 +360,31 @@ private struct NotesViewerView: View {
     /// Classifies a generated draft from its window title so the header can
     /// show the right icon, tint, and label.
     private enum DraftKind {
-        case summary, followUp, generic
+        case summary, followUp, packet, generic
         var icon: String {
-            switch self { case .summary: return "sparkles"; case .followUp: return "envelope"; case .generic: return "doc.text" }
+            switch self {
+            case .summary: return "sparkles"; case .followUp: return "envelope"
+            case .packet: return "shippingbox.fill"; case .generic: return "doc.text"
+            }
         }
         var tint: Color {
-            switch self { case .summary: return .purple; case .followUp: return .blue; case .generic: return .gray }
+            switch self {
+            case .summary: return .purple; case .followUp: return .blue
+            case .packet: return .teal; case .generic: return .gray
+            }
         }
         var label: String {
-            switch self { case .summary: return "AI Summary"; case .followUp: return "Follow-up Draft"; case .generic: return "Draft" }
+            switch self {
+            case .summary: return "AI Summary"; case .followUp: return "Follow-up Draft"
+            case .packet: return "Follow-Up Packet"; case .generic: return "Draft"
+            }
         }
     }
 
     private var draftKind: DraftKind {
         let t = (documentTitle ?? "").lowercased()
         if t.hasPrefix("summary") { return .summary }
+        if t.hasPrefix("follow-up packet") { return .packet }
         if t.hasPrefix("follow-up") || t.hasPrefix("followup") { return .followUp }
         return .generic
     }
@@ -357,50 +462,47 @@ private struct NotesViewerView: View {
     // MARK: File-note toolbar
 
     private var fileToolbar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
+            // Mode toggle.
             Button {
                 isEditable.toggle()
                 status = isEditable ? "Editing" : "Reading"
             } label: {
-                Label(isEditable ? "Preview" : "Edit", systemImage: isEditable ? "eye" : "pencil")
+                Image(systemName: isEditable ? "eye" : "pencil")
             }
             .help(isEditable ? "Switch back to the rendered preview"
                              : "Edit the raw Markdown (with find & replace)")
 
-            // Preview-only: jump-to outline and find.
+            // Preview-only navigation: contents sidebar and find.
             if !isEditable {
                 if !outline.isEmpty {
-                    Menu {
-                        ForEach(outline, id: \.idx) { item in
-                            Button(String(repeating: "   ", count: item.indent) + item.title) {
-                                outlineTarget = item.idx
-                            }
-                        }
-                    } label: { Label("Outline", systemImage: "list.bullet.indent") }
-                    .menuStyle(.borderlessButton).fixedSize()
-                    .help("Jump to a chapter or section")
+                    Button { showOutline.toggle() } label: { Image(systemName: "sidebar.left") }
+                        .help("Show the table of contents — sections and chapters")
                 }
-                Button { showFind.toggle() } label: {
-                    Label("Find", systemImage: "magnifyingglass")
-                }
-                .help("Find in this note (⌘F)")
+                Button { showFind.toggle() } label: { Image(systemName: "magnifyingglass") }
+                    .help("Find in this note (⌘F)")
             }
 
-            Button { copyToPasteboard() } label: {
-                Label(isEditable ? "Copy Markdown" : "Copy", systemImage: "doc.on.doc")
-            }
-            .help(isEditable ? "Copy the raw Markdown"
-                             : "Copy formatted text — pastes with styling into Mail, docs, etc.")
+            Divider().frame(height: 16)
 
-            Button { exportPDF() } label: { Label("Export PDF", systemImage: "arrow.down.doc") }
+            // Share / export.
+            Button { copyToPasteboard() } label: { Image(systemName: "doc.on.doc") }
+                .help(isEditable ? "Copy the raw Markdown"
+                                 : "Copy formatted text — pastes with styling into Mail, docs, etc.")
 
+            // AI actions — the primary reason to open a note.
             if canSummarize {
-                Button { summarize() } label: { Label("Summarize", systemImage: "sparkles") }
+                Button { summarize() } label: { Image(systemName: "sparkles") }
                     .disabled(summarizing)
                     .help("Open a short AI summary of this note in a new window")
             }
             if canDraftFollowUp {
                 Menu {
+                    Section("One-click") {
+                        Button { requestPacket() } label: {
+                            Label("Follow-Up Packet", systemImage: "shippingbox.fill")
+                        }
+                    }
                     let suggested = suggestedDrafts(for: text)
                     if !suggested.isEmpty {
                         Section("Suggested") {
@@ -423,8 +525,9 @@ private struct NotesViewerView: View {
                     Divider()
                     Button("Auto — match meeting type") { draftAutoFollowUp() }
                 } label: {
-                    Label("Draft…", systemImage: "doc.badge.plus")
+                    Label("Draft", systemImage: "doc.badge.plus")
                 }
+                .fixedSize()
                 .disabled(drafting)
                 .help("Draft a document from this meeting — minutes, follow-up email, status update, and more")
             }
@@ -432,11 +535,14 @@ private struct NotesViewerView: View {
             Spacer()
 
             if !status.isEmpty {
-                Text(status).font(.caption).foregroundColor(.secondary)
+                Text(status).font(.caption).foregroundColor(.secondary).lineLimit(1)
             }
 
+            // Everything secondary folds into the overflow menu.
             Menu {
+                Button { exportPDF() } label: { Label("Export PDF…", systemImage: "arrow.down.doc") }
                 if let fileURL {
+                    Divider()
                     Button { NSWorkspace.shared.open(fileURL) } label: { Label("Open in Default App", systemImage: "arrow.up.forward.app") }
                     Button { NSWorkspace.shared.activateFileViewerSelecting([fileURL]) } label: { Label("Reveal in Finder", systemImage: "folder") }
                 }
@@ -450,7 +556,17 @@ private struct NotesViewerView: View {
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(!isDirty || !isEditable)
         }
-        .padding(10)
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .confirmationDialog("Generate Follow-Up Packet?", isPresented: $showPacketConfirm, titleVisibility: .visible) {
+            Button("Generate") { generatePacket() }
+            Button("Generate & Don't Ask Again") {
+                AppSettings.shared.packetConfirmBeforeRun = false
+                generatePacket()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This uses cloud AI to generate \(packetSectionsSummary) from this meeting — several requests in one go. You can change what's included, or turn off this prompt, in Settings → Meetings → Draft Templates.")
+        }
     }
 
     /// Quick AI recap of the current note, opened in its own viewer window
@@ -511,21 +627,30 @@ private struct NotesViewerView: View {
     /// update, …). Each kind caches independently, so drafting one never
     /// clobbers another for the same meeting.
     private func draftDoc(_ doc: DraftDoc) {
-        guard let fileURL, let transcript = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+        guard let fileURL, let transcript = fileURL.readText() else { return }
         let base = fileURL.deletingPathExtension().lastPathComponent
-        let guidance = doc.guidance
         let title = doc.displayName
+        // The POC plan builds on the project's tracked success criteria (same
+        // grounding the Follow-Up Packet uses) rather than re-inventing them.
+        var guidance = doc.guidance
+        var snapshot = ""
+        if doc.isPocPlan {
+            let criteria = CatalogStore.shared.linkChain(forFileURL: fileURL)
+                .criteria.map { ($0.text, $0.status.label) }
+            (guidance, snapshot) = PocPlanGrounding.apply(baseGuidance: guidance, criteria: criteria)
+        }
+        let finalGuidance = guidance, prefix = snapshot
         drafting = true
         status = "Drafting…"
         Task { @MainActor in
             defer { drafting = false }
             do {
-                let draft = try await TextPolisher().draftDocument(transcript: transcript, guidance: guidance)
+                let draft = try await TextPolisher().draftDocument(transcript: transcript, guidance: finalGuidance)
                 status = ""
                 NotesViewerWindowController.present(
                     draftTitle: "\(title) — \(base)",
-                    text: draft,
-                    regenerate: { try await TextPolisher().draftDocument(transcript: transcript, guidance: guidance, forceRefresh: true) })
+                    text: prefix + draft,
+                    regenerate: { prefix + (try await TextPolisher().draftDocument(transcript: transcript, guidance: finalGuidance, forceRefresh: true)) })
             } catch {
                 status = "Draft failed: \(error.localizedDescription)"
             }
@@ -535,7 +660,7 @@ private struct NotesViewerView: View {
     /// Auto follow-up: shape the draft to the note's recorded meeting type when
     /// present, else the type inferred from its headings, else the default.
     private func draftAutoFollowUp() {
-        guard let fileURL, let transcript = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+        guard let fileURL, let transcript = fileURL.readText() else { return }
         let base = fileURL.deletingPathExtension().lastPathComponent
         drafting = true
         status = "Drafting…"
@@ -557,22 +682,79 @@ private struct NotesViewerView: View {
         }
     }
 
+    /// The configured packet sections, as a human-readable phrase for the confirm.
+    private var packetSectionsSummary: String {
+        let s = AppSettings.shared
+        let parts: [String] = s.packetSectionIDs.map { id in
+            switch id {
+            case "followUpEmail":  return "a follow-up email"
+            case "pocPlan":        return "an updated POC plan"
+            case "actionItemList": return "action items"
+            default:               return s.allDraftDocs.first { $0.id == id }?.displayName.lowercased() ?? id
+            }
+        }
+        switch parts.count {
+        case 0: return "no sections (add some in Settings)"
+        case 1: return parts[0]
+        case 2: return "\(parts[0]) and \(parts[1])"
+        default: return parts.dropLast().joined(separator: ", ") + ", and " + parts.last!
+        }
+    }
+
+    /// Entry point for the packet — confirm cloud-AI usage first (unless the
+    /// user turned the prompt off), since it fires several requests at once.
+    private func requestPacket() {
+        if AppSettings.shared.packetConfirmBeforeRun {
+            showPacketConfirm = true
+        } else {
+            generatePacket()
+        }
+    }
+
+    /// One-click Follow-Up Packet: a client follow-up email, an updated POC
+    /// plan, and the action items, assembled into one document (respecting the
+    /// per-section toggles in Settings) and opened in its own viewer window.
+    private func generatePacket() {
+        guard let fileURL else { return }
+        let base = fileURL.deletingPathExtension().lastPathComponent
+        drafting = true
+        status = "Assembling packet…"
+        Task { @MainActor in
+            defer { drafting = false }
+            let packet = await FollowUpPacket.generate(fileURL: fileURL)
+            status = ""
+            NotesViewerWindowController.present(
+                draftTitle: "Follow-Up Packet — \(base)",
+                text: packet,
+                regenerate: { await FollowUpPacket.generate(fileURL: fileURL, forceRefresh: true) })
+        }
+    }
+
+    /// Catalog context for the PDF — the note's linked organisation / project
+    /// (resolved as one chain so they stay consistent) and the project's POC
+    /// criteria (which live on the project, not the note).
+    private func pdfCatalogContext()
+        -> (org: String?, project: String?, poc: [MarkdownPDF.POCItem]) {
+        guard let fileURL else { return (nil, nil, []) }
+        let c = CatalogStore.shared.linkChain(forFileURL: fileURL)
+        return (c.org, c.project,
+                c.criteria.map { .init(text: $0.text, status: $0.status.label) })
+    }
+
     /// Render the current Markdown to a paginated PDF and let the user save it.
     private func exportPDF() {
         let base = fileURL?.deletingPathExtension().lastPathComponent ?? "Note"
-        guard let pdf = MarkdownPDF.data(from: text, title: base) else {
+        let ctx = pdfCatalogContext()
+        guard let pdf = MarkdownPDF.data(from: text, title: base,
+                                         org: ctx.org,
+                                         project: ctx.project, poc: ctx.poc) else {
             status = "Export failed: could not render PDF"; return
         }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.pdf]
-        panel.nameFieldStringValue = base + ".pdf"
-        panel.directoryURL = fileURL?.deletingLastPathComponent() ?? AppSettings.shared.notesFolder
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try pdf.write(to: url)
-            status = "Exported \(url.lastPathComponent)"
-        } catch {
-            status = "Export failed: \(error.localizedDescription)"
+        if let s = FilePanels.save(defaultName: base + ".pdf", contentTypes: [.pdf],
+                                   directory: fileURL?.deletingLastPathComponent() ?? AppSettings.shared.notesFolder,
+                                   successVerb: "Exported", failVerb: "Export",
+                                   write: { try pdf.write(to: $0) }) {
+            status = s
         }
     }
 
@@ -582,28 +764,12 @@ private struct NotesViewerView: View {
     ///   plain-text fallback, so pasting into Mail / Gmail / docs keeps the
     ///   headings, bold, and bullets — and pasting into a code field stays clean.
     private func copyToPasteboard() {
-        let pb = NSPasteboard.general
         if isEditable {
-            pb.clearContents()
-            pb.setString(text, forType: .string)
+            Clipboard.plain(text)          // raw Markdown, verbatim
             status = "Copied Markdown"
             return
         }
-        if let attr = try? NSAttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .full,
-                           failurePolicy: .returnPartiallyParsedIfPossible)) {
-            pb.clearContents()
-            pb.declareTypes([.rtf, .string], owner: nil)
-            if let rtf = attr.rtf(from: NSRange(location: 0, length: attr.length),
-                                  documentAttributes: [:]) {
-                pb.setData(rtf, forType: .rtf)
-            }
-            pb.setString(attr.string, forType: .string)   // markdown-stripped plain text
-        } else {
-            pb.clearContents()
-            pb.setString(text, forType: .string)
-        }
+        Clipboard.markdown(text)
         status = "Copied"
     }
 
@@ -641,16 +807,10 @@ private struct NotesViewerView: View {
     }
 
     private func saveAs() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "Follow-up.md"
-        panel.directoryURL = AppSettings.shared.notesFolder
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            status = "Saved to \(url.lastPathComponent)"
-        } catch {
-            status = "Save failed: \(error.localizedDescription)"
+        if let s = FilePanels.save(defaultName: "Follow-up.md", contentTypes: [.plainText],
+                                   successVerb: "Saved to",
+                                   write: { try text.write(to: $0, atomically: true, encoding: .utf8) }) {
+            status = s
         }
     }
 }
@@ -666,10 +826,18 @@ private struct MarkdownReadView: View {
     /// When true, task checkboxes are tappable and toggle the backing file.
     var interactive: Bool = false
     var onToggleTask: (Int) -> Void = { _ in }
-    /// Block indices to highlight (search matches); the active match is tinted
-    /// more strongly and scrolled into view.
-    var matchedBlocks: Set<Int> = []
-    var activeBlock: Int? = nil
+    /// Called when a timestamped chapter bullet is tapped (seconds) — the parent
+    /// jumps to the matching transcript line.
+    var onChapterTap: (Int) -> Void = { _ in }
+    /// The block to reveal (find match target / outline jump) and tint as the
+    /// active match.
+    var scrollTarget: Int? = nil
+    /// Bumped by the parent on every jump request; scrolling keys off this so a
+    /// repeat tap on the same target still re-scrolls.
+    var scrollNonce: Int = 0
+    /// The find query — every occurrence is highlighted inline (word-level, not
+    /// whole-line); empty when find is closed.
+    var highlightQuery: String = ""
 
     /// Comfortable reading measure — long notes shouldn't stretch full width.
     private let maxTextWidth: CGFloat = 720
@@ -681,7 +849,7 @@ private struct MarkdownReadView: View {
                     let blocks = MarkdownParse.blocks(markdown)
                     ForEach(Array(blocks.enumerated()), id: \.offset) { idx, block in
                         row(block, previous: idx > 0 ? blocks[idx - 1] : nil,
-                            matched: matchedBlocks.contains(idx), active: activeBlock == idx)
+                            active: scrollTarget == idx)
                             .id(idx)
                     }
                 }
@@ -692,8 +860,8 @@ private struct MarkdownReadView: View {
                 .padding(.vertical, 22)
             }
             .background(Color(nsColor: .textBackgroundColor))
-            .onChange(of: activeBlock) { _, target in
-                guard let target else { return }
+            .onChange(of: scrollNonce) { _, _ in
+                guard let target = scrollTarget else { return }
                 withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .center) }
             }
         }
@@ -701,26 +869,27 @@ private struct MarkdownReadView: View {
 
     @ViewBuilder
     private func row(_ block: MarkdownParse.Block, previous: MarkdownParse.Block?,
-                     matched: Bool, active: Bool) -> some View {
+                     active: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // Rhythm: generous space above a new section heading, tight between
             // consecutive list items, comfortable otherwise.
             Spacer().frame(height: topGap(for: block, previous: previous))
-            content(block)
-                .padding(.horizontal, matched ? 4 : 0)
-                .background(
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(active ? Color.accentColor.opacity(0.28)
-                              : matched ? Color.yellow.opacity(0.28) : Color.clear))
+            content(block, active: active)
         }
     }
 
+    /// Inline styling with the find query highlighted, capturing the block's
+    /// active state so the current match tints more strongly.
+    private func styled(_ s: String, _ active: Bool) -> AttributedString {
+        MarkdownParse.inline(s, highlight: highlightQuery, active: active)
+    }
+
     @ViewBuilder
-    private func content(_ block: MarkdownParse.Block) -> some View {
+    private func content(_ block: MarkdownParse.Block, active: Bool) -> some View {
         switch block {
         case .heading(let level, let text):
             VStack(alignment: .leading, spacing: 5) {
-                Text(MarkdownParse.inline(text))
+                Text(styled(text, active))
                     .font(headingFont(level))
                     .foregroundStyle(.primary)
                     .textCase(level >= 4 ? .uppercase : nil)
@@ -731,11 +900,11 @@ private struct MarkdownReadView: View {
 
         case .paragraph(let text):
             if MarkdownParse.isBoldLabel(text) {
-                Text(MarkdownParse.inline(text))
+                Text(styled(text, active))
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.primary)
             } else {
-                Text(MarkdownParse.inline(text))
+                Text(styled(text, active))
                     .font(.system(size: 14))
                     .lineSpacing(4)
                     .foregroundStyle(.primary.opacity(0.9))
@@ -745,10 +914,27 @@ private struct MarkdownReadView: View {
             if marker == nil, MarkdownParse.isBoldLabel(text) {
                 // A bullet that's just a bold label (e.g. "**Action Items:**")
                 // reads as a sub-heading, not a list item — so drop the dot.
-                Text(MarkdownParse.inline(text))
+                Text(styled(text, active))
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.primary)
                     .padding(.leading, CGFloat(depth) * 18)
+            } else if let secs = MarkdownParse.leadingTimestampSeconds(text) {
+                // A timestamped chapter bullet — a clickable jump into the
+                // transcript at that moment.
+                Button { onChapterTap(secs) } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 9) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 11)).foregroundStyle(Color.accentColor)
+                            .frame(width: 16, alignment: .trailing)
+                        Text(styled(text, active)).font(.system(size: 14)).lineSpacing(3)
+                            .foregroundStyle(Color.accentColor)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Jump to this moment in the transcript")
+                .padding(.leading, CGFloat(depth) * 18)
             } else {
                 HStack(alignment: .firstTextBaseline, spacing: 9) {
                     if let marker {
@@ -759,7 +945,7 @@ private struct MarkdownReadView: View {
                             .frame(width: 5, height: 5)
                             .padding(.top, 6).frame(width: 16, alignment: .trailing)
                     }
-                    Text(MarkdownParse.inline(text)).font(.system(size: 14)).lineSpacing(3)
+                    Text(styled(text, active)).font(.system(size: 14)).lineSpacing(3)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.leading, CGFloat(depth) * 18)
@@ -777,7 +963,7 @@ private struct MarkdownReadView: View {
                 .buttonStyle(.plain)
                 .disabled(!interactive)
                 .help(interactive ? (done ? "Mark as not done" : "Mark as done") : "")
-                Text(MarkdownParse.inline(text))
+                Text(styled(text, active))
                     .font(.system(size: 14)).lineSpacing(3)
                     .foregroundStyle(done ? Color.secondary : Color.primary.opacity(0.9))
                     .strikethrough(done, color: Color.secondary.opacity(0.6))
@@ -788,7 +974,7 @@ private struct MarkdownReadView: View {
         case .quote(let text):
             HStack(spacing: 10) {
                 RoundedRectangle(cornerRadius: 2).fill(Color.accentColor.opacity(0.5)).frame(width: 3)
-                Text(MarkdownParse.inline(text)).font(.system(size: 14).italic())
+                Text(styled(text, active)).font(.system(size: 14).italic())
                     .foregroundStyle(.secondary)
             }
             .padding(.vertical, 6).padding(.trailing, 8)
@@ -815,7 +1001,7 @@ private struct MarkdownReadView: View {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 7) {
                     GridRow {
                         ForEach(Array(headers.enumerated()), id: \.offset) { _, h in
-                            Text(MarkdownParse.inline(h))
+                            Text(styled(h, active))
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(.primary)
                         }
@@ -824,7 +1010,7 @@ private struct MarkdownReadView: View {
                     ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                         GridRow {
                             ForEach(0..<cols, id: \.self) { c in
-                                Text(MarkdownParse.inline(c < row.count ? row[c] : ""))
+                                Text(styled(c < row.count ? row[c] : "", active))
                                     .font(.system(size: 13))
                                     .foregroundStyle(.primary.opacity(0.9))
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -922,17 +1108,10 @@ private struct FrontMatterView: View {
     /// Render ISO-8601 timestamps (the front-matter `date:` field) as a
     /// friendly "03 Jul 2026 at 2:30 PM"; leave everything else untouched.
     static func pretty(_ value: String) -> String {
-        guard let date = isoDate(value) else { return value }
+        guard let date = DateDisplay.parseISO(value) else { return value }
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 
-    private static func isoDate(_ s: String) -> Date? {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        if let d = f.date(from: s) { return d }
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f.date(from: s)
-    }
 
     @ViewBuilder
     private func chip(_ key: String, _ value: String) -> some View {
@@ -942,41 +1121,8 @@ private struct FrontMatterView: View {
                 .font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
             Text(value).font(.system(size: 11, weight: .medium))
         }
-        .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(Capsule().fill(Color.accentColor.opacity(0.14)))
         .foregroundStyle(.primary.opacity(0.85))
-    }
-}
-
-/// A minimal wrapping layout for chip rows (macOS 13+ `Layout`).
-private struct FlowLayout: Layout {
-    var spacing: CGFloat = 6
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
-            if x + size.width > maxWidth, x > 0 {
-                x = 0; y += rowHeight + spacing; rowHeight = 0
-            }
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
-        return CGSize(width: maxWidth == .infinity ? x : maxWidth, height: y + rowHeight)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
-        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
-            if x + size.width > bounds.maxX, x > bounds.minX {
-                x = bounds.minX; y += rowHeight + spacing; rowHeight = 0
-            }
-            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
+        .pillBackground(.accentColor, opacity: 0.14, hPad: 8, vPad: 3)
     }
 }
 
@@ -993,6 +1139,23 @@ private enum MarkdownParse {
         case rule
         case frontMatter(String)
         case table(headers: [String], rows: [[String]])
+    }
+
+    /// Seconds for a leading `[H:MM]` / `[H:MM:SS]` timestamp, else nil.
+    /// Tolerates leading emphasis markers, since transcript lines bold the
+    /// timestamp (e.g. `**[11:21:02]** _Them_: …`).
+    static func leadingTimestampSeconds(_ s: String) -> Int? {
+        var t = s.trimmingCharacters(in: .whitespaces)
+        while let f = t.first, f == "*" || f == "_" { t.removeFirst() }
+        guard t.hasPrefix("["), let close = t.firstIndex(of: "]") else { return nil }
+        let nums = t[t.index(after: t.startIndex)..<close].split(separator: ":").map { Int($0) }
+        guard !nums.isEmpty, nums.allSatisfy({ $0 != nil }) else { return nil }
+        let v = nums.compactMap { $0 }
+        switch v.count {
+        case 2: return v[0] * 60 + v[1]
+        case 3: return v[0] * 3600 + v[1] * 60 + v[2]
+        default: return nil
+        }
     }
 
     /// The searchable / outline plain text of a block.
@@ -1017,6 +1180,23 @@ private enum MarkdownParse {
             markdown: s,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(s)
+    }
+
+    /// Inline styling with every occurrence of `highlight` given a background
+    /// tint — so find highlights the matched word/phrase itself, not the whole
+    /// line. The active block's matches are tinted more strongly.
+    static func inline(_ s: String, highlight: String, active: Bool) -> AttributedString {
+        var attr = inline(s)
+        let needle = highlight.trimmingCharacters(in: .whitespaces)
+        guard !needle.isEmpty else { return attr }
+        let tint: Color = active ? .accentColor.opacity(0.45) : .yellow.opacity(0.5)
+        var from = attr.startIndex
+        while from < attr.endIndex,
+              let r = attr[from...].range(of: needle, options: .caseInsensitive) {
+            attr[r].backgroundColor = tint
+            from = r.upperBound
+        }
+        return attr
     }
 
     static func blocks(_ md: String) -> [Block] {
@@ -1078,7 +1258,16 @@ private enum MarkdownParse {
                 i += 1; continue
             }
             if let task = matchTask(line) {
-                flushPara(); out.append(.task(done: task.done, text: task.text, line: i, depth: depth)); i += 1; continue
+                flushPara()
+                // A "no items" placeholder the AI sometimes emits as a checkbox
+                // (e.g. "- [ ] None") shouldn't render as a tickable pending
+                // task — show it as a plain muted bullet instead.
+                if NotesLibrary.isNonePlaceholder(task.text) {
+                    out.append(.bullet(text: task.text, marker: nil, depth: depth))
+                } else {
+                    out.append(.task(done: task.done, text: task.text, line: i, depth: depth))
+                }
+                i += 1; continue
             }
             if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
                 flushPara()

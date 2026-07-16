@@ -21,6 +21,7 @@ final class AppSettings: ObservableObject {
         static let polishingModel         = "api.polishingModel"
         static let fastModel              = "api.fastModel"
         static let pttKeyCode             = "dictation.pttKeyCode"
+        static let pttActivation          = "dictation.pttActivation"
         static let preferBuiltInMic       = "audio.preferBuiltInMic"
         static let meetingMicThreshold    = "meeting.micThresholdDBFS"
         static let systemAudioThreshold   = "meeting.systemAudioThresholdDBFS"
@@ -70,6 +71,8 @@ final class AppSettings: ObservableObject {
         static let voiceCommandRules      = "dictation.voiceCommandRules"
         static let streamingDictation     = "dictation.streaming"
         static let streamChunkSeconds     = "dictation.streamChunkSeconds"
+        static let skipSilentDictation    = "dictation.skipSilent"
+        static let dictationSilenceThreshold = "dictation.silenceThreshold"
         static let maxSpeakers            = "meeting.maxSpeakers"
         static let speakerSensitivity     = "meeting.speakerSensitivity"
         static let liveBriefInterval      = "meeting.liveBriefInterval"
@@ -92,17 +95,36 @@ final class AppSettings: ObservableObject {
         static let autoTagging            = "meeting.autoTagging"
         static let errorNotifications     = "diagnostics.errorNotifications"
         static let uiDateFormat           = "ui.dateFormat"
+        static let pdfPaperSize           = "export.pdfPaperSize"
         static let browserTabDetection    = "dictation.browserTabDetection"
         static let domainStyleRules       = "dictation.domainStyleRules"
         static let saveDictations         = "dictation.saveToFiles"
         static let dictationsFolderPath   = "dictation.folderPath"
         static let dictationOrganization  = "dictation.organization"
+        static let audioImportMaxMB       = "import.maxMB"
+        static let meetingDetectInterval  = "meeting.detectInterval"
+        static let liveBriefMinGrowth     = "meeting.liveBriefMinGrowth"
+        static let transcriptionTimeout   = "transcription.requestTimeout"
+        static let importTranscriptionTimeout = "transcription.importTimeout"
+        static let meetingEndQuietPolls   = "meeting.endQuietPolls"
+        static let summaryContextChars    = "ai.summaryContextChars"
+        static let pttTapThreshold        = "dictation.pttTapThreshold"
         static let priceAudioPerHour      = "cost.audioPerHour"
         static let priceInputPerMTok      = "cost.inputPerMTok"
         static let priceOutputPerMTok     = "cost.outputPerMTok"
         static let monthlyBudgetUSD       = "cost.monthlyBudgetUSD"
+        static let webhookEnabled         = "integrations.webhookEnabled"
+        static let webhookURL             = "integrations.webhookURL"
+        static let scriptHookEnabled      = "integrations.scriptHookEnabled"
+        static let scriptHookPath         = "integrations.scriptHookPath"
+        static let packetIncludeEmail     = "packet.includeEmail"
+        static let packetIncludePOC       = "packet.includePOC"
+        static let packetIncludeActions   = "packet.includeActions"   // legacy — migrated into packetSections
+        static let packetConfirmBeforeRun = "packet.confirmBeforeRun"
+        static let packetSections         = "packet.sections"
 
         static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
+                          pttActivation,
                           preferBuiltInMic,
                           meetingMicThreshold, systemAudioThreshold,
                           silenceDebounce, maxSegmentSeconds, echoGateWindow,
@@ -111,24 +133,31 @@ final class AppSettings: ObservableObject {
                           summariesEnabled, actionItemsEnabled,
                           structuredExtraction, extractKeyFields, extractUnanswered, watchlistKeywords, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, liveAssistantEnabled, meetingPrepCard,
                           notifyOnMeetingEnd, frontMatterEnabled,
-                          diarizationEnabled, offlineFallback, transcriptionLanguage,
+                          diarizationEnabled, offlineFallback, preferOnDeviceAI, transcriptionLanguage,
+                          digestEnabled, digestFrequency, digestHour, digestWeekday, staleRelationshipDays, lastDigestDay,
                           vocabulary, replacements, appProfiles,
                           dictationHistoryOn, dictationHistoryLimit,
                           captionLingerSeconds, retryMaxAttempts, retryIntervalSeconds,
                           notesOrganization, meetingAutoDetect,
                           voiceCommandsEnabled, voiceCommandRules, streamingDictation,
-                          streamChunkSeconds, maxSpeakers, speakerSensitivity,
+                          streamChunkSeconds, skipSilentDictation, dictationSilenceThreshold,
+                          maxSpeakers, speakerSensitivity,
                           liveBriefInterval, aiCacheLimit,
                           searchDepth, meetingTemplate,
                           customTemplateSections, customTemplateFollowUp, userTemplates,
                           dictationStyleOverrides, userDictationStyles, defaultDictationStyle,
                           quickNotesFolderPath, quickNoteNotify,
                           localOnlyMode, redactionEnabled, redactEmails, redactPhones, redactNumbers,
-                          autoTagging, errorNotifications, uiDateFormat,
+                          autoTagging, errorNotifications, uiDateFormat, pdfPaperSize,
                           browserTabDetection, domainStyleRules,
-                          saveDictations, dictationsFolderPath, dictationOrganization,
+                          saveDictations, dictationsFolderPath, dictationOrganization, audioImportMaxMB,
+                          meetingDetectInterval, liveBriefMinGrowth, transcriptionTimeout,
+                          importTranscriptionTimeout, meetingEndQuietPolls, summaryContextChars, pttTapThreshold,
                           priceAudioPerHour, priceInputPerMTok, priceOutputPerMTok,
-                          monthlyBudgetUSD]
+                          monthlyBudgetUSD,
+                          webhookEnabled, webhookURL, scriptHookEnabled, scriptHookPath,
+                          packetIncludeEmail, packetIncludePOC, packetIncludeActions,
+                          packetConfirmBeforeRun, packetSections]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -138,6 +167,7 @@ final class AppSettings: ObservableObject {
         static let polishingModel                  = "meta-llama/llama-4-scout-17b-16e-instruct"  // 500K TPD / 30K TPM — avoids the 70B daily cap
         static let fastModel                       = "llama-3.1-8b-instant"
         static let pttKeyCode: Int                 = 61     // Right Option
+        static let pttActivation                   = "toggle" // hold | tapLock | toggle
         static let preferBuiltInMic                = false  // use the system default input
         static let meetingMicThreshold: Float      = -40.0
         static let systemAudioThreshold: Float     = -50.0
@@ -175,6 +205,14 @@ final class AppSettings: ObservableObject {
         static let retryIntervalSeconds: Double    = 20.0
         static let notesOrganization               = NotesOrganization.byDay
         static let dictationOrganization           = NotesOrganization.byMonth
+        static let audioImportMaxMB: Int           = 50
+        static let meetingDetectInterval: Double   = 3.0    // auto-detect poll seconds
+        static let liveBriefMinGrowth: Int         = 350    // chars of new transcript before a brief refresh
+        static let transcriptionTimeout: Int       = 30     // seconds for a Groq STT request (live chunk)
+        static let importTranscriptionTimeout: Int = 120    // seconds for a whole-file STT request (import)
+        static let meetingEndQuietPolls: Int       = 2      // consecutive quiet polls before meeting-end
+        static let summaryContextChars: Int        = 24000  // char budget fed to summary/extraction prompts
+        static let pttTapThreshold: Double         = 0.4    // seconds: below = tap-lock, above = hold
         static let meetingAutoDetect               = true
         static let voiceCommandsEnabled            = true
         static let voiceCommandRules = """
@@ -186,6 +224,8 @@ final class AppSettings: ObservableObject {
         """
         static let streamingDictation              = true
         static let streamChunkSeconds: Double      = 10.0
+        static let skipSilentDictation             = true
+        static let dictationSilenceThreshold: Float = -45.0
         static let maxSpeakers                     = 4
         static let speakerSensitivity: Double      = 1.0
         static let liveBriefInterval               = 25
@@ -201,6 +241,7 @@ final class AppSettings: ObservableObject {
         static let autoTagging                     = true
         static let errorNotifications              = true
         static let uiDateFormat                    = "dd MMM yyyy"
+        static let pdfPaperSize                     = "letter"   // "letter" | "a4"
         static let browserTabDetection             = true
         static let saveDictations                  = true
         static let domainStyleRules = """
@@ -215,6 +256,14 @@ final class AppSettings: ObservableObject {
         static let priceInputPerMTok               = 0.59    // llama-3.3-70b input
         static let priceOutputPerMTok              = 0.79    // llama-3.3-70b output
         static let monthlyBudgetUSD                = 0.0     // 0 = no budget set
+        static let webhookEnabled                  = false
+        static let webhookURL                      = ""
+        static let scriptHookEnabled               = false
+        static let scriptHookPath                  = ""
+        static let packetIncludeEmail              = true
+        static let packetIncludePOC                = true
+        static let packetIncludeActions            = true
+        static let packetConfirmBeforeRun          = true
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -249,6 +298,13 @@ final class AppSettings: ObservableObject {
     var pttKeyCode: Int {
         get { int(Key.pttKeyCode, Default.pttKeyCode) }
         set { set(newValue, Key.pttKeyCode) }
+    }
+
+    /// How the push-to-talk key activates recording: hold-to-talk, tap-to-lock
+    /// (hold still works; a quick tap latches hands-free), or pure toggle.
+    var pttActivation: PTTActivation {
+        get { PTTActivation(rawValue: string(Key.pttActivation, Default.pttActivation)) ?? .hold }
+        set { set(newValue.rawValue, Key.pttActivation) }
     }
 
     /// Prefer the built-in Mac microphone over Bluetooth mics. Keeps AirPods in
@@ -399,6 +455,29 @@ final class AppSettings: ObservableObject {
         return out
     }
 
+    /// Add one or more terms to the watchlist (comma/newline-separated input is
+    /// split). Trims, de-duplicates case-insensitively, and preserves order.
+    /// Returns the number actually added.
+    @discardableResult
+    func addWatchlistTerms(_ input: String) -> Int {
+        var terms = watchlist()
+        var seen = Set(terms.map { $0.lowercased() })
+        var added = 0
+        for raw in input.components(separatedBy: CharacterSet(charactersIn: ",\n")) {
+            let t = raw.trimmingCharacters(in: .whitespaces)
+            guard !t.isEmpty, seen.insert(t.lowercased()).inserted else { continue }
+            terms.append(t); added += 1
+        }
+        if added > 0 { watchlistKeywords = terms.joined(separator: "\n") }
+        return added
+    }
+
+    /// Remove a single watchlist term (case-insensitive match).
+    func removeWatchlistTerm(_ term: String) {
+        let kept = watchlist().filter { $0.caseInsensitiveCompare(term) != .orderedSame }
+        watchlistKeywords = kept.joined(separator: "\n")
+    }
+
     /// Open notes in the OS default app (e.g. VS Code) instead of the in-app
     /// viewer. Applies wherever a note file is opened.
     var openNotesExternally: Bool {
@@ -459,15 +538,57 @@ final class AppSettings: ObservableObject {
         set { set(newValue.rawValue, Key.dictationOrganization) }
     }
 
+    /// Largest audio file (MB) accepted by "Transcribe Audio File". Guards
+    /// against oversized uploads; Groq caps request size regardless.
+    var audioImportMaxMB: Int {
+        get { let v = int(Key.audioImportMaxMB, Default.audioImportMaxMB); return v > 0 ? v : Default.audioImportMaxMB }
+        set { set(max(1, newValue), Key.audioImportMaxMB) }
+    }
+    /// Seconds between meeting auto-detect polls (clamped 1–10).
+    var meetingDetectInterval: Double {
+        get { min(10, max(1, double(Key.meetingDetectInterval, Default.meetingDetectInterval))) }
+        set { set(min(10, max(1, newValue)), Key.meetingDetectInterval) }
+    }
+    /// New transcript characters required before a live-brief refresh (clamped 100–2000).
+    var liveBriefMinGrowth: Int {
+        get { min(2000, max(100, int(Key.liveBriefMinGrowth, Default.liveBriefMinGrowth))) }
+        set { set(min(2000, max(100, newValue)), Key.liveBriefMinGrowth) }
+    }
+    /// Timeout (seconds) for a single Groq transcription request (clamped 10–120).
+    var transcriptionTimeout: Int {
+        get { min(120, max(10, int(Key.transcriptionTimeout, Default.transcriptionTimeout))) }
+        set { set(min(120, max(10, newValue)), Key.transcriptionTimeout) }
+    }
+    /// Network timeout for transcribing a whole imported audio file (longer than
+    /// a live chunk, since a full recording can take a while to upload+process).
+    var importTranscriptionTimeout: Int {
+        get { min(300, max(30, int(Key.importTranscriptionTimeout, Default.importTranscriptionTimeout))) }
+        set { set(min(300, max(30, newValue)), Key.importTranscriptionTimeout) }
+    }
+    /// Consecutive "quiet" detector polls before a meeting is considered ended
+    /// (end latency ≈ this × meetingDetectInterval).
+    var meetingEndQuietPolls: Int {
+        get { min(5, max(1, int(Key.meetingEndQuietPolls, Default.meetingEndQuietPolls))) }
+        set { set(min(5, max(1, newValue)), Key.meetingEndQuietPolls) }
+    }
+    /// Character budget of transcript fed into summary/extraction prompts —
+    /// higher captures more of a long meeting at higher token cost.
+    var summaryContextChars: Int {
+        get { min(60000, max(8000, int(Key.summaryContextChars, Default.summaryContextChars))) }
+        set { set(min(60000, max(8000, newValue)), Key.summaryContextChars) }
+    }
+    /// Push-to-talk tap-vs-hold threshold in seconds (clamped 0.15–1.0).
+    var pttTapThreshold: Double {
+        get { min(1.0, max(0.15, double(Key.pttTapThreshold, Default.pttTapThreshold))) }
+        set { set(min(1.0, max(0.15, newValue)), Key.pttTapThreshold) }
+    }
+
     /// Apply the folder-organization setting to any base folder for a given
     /// date (e.g. base/2026/2026-07/03/). Folder names are POSIX-stable across
     /// user locales/calendars. Existing files are never moved.
     func organizedFolder(base: URL, using organization: NotesOrganization, for date: Date = Date()) -> URL {
         func stamp(_ format: String) -> String {
-            let f = DateFormatter()
-            f.locale = Locale(identifier: "en_US_POSIX")
-            f.dateFormat = format
-            return f.string(from: date)
+            DateDisplay.posixFormatter(format).string(from: date)
         }
         switch organization {
         case .flat:
@@ -529,12 +650,24 @@ final class AppSettings: ObservableObject {
     }
 
     /// Chunk length for streaming dictation, in seconds.
+    var skipSilentDictation: Bool {
+        get { bool(Key.skipSilentDictation, Default.skipSilentDictation) }
+        set { set(newValue, Key.skipSilentDictation) }
+    }
+
+    /// dBFS floor below which a dictation recording is treated as silence and
+    /// never uploaded to Groq. More negative = more sensitive (uploads quieter
+    /// audio); less negative = stricter (skips more).
+    var dictationSilenceThreshold: Float {
+        get { float(Key.dictationSilenceThreshold, Default.dictationSilenceThreshold) }
+        set { set(newValue, Key.dictationSilenceThreshold) }
+    }
+
     var streamChunkSeconds: Double {
         get { double(Key.streamChunkSeconds, Default.streamChunkSeconds) }
         set { set(newValue, Key.streamChunkSeconds) }
     }
 
-    /// Maximum distinct remote speakers the diarizer will label.
     /// Voice-separation sensitivity for diarization — the distance threshold
     /// above which a voice is treated as a new speaker. Lower = splits more
     /// eagerly (risks over-splitting one voice); higher = merges similar voices.
@@ -557,6 +690,7 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.aiCacheLimit) }
     }
 
+    /// Maximum distinct remote speakers the diarizer will label in a meeting.
     var maxSpeakers: Int {
         get { int(Key.maxSpeakers, Default.maxSpeakers) }
         set { set(newValue, Key.maxSpeakers) }
@@ -870,6 +1004,85 @@ final class AppSettings: ObservableObject {
         userTemplates = userTemplates.filter { $0.id != id }
     }
 
+    // MARK: - Template import / export
+
+    /// How an incoming template bundle is applied — mirrors the Catalog's
+    /// import semantics.
+    enum TemplateImportMode { case merge, replace }
+
+    /// Snapshot every piece of user-customized template data — custom meeting
+    /// templates, custom draft document types, and any per-built-in overrides
+    /// (sections / follow-up / draft guidance) — as portable JSON. Built-in
+    /// definitions themselves are never exported (they ship with the app); only
+    /// the user's additions and overrides travel.
+    func exportTemplates() throws -> Data {
+        let bundle = TemplateBundle(
+            userTemplates: userTemplates,
+            userDraftTemplates: userDraftTemplates,
+            meetingSectionOverrides: templateOverrides,
+            meetingFollowUpOverrides: templateFollowUpOverrides,
+            draftGuidanceOverrides: draftGuidanceOverrides)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(bundle)
+    }
+
+    /// True if `data` decodes as a template bundle — guards against importing
+    /// an unrelated JSON file.
+    func isValidTemplateBundle(_ data: Data) -> Bool {
+        (try? JSONDecoder().decode(TemplateBundle.self, from: data)) != nil
+    }
+
+    /// True when there is any custom template data to export (disables the
+    /// Export control otherwise).
+    var hasExportableTemplates: Bool {
+        !userTemplates.isEmpty || !userDraftTemplates.isEmpty
+            || !templateOverrides.isEmpty || !templateFollowUpOverrides.isEmpty
+            || !draftGuidanceOverrides.isEmpty
+    }
+
+    /// Apply a template bundle. `.replace` swaps all custom template data for
+    /// the bundle's; `.merge` upserts custom templates by id (incoming wins on
+    /// clash) and layers the bundle's overrides on top of the current ones.
+    /// Returns the number of custom templates + overrides applied.
+    @discardableResult
+    func importTemplates(_ data: Data, mode: TemplateImportMode) throws -> Int {
+        let bundle = try JSONDecoder().decode(TemplateBundle.self, from: data)
+        switch mode {
+        case .replace:
+            userTemplates = bundle.userTemplates
+            userDraftTemplates = bundle.userDraftTemplates
+            templateOverrides = bundle.meetingSectionOverrides
+            templateFollowUpOverrides = bundle.meetingFollowUpOverrides
+            draftGuidanceOverrides = bundle.draftGuidanceOverrides
+        case .merge:
+            userTemplates = Self.upsert(userTemplates, bundle.userTemplates)
+            userDraftTemplates = Self.upsert(userDraftTemplates, bundle.userDraftTemplates)
+            templateOverrides.merge(bundle.meetingSectionOverrides) { _, new in new }
+            templateFollowUpOverrides.merge(bundle.meetingFollowUpOverrides) { _, new in new }
+            draftGuidanceOverrides.merge(bundle.draftGuidanceOverrides) { _, new in new }
+        }
+        // Selection may reference a template that was replaced away — the
+        // selectedTemplateID getter self-heals, so nothing to do here.
+        return bundle.userTemplates.count + bundle.userDraftTemplates.count
+            + bundle.meetingSectionOverrides.count + bundle.meetingFollowUpOverrides.count
+            + bundle.draftGuidanceOverrides.count
+    }
+
+    /// Upsert `incoming` into `base` by id, preserving base order and appending
+    /// genuinely new items (incoming values win on id clash).
+    private static func upsert<T: Identifiable>(_ base: [T], _ incoming: [T]) -> [T] where T.ID == String {
+        var result = base
+        for item in incoming {
+            if let i = result.firstIndex(where: { $0.id == item.id }) {
+                result[i] = item
+            } else {
+                result.append(item)
+            }
+        }
+        return result
+    }
+
     // MARK: - Dictation Writing Styles
 
     /// Every dictation style — the six built-in categories (with any
@@ -910,6 +1123,24 @@ final class AppSettings: ObservableObject {
     var domainStyleRules: String {
         get { string(Key.domainStyleRules, Default.domainStyleRules) }
         set { set(newValue, Key.domainStyleRules) }
+    }
+
+    /// Parsed `host: style` rules, in order, skipping blank/malformed lines.
+    /// The structured browser-tab editor reads and writes through this.
+    var domainStyleList: [(host: String, style: String)] {
+        domainStyleRules.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, !parts[0].isEmpty else { return nil }
+            return (parts[0], parts[1])
+        }
+    }
+
+    /// The selectable style keys for domain/app rules — the built-in categories
+    /// followed by the user's own styles (by name). Values are the keys stored
+    /// in the rules; labels are what the picker shows.
+    var dictationStyleKeys: [(key: String, label: String)] {
+        AppCategory.allCases.map { ($0.rawValue, $0.displayName) }
+            + userDictationStyles.map { ($0.name, $0.name) }
     }
 
     /// Resolve a style key ("email", "code", or a custom style's name) to a
@@ -1081,6 +1312,74 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.monthlyBudgetUSD) }
     }
 
+    // MARK: - Integrations (event hooks)
+
+    /// POST a JSON payload to a user-configured URL when a meeting finishes.
+    /// Off by default; suppressed entirely in Local-only mode.
+    var webhookEnabled: Bool {
+        get { bool(Key.webhookEnabled, Default.webhookEnabled) }
+        set { set(newValue, Key.webhookEnabled) }
+    }
+
+    /// The destination URL for the outgoing webhook (must be https for it to fire).
+    var webhookURL: String {
+        get { string(Key.webhookURL, Default.webhookURL) }
+        set { set(newValue, Key.webhookURL) }
+    }
+
+    /// Run a user-configured local script when a meeting finishes, receiving the
+    /// event payload as JSON on stdin. Off by default.
+    var scriptHookEnabled: Bool {
+        get { bool(Key.scriptHookEnabled, Default.scriptHookEnabled) }
+        set { set(newValue, Key.scriptHookEnabled) }
+    }
+
+    /// Absolute path to the executable script run on meeting finish.
+    var scriptHookPath: String {
+        get { string(Key.scriptHookPath, Default.scriptHookPath) }
+        set { set(newValue, Key.scriptHookPath) }
+    }
+
+    // MARK: - Follow-Up Packet
+    // Which sections the one-click Follow-Up Packet assembles from a meeting.
+
+    /// The curated default packet: a follow-up email, an updated POC plan, and
+    /// the action items — in that order.
+    static let defaultPacketSections = ["followUpEmail", "pocPlan", "actionItemList"]
+
+    /// Ordered packet section identifiers — each is a `FollowUpKind` rawValue or
+    /// a user draft-template id ("user:UUID"). Order is the order they appear in
+    /// the composed document. Migrates once from the legacy include-toggles the
+    /// first time it's read, so upgrading users keep their choices.
+    var packetSectionIDs: [String] {
+        get {
+            if let raw = defaults.string(forKey: Key.packetSections) {
+                return raw.split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            }
+            var ids: [String] = []
+            if bool(Key.packetIncludeEmail, Default.packetIncludeEmail) { ids.append("followUpEmail") }
+            if bool(Key.packetIncludePOC, Default.packetIncludePOC) { ids.append("pocPlan") }
+            if bool(Key.packetIncludeActions, Default.packetIncludeActions) { ids.append("actionItemList") }
+            return ids
+        }
+        set { set(newValue.joined(separator: ","), Key.packetSections) }
+    }
+
+    // Note: the legacy `packetInclude{Email,POC,Actions}` keys/defaults are read
+    // directly (via `bool(Key…, Default…)`) inside the `packetSectionIDs` getter
+    // to migrate a pre-0.31 install's choices, and are still cleared by
+    // `resetToDefaults()` through `Key.all`. No dedicated accessors are needed.
+
+    /// Ask for confirmation before the packet runs its cloud AI calls. On by
+    /// default (the packet fires several requests at once); the "Don't ask
+    /// again" choice in the dialog clears this.
+    var packetConfirmBeforeRun: Bool {
+        get { bool(Key.packetConfirmBeforeRun, Default.packetConfirmBeforeRun) }
+        set { set(newValue, Key.packetConfirmBeforeRun) }
+    }
+
     // MARK: - Transcription Quality
 
     /// Fall back to Apple's on-device speech recognition when Groq is unreachable.
@@ -1143,6 +1442,16 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.uiDateFormat) }
     }
 
+    /// Paper size for exported PDFs (notes, reports, POCs): "letter" or "a4".
+    var pdfPaperSize: String {
+        get { string(Key.pdfPaperSize, Default.pdfPaperSize) }
+        set { set(newValue, Key.pdfPaperSize) }
+    }
+    /// Point dimensions (72 dpi) for the chosen paper size — US Letter or A4.
+    var pdfPageSize: CGSize {
+        pdfPaperSize == "a4" ? CGSize(width: 595, height: 842) : CGSize(width: 612, height: 792)
+    }
+
     /// ISO 639-1 language hint for Whisper (e.g. "en", "de", "ta").
     var transcriptionLanguage: String {
         get { string(Key.transcriptionLanguage, Default.transcriptionLanguage) }
@@ -1179,6 +1488,23 @@ final class AppSettings: ObservableObject {
     var appProfiles: String {
         get { string(Key.appProfiles, "") }
         set { set(newValue, Key.appProfiles) }
+    }
+
+    /// Parsed `bundle.id: style` overrides, in order, skipping blank/malformed
+    /// lines. The structured per-app editor reads and writes through this.
+    var appProfileList: [(bundleID: String, style: String)] {
+        appProfiles.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, !parts[0].isEmpty else { return nil }
+            return (parts[0], parts[1])
+        }
+    }
+
+    /// Style keys valid for a per-app override — the built-in categories only.
+    /// (Per-app overrides resolve to an `AppCategory`; custom styles apply via
+    /// the global default, not here.)
+    var builtInStyleKeys: [(key: String, label: String)] {
+        AppCategory.allCases.map { ($0.rawValue, $0.displayName) }
     }
 
     // MARK: - Derived helpers
@@ -1475,7 +1801,10 @@ enum MeetingTemplate: String, CaseIterable, Identifiable {
             ("Proposed Approach", "the solution or architecture proposed, and how it addresses the requirements."),
             ("In / Out of Scope", "what was agreed to be in scope and explicitly out of scope."),
             ("Dependencies & Prerequisites", "integrations, access, data, or environment needed from either side (omit if none)."),
-            ("Open Questions", "unresolved questions or decisions to follow up on (omit if none)."),
+            // Open Questions is a first-class, toggle-driven section (the same
+            // `## Open Questions` checkbox list every meeting type gets) — kept
+            // out of the template so it isn't emitted twice and downgraded to
+            // plain bullets by the heading-dedup.
         ]
         case .allHands: return [
             ("Announcements", "the key announcements or news shared."),
@@ -1601,6 +1930,43 @@ struct UserTemplate: Codable, Identifiable, Hashable {
     /// Optional custom follow-up guidance; empty → a generic default is used.
     /// Defaulted so JSON saved before this field existed still decodes.
     var followUp: String = ""
+}
+
+/// A portable bundle of user-customized template data, for Export / Import in
+/// the Settings template panes. Every field is defaulted and decoded
+/// tolerantly (see `init(from:)`) so a bundle written by any version — or one
+/// missing a section — still imports cleanly.
+struct TemplateBundle: Codable {
+    var version: Int = 1
+    var userTemplates: [UserTemplate] = []
+    var userDraftTemplates: [UserDraftTemplate] = []
+    var meetingSectionOverrides: [String: String] = [:]
+    var meetingFollowUpOverrides: [String: String] = [:]
+    var draftGuidanceOverrides: [String: String] = [:]
+
+    init(version: Int = 1,
+         userTemplates: [UserTemplate] = [],
+         userDraftTemplates: [UserDraftTemplate] = [],
+         meetingSectionOverrides: [String: String] = [:],
+         meetingFollowUpOverrides: [String: String] = [:],
+         draftGuidanceOverrides: [String: String] = [:]) {
+        self.version = version
+        self.userTemplates = userTemplates
+        self.userDraftTemplates = userDraftTemplates
+        self.meetingSectionOverrides = meetingSectionOverrides
+        self.meetingFollowUpOverrides = meetingFollowUpOverrides
+        self.draftGuidanceOverrides = draftGuidanceOverrides
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        userTemplates = try c.decodeIfPresent([UserTemplate].self, forKey: .userTemplates) ?? []
+        userDraftTemplates = try c.decodeIfPresent([UserDraftTemplate].self, forKey: .userDraftTemplates) ?? []
+        meetingSectionOverrides = try c.decodeIfPresent([String: String].self, forKey: .meetingSectionOverrides) ?? [:]
+        meetingFollowUpOverrides = try c.decodeIfPresent([String: String].self, forKey: .meetingFollowUpOverrides) ?? [:]
+        draftGuidanceOverrides = try c.decodeIfPresent([String: String].self, forKey: .draftGuidanceOverrides) ?? [:]
+    }
 }
 
 /// A resolved template — built-in or user-defined — that the pickers, the
@@ -1776,6 +2142,35 @@ enum MeetingOverlayMode: String, CaseIterable, Identifiable {
 // MARK: - Push-to-Talk Key Options
 
 /// Modifier keys usable as the push-to-talk hotkey (flagsChanged-based).
+/// How the push-to-talk key drives dictation recording.
+enum PTTActivation: String, CaseIterable, Identifiable {
+    /// Record only while the key is physically held; stop on release. (Classic push-to-talk.)
+    case hold
+    /// Hold-to-talk still works, but a quick tap latches recording hands-free
+    /// until the next tap. Best of both for short phrases and long dictations.
+    case tapLock
+    /// Press once to start, press again to stop — the key never needs holding.
+    case toggle
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .hold:    return "Hold to talk"
+        case .tapLock: return "Tap to lock (hybrid)"
+        case .toggle:  return "Press to toggle"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .hold:    return "Record while the key is held; transcribe and type on release."
+        case .tapLock: return "Hold for a quick phrase, or tap once to latch hands-free — tap again (or Esc) to stop."
+        case .toggle:  return "Press once to start recording, press again to stop. The key is never held."
+        }
+    }
+}
+
 enum PTTKey: Int, CaseIterable, Identifiable {
     case rightOption  = 61
     case leftOption   = 58

@@ -100,6 +100,21 @@ final class MeetingNotesWriter {
         f.dateStyle = .long
         return f
     }()
+    /// Long date + short time (e.g. "3 July 2026 at 2:30 PM"), localized — the
+    /// human-readable stamp written into note bodies.
+    private static let displayDateTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .long
+        f.timeStyle = .short
+        return f
+    }()
+
+    /// Quote a free-text value as a safe double-quoted YAML scalar — an app,
+    /// title, or filename could contain a colon or quote that would otherwise
+    /// produce malformed front-matter. Single source of truth for YAML escaping.
+    static func yamlScalar(_ s: String) -> String {
+        "\"\(s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
+    }
 
     // MARK: - Quick Notes
 
@@ -152,14 +167,10 @@ final class MeetingNotesWriter {
         let stamp = fileNameFormatter.string(from: now)
         let fileURL = folder.appendingPathComponent("Dictation_\(stamp).md")
 
-        // Quote free-text values — an app/host/style could contain a colon or
-        // quote that would otherwise produce malformed YAML.
-        func yaml(_ s: String) -> String {
-            "\"\(s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
-        }
+        let yaml = Self.yamlScalar
         var lines = ["---",
                      "title: Dictation \(stamp)",
-                     "date: \(ISO8601DateFormatter().string(from: now))",
+                     "date: \(DateDisplay.iso8601.string(from: now))",
                      "app: \(yaml(app))"]
         if let host, !host.isEmpty { lines.append("host: \(yaml(host))") }
         lines.append("style: \(yaml(style))")
@@ -218,7 +229,7 @@ final class MeetingNotesWriter {
     /// Rewrite every occurrence of a speaker label in a finished notes file.
     static func renameSpeaker(from old: String, to new: String, in file: URL) {
         guard old != new, !new.isEmpty,
-              var content = try? String(contentsOf: file, encoding: .utf8) else { return }
+              var content = file.readText() else { return }
         content = content
             .replacingOccurrences(of: "**\(old)**:", with: "**\(new)**:")
             .replacingOccurrences(of: "_\(old)_:", with: "_\(new)_:")
@@ -227,7 +238,7 @@ final class MeetingNotesWriter {
 
     /// Distinct speaker labels appearing in a notes file, in first-seen order.
     static func speakerLabels(in file: URL) -> [String] {
-        guard let content = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+        guard let content = file.readText() else { return [] }
         var labels: [String] = []
         let pattern = #/\*\*\[\d{2}:\d{2}:\d{2}\]\*\* (?:\*\*(.+?)\*\*|_(.+?)_):/#
         for line in content.split(whereSeparator: \.isNewline) {
@@ -236,6 +247,64 @@ final class MeetingNotesWriter {
             if !label.isEmpty, !labels.contains(label) { labels.append(label) }
         }
         return labels
+    }
+
+    /// Write a completed meeting note from an imported audio file's transcript.
+    /// Dates and duration come from the source file's own metadata so the note
+    /// is filed under when it was *recorded*, not when it was imported. Returns
+    /// the file URL (nil on write failure). The caller links it into the Catalog.
+    static func importAudioNote(transcript: String, recordedAt: Date,
+                                sourceFilename: String, duration: TimeInterval?,
+                                title: String? = nil) -> URL? {
+        let noteTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? sourceFilename
+        let folder = AppSettings.shared.meetingDestinationFolder(for: recordedAt)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            Log.meeting.error("❌ Could not create notes folder for import: \(error.localizedDescription)")
+            return nil
+        }
+
+        let stamp = fileNameFormatter.string(from: recordedAt)
+        let fileURL = folder.appendingPathComponent("Meeting_\(stamp).md")
+
+        let displayDate = Self.displayDateTimeFormatter.string(from: recordedAt)
+
+        let secs = duration.map { Int($0.rounded()) }
+        let durationText = secs.map { String(format: "%d:%02d", $0 / 60, $0 % 60) }
+
+        let yaml = Self.yamlScalar
+
+        var content = ""
+        if AppSettings.shared.frontMatterEnabled {
+            let iso = DateDisplay.iso8601.string(from: recordedAt)
+            var fm = ["---",
+                      "title: \(yaml(noteTitle))",
+                      "date: \(iso)",
+                      "gw_meeting_type: general",
+                      "gw_source: import",
+                      "gw_source_file: \(yaml(sourceFilename))"]
+            if let secs { fm.append("gw_duration: \(secs)") }
+            fm.append("tags: [meeting, ghostwriter, imported]")
+            fm.append("---")
+            fm.append("")
+            content += fm.joined(separator: "\n") + "\n"
+        }
+        content += "# Meeting Notes\n**\(displayDate)**\n\n"
+        let sourceLine = durationText.map { "*Imported from `\(sourceFilename)` · \($0)*" }
+            ?? "*Imported from `\(sourceFilename)`*"
+        content += "\(sourceLine)\n\n---\n\n"
+        content += transcript.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
+
+        do {
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            Log.meeting.error("❌ Could not write imported note: \(error.localizedDescription)")
+            return nil
+        }
+        Self.invalidateFileCache()
+        Log.meeting.info("📝 Imported audio note → \(fileURL.path)")
+        return fileURL
     }
 
     // MARK: - Session Lifecycle
@@ -252,22 +321,18 @@ final class MeetingNotesWriter {
             let fileName = "Meeting_\(timestamp).md"
             let fileURL = notesDirectory.appendingPathComponent(fileName)
 
-            let displayFormatter = DateFormatter()
-            displayFormatter.dateStyle = .long
-            displayFormatter.timeStyle = .short
-            let displayDate = displayFormatter.string(from: Date())
+            let displayDate = Self.displayDateTimeFormatter.string(from: Date())
 
             var header = ""
             if AppSettings.shared.frontMatterEnabled {
-                // Obsidian/Notion-friendly YAML front-matter
-                let isoFormatter = ISO8601DateFormatter()
+                // Obsidian/Notion-friendly YAML front-matter.
                 // Record the meeting type so the note viewer can suggest the
                 // right draft documents without guessing from headings.
                 let meetingType = AppSettings.shared.selectedTemplateID
                 header += """
                 ---
                 title: Meeting \(timestamp)
-                date: \(isoFormatter.string(from: Date()))
+                date: \(DateDisplay.iso8601.string(from: Date()))
                 gw_meeting_type: \(meetingType)
                 tags: [meeting, ghostwriter]
                 ---
@@ -303,6 +368,49 @@ final class MeetingNotesWriter {
     func appendSummary(_ summary: String, to fileURL: URL) {
         append("\n# Summary\n\n\(summary)\n", to: fileURL)
         Log.meeting.info("📝 Summary appended")
+    }
+
+    /// Cleans a model-produced summary: drops the refusal sentinel, normalises
+    /// empty sections to `_None_`, and removes duplicated headings. Returns nil
+    /// when nothing real remains. Shared by the live-meeting finalizer and the
+    /// audio-import path so both post-process the summarizer identically.
+    static func sanitizedSummary(_ raw: String) -> String? {
+        let trimmedRaw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Only bail when the model says the WHOLE meeting was too thin — a
+        // stray token inside one section must not discard the entire summary.
+        guard !trimmedRaw.isEmpty, trimmedRaw != "NOT_ENOUGH_CONTENT" else { return nil }
+
+        // Split into (heading, body) sections.
+        var sections: [(heading: String?, body: [String])] = [(nil, [])]
+        for line in trimmedRaw.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("#") {
+                sections.append((String(line), []))
+            } else {
+                sections[sections.count - 1].body.append(String(line))
+            }
+        }
+
+        var seenHeadings = Set<String>()
+        var output: [String] = []
+        var sawHeading = false
+        for section in sections {
+            let body = section.body.joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let heading = section.heading {
+                // Keep every distinct heading — even with an empty body, so the
+                // structure (Summary / Decisions / Action Items …) is always
+                // visible. Blank sections render an explicit "_None_".
+                let key = heading.trimmingCharacters(in: CharacterSet(charactersIn: "# ")).lowercased()
+                guard !seenHeadings.contains(key) else { continue }
+                seenHeadings.insert(key)
+                output.append(heading)
+                output.append(body.isEmpty ? "_None_" : body)
+                sawHeading = true
+            } else if !body.isEmpty {
+                output.append(body)
+            }
+        }
+        return sawHeading ? output.joined(separator: "\n\n") : nil
     }
 
     /// Drop a timestamped bookmark at the current point in the meeting: writes
@@ -360,25 +468,14 @@ final class MeetingNotesWriter {
     /// unchanged, so Catalog links stay valid).
     static func setFrontMatterTitle(_ title: String, to fileURL: URL) {
         let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty,
-              var content = try? String(contentsOf: fileURL, encoding: .utf8),
-              content.hasPrefix("---") else { return }
-        var lines = content.components(separatedBy: "\n")
-        guard let i = lines.firstIndex(where: { $0.hasPrefix("title:") }) else { return }
+        guard !clean.isEmpty else { return }
         // Escape a colon-bearing title so it stays valid YAML.
-        let safe = clean.contains(":") ? "\"\(clean.replacingOccurrences(of: "\"", with: "'"))\"" : clean
-        lines[i] = "title: \(safe)"
-        content = lines.joined(separator: "\n")
-        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
-        Log.meeting.info("🏷 Meeting title set")
-    }
-
-    /// Append an "Unanswered Questions" section (AI-extracted follow-up items).
-    func appendUnansweredQuestions(_ body: String, to fileURL: URL) {
-        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        append("\n## Unanswered Questions\n\n\(trimmed)\n", to: fileURL)
-        Log.meeting.info("❓ Unanswered questions appended")
+        let safe = FrontMatter.yamlScalar(clean, quoteWhen: ":", quoteLeadingSpace: false)
+        var replaced = false
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            replaced = FrontMatter.replaceLine(prefix: "title:", with: "title: \(safe)", in: &lines)
+        }
+        if replaced { Log.meeting.info("🏷 Meeting title set") }
     }
 
     /// Count case-insensitive whole-word-ish occurrences of each watchlist term
@@ -411,20 +508,17 @@ final class MeetingNotesWriter {
     /// the file has no front-matter (tags require it) or no new tags.
     static func addFrontMatterTags(_ tags: [String], to fileURL: URL) {
         let newTags = tags.filter { !$0.isEmpty }
-        guard !newTags.isEmpty,
-              var content = try? String(contentsOf: fileURL, encoding: .utf8),
-              content.hasPrefix("---") else { return }
-
-        var lines = content.components(separatedBy: "\n")
-        guard let i = lines.firstIndex(where: { $0.hasPrefix("tags:") }) else { return }
-
-        // Parse existing "tags: [a, b]" and append any that are new.
-        var merged = FrontMatter.tags(in: content)
-        for tag in newTags where !merged.contains(tag) { merged.append(tag) }
-        lines[i] = "tags: [\(merged.joined(separator: ", "))]"
-        content = lines.joined(separator: "\n")
-        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
-        Log.meeting.info("🏷 Front-matter tags updated")
+        guard !newTags.isEmpty else { return }
+        var updated = false
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            guard let i = lines.firstIndex(where: { $0.hasPrefix("tags:") }) else { return }
+            // Parse existing "tags: [a, b]" and append any that are new.
+            var merged = FrontMatter.tags(in: "---\n" + lines.joined(separator: "\n") + "\n---")
+            for tag in newTags where !merged.contains(tag) { merged.append(tag) }
+            lines[i] = "tags: [\(merged.joined(separator: ", "))]"
+            updated = true
+        }
+        if updated { Log.meeting.info("🏷 Front-matter tags updated") }
     }
 
     /// Slug a display name into a hyphenated tag token ("Acme Corp" → "acme-corp").
@@ -449,26 +543,22 @@ final class MeetingNotesWriter {
         if let p = project { tagTokens.append(slug(p)) }
         addFrontMatterTags(tagTokens.filter { !$0.isEmpty }, to: fileURL)
 
-        // Structured fields for Dataview / Notion-style filtering.
-        guard var content = try? String(contentsOf: fileURL, encoding: .utf8),
-              content.hasPrefix("---") else { return }
-        var lines = content.components(separatedBy: "\n")
-        guard let tagsIdx = lines.firstIndex(where: { $0.hasPrefix("tags:") }) else { return }
+        // Structured fields for Dataview / Notion-style filtering — inserted
+        // after the tags line (and only when there is one, matching the tags mirror).
+        var entries: [(key: String, value: String)] = []
+        if !people.isEmpty { entries.append(("attendees", "[\(people.joined(separator: ", "))]")) }
+        if let c = customer, !c.isEmpty { entries.append(("customer", c)) }
+        if let p = project, !p.isEmpty { entries.append(("project", p)) }
+        guard !entries.isEmpty else { return }
 
-        var inserts: [String] = []
-        func addField(_ key: String, _ value: String) {
-            guard !value.isEmpty, !lines.contains(where: { $0.hasPrefix("\(key):") }) else { return }
-            inserts.append("\(key): \(value)")
+        var added = false
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            guard lines.contains(where: { $0.hasPrefix("tags:") }) else { return }
+            let before = lines.count
+            FrontMatter.insertFields(entries, after: ["tags:"], in: &lines)
+            added = lines.count != before
         }
-        if !people.isEmpty { addField("attendees", "[\(people.joined(separator: ", "))]") }
-        if let c = customer { addField("customer", c) }
-        if let p = project { addField("project", p) }
-        guard !inserts.isEmpty else { return }
-
-        lines.insert(contentsOf: inserts, at: tagsIdx + 1)
-        content = lines.joined(separator: "\n")
-        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
-        Log.meeting.info("🏷 Front-matter entities added")
+        if added { Log.meeting.info("🏷 Front-matter entities added") }
     }
 
     /// Insert `gw_<key>: value` fields into the front-matter, after the tags
@@ -477,30 +567,18 @@ final class MeetingNotesWriter {
     /// without front-matter.
     static func addFrontMatterFields(_ pairs: [(key: String, value: String)], to fileURL: URL) {
         let clean = pairs.filter { !$0.value.isEmpty }
-        guard !clean.isEmpty,
-              var content = try? String(contentsOf: fileURL, encoding: .utf8),
-              content.hasPrefix("---") else { return }
-        var lines = content.components(separatedBy: "\n")
-        // Anchor after tags:, else after title:, else right under the opening ---.
-        let anchor = lines.firstIndex { $0.hasPrefix("tags:") }
-            ?? lines.firstIndex { $0.hasPrefix("title:") }
-            ?? 0
-
-        func yaml(_ s: String) -> String {
-            let needsQuote = s.contains(where: { ":#[]{}".contains($0) }) || s.hasPrefix(" ")
-            return needsQuote ? "\"\(s.replacingOccurrences(of: "\"", with: "'"))\"" : s
+        guard !clean.isEmpty else { return }
+        // Each field as `gw_<key>: <yaml-quoted value>`, inserted after tags:,
+        // else after title:, else right under the opening --- (insertFields'
+        // default). Keys already present are skipped.
+        let entries = clean.map { (key: "gw_\($0.key)", value: FrontMatter.yamlScalar($0.value)) }
+        var added = false
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            let before = lines.count
+            FrontMatter.insertFields(entries, after: ["tags:", "title:"], in: &lines)
+            added = lines.count != before
         }
-        var inserts: [String] = []
-        for p in clean {
-            let key = "gw_\(p.key)"
-            guard !lines.contains(where: { $0.hasPrefix("\(key):") }) else { continue }
-            inserts.append("\(key): \(yaml(p.value))")
-        }
-        guard !inserts.isEmpty else { return }
-        lines.insert(contentsOf: inserts, at: anchor + 1)
-        content = lines.joined(separator: "\n")
-        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
-        Log.meeting.info("🏷 Front-matter key fields added")
+        if added { Log.meeting.info("🏷 Front-matter key fields added") }
     }
 
     /// Append a "## Key Details" section rendering the extracted fields as a
@@ -525,7 +603,7 @@ final class MeetingNotesWriter {
 
     /// Full text of a notes file (for summarization).
     func transcriptText(of fileURL: URL) -> String? {
-        try? String(contentsOf: fileURL, encoding: .utf8)
+        fileURL.readText()
     }
 
     // MARK: - Appending Transcripts

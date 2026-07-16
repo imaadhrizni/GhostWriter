@@ -214,8 +214,7 @@ private struct SectionHeader: View {
             Image(systemName: icon).foregroundStyle(tint)
             Text(title).font(.headline)
             Text("\(count)").font(.caption).monospacedDigit()
-                .padding(.horizontal, 7).padding(.vertical, 1)
-                .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor).opacity(0.5)))
+                .pillBackground(Color(nsColor: .quaternaryLabelColor), opacity: 0.5, hPad: 7, vPad: 1)
             Spacer()
         }
     }
@@ -224,10 +223,7 @@ private struct SectionHeader: View {
 private struct CountPill: View {
     let text: String; let tint: Color
     var body: some View {
-        Text(text).font(.caption2).bold()
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Capsule().fill(tint.opacity(0.18)))
-            .foregroundStyle(tint)
+        TintedPill(text: text, tint: tint, weight: .bold, opacity: 0.18, hPad: 7, vPad: 2)
     }
 }
 
@@ -270,9 +266,6 @@ private struct ActionRow: View {
 private struct Pill: View {
     let text: String; let tint: Color
     var body: some View {
-        Text(text).font(.caption2)
-            .padding(.horizontal, 6).padding(.vertical, 1)
-            .background(Capsule().fill(tint.opacity(0.15)))
-            .foregroundStyle(tint)
+        TintedPill(text: text, tint: tint, weight: .regular, opacity: 0.15)
     }
 }

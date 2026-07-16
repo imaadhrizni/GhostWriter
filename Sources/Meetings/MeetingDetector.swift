@@ -63,7 +63,7 @@ final class MeetingDetector {
 
     func start() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: AppSettings.shared.meetingDetectInterval, repeats: true) { [weak self] _ in
             self?.poll()
         }
         Log.meeting.info("👂 Meeting detection active")
@@ -87,11 +87,11 @@ final class MeetingDetector {
         guard AppSettings.shared.meetingAutoDetect else { return }
 
         guard let source = Self.micCapturingCallSource() else {
-            // Nobody call-like holds the mic. Two quiet polls (~6 s) in a row
-            // counts as the call ending — a single blip doesn't.
+            // Nobody call-like holds the mic. A configurable number of quiet
+            // polls in a row counts as the call ending — a single blip doesn't.
             if activeSource != nil {
                 quietPolls += 1
-                guard quietPolls >= 2 else { return }
+                guard quietPolls >= AppSettings.shared.meetingEndQuietPolls else { return }
                 Log.meeting.info("👂 Call ended (\(self.activeSource ?? "?") released the mic)")
                 activeSource = nil
                 quietPolls = 0

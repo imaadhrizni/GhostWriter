@@ -172,35 +172,83 @@ enum NotesLibrary {
                                      options: [.caseInsensitive])
     }
 
-    /// Flip an item's checkbox in its notes file. Line-based: finds the
-    /// item's exact line (ignoring indentation), rewrites just that line.
-    /// Returns false when the line is gone (file edited elsewhere).
+    /// Flip an item's checkbox in its notes file.
     @discardableResult
     static func toggleDone(_ item: ActionItem) -> Bool {
-        guard let content = try? String(contentsOf: item.file.url, encoding: .utf8) else { return false }
+        setCheckbox(rawLine: item.rawLine, text: item.text, done: !item.done, inFile: item.file.url)
+    }
+
+    /// Rewrite a single checkbox bullet — located by its exact trimmed source
+    /// line — to `done`. Rebuilds the line from clean parts (indent + bullet +
+    /// one checkbox + text), so it's idempotent, repairs any earlier duplicated
+    /// "[x] [x]" tokens, and upgrades a legacy plain `-`/`*` bullet to a
+    /// checkbox. Returns false when the file can't be read/written or the line
+    /// is gone (edited elsewhere). Shared by action items and open questions.
+    @discardableResult
+    static func setCheckbox(rawLine: String, text: String, done: Bool, inFile url: URL) -> Bool {
+        guard let content = url.readText() else { return false }
         var lines = content.components(separatedBy: "\n")
         guard let idx = lines.firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespaces) == item.rawLine
+            $0.trimmingCharacters(in: .whitespaces) == rawLine
         }) else { return false }
-
-        // Rebuild the line from clean parts (bullet + one checkbox + text) —
-        // idempotent, and repairs any earlier duplicated "[x] [x]" tokens.
         let indent = lines[idx].prefix(while: { $0 == " " || $0 == "\t" })
-        let bullet = item.rawLine.hasPrefix("*") ? "*" : "-"
-        lines[idx] = "\(indent)\(bullet) [\(item.done ? " " : "x")] \(item.text)"
+        let bullet = rawLine.hasPrefix("*") ? "*" : "-"
+        lines[idx] = "\(indent)\(bullet) [\(done ? "x" : " ")] \(text)"
         do {
-            try lines.joined(separator: "\n").write(to: item.file.url, atomically: true, encoding: .utf8)
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
             return true
         } catch {
-            Log.app.error("❌ Could not update action item: \(error.localizedDescription)")
+            Log.app.error("❌ Could not update checkbox line: \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// One question under a note's "## Unanswered Questions" heading. `done`
+    /// reflects a `- [x]` checkbox; legacy plain `-`/`*` bullets read as open.
+    /// `rawLine` is the trimmed source line, used to locate it for a toggle.
+    struct OpenQuestion: Identifiable {
+        let id = UUID()
+        let text: String
+        let done: Bool
+        let rawLine: String
+    }
+
+    /// Parse the questions under a note's questions section(s), preserving each
+    /// one's answered state. Accepts both the canonical `## Open Questions`
+    /// heading and the legacy `## Unanswered Questions` (older notes / the
+    /// summary's structured-extraction block); if a note carries both, their
+    /// items are merged and deduped case-insensitively. One shared
+    /// implementation for the Catalog dashboard card and the Open Questions list.
+    static func openQuestions(in text: String) -> [OpenQuestion] {
+        var out: [OpenQuestion] = []
+        var seen = Set<String>()
+        var inSection = false
+        for raw in text.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("## ") || line.hasPrefix("# ") {
+                let h = line.lowercased()
+                inSection = (h == "## open questions" || h == "## unanswered questions")
+                continue
+            }
+            guard inSection, line.hasPrefix("- ") || line.hasPrefix("* ") else { continue }
+            var body = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            var done = false
+            if body.hasPrefix("[ ] ") {
+                body = String(body.dropFirst(4))
+            } else if body.lowercased().hasPrefix("[x] ") {
+                done = true; body = String(body.dropFirst(4))
+            }
+            body = body.trimmingCharacters(in: .whitespaces)
+            guard !body.isEmpty, seen.insert(body.lowercased()).inserted else { continue }
+            out.append(OpenQuestion(text: body, done: done, rawLine: line))
+        }
+        return out
     }
 
     /// Action items parsed from a single notes file — bullets under the
     /// "## Action Items" heading. Used by the Catalog note editor.
     static func actionItems(inFile url: URL) -> [ActionItem] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        guard let content = url.readText() else { return [] }
         let file = MeetingFile(url: url)
         var items: [ActionItem] = [], inSection = false
         for rawLine in content.split(whereSeparator: \.isNewline) {
@@ -215,11 +263,25 @@ enum NotesLibrary {
                         if text.lowercased().hasPrefix("[x]") { done = true }
                         text = text.dropFirst(3).trimmingCharacters(in: .whitespaces)
                     }
-                    if !text.isEmpty { items.append(ActionItem(file: file, text: text, done: done, rawLine: line)) }
+                    // Skip "none" placeholders the AI writes when there are no
+                    // action items (e.g. "- _None_", "- N/A", "- —").
+                    if !text.isEmpty, !Self.isNonePlaceholder(String(text)) {
+                        items.append(ActionItem(file: file, text: String(text), done: done, rawLine: line))
+                    }
                 }
             }
         }
         return items
+    }
+
+    /// True when a bullet is a "no items" placeholder rather than a real action
+    /// — stripped of markdown emphasis/punctuation it reads as none / n/a / etc.
+    static func isNonePlaceholder(_ s: String) -> Bool {
+        let stripped = s
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_*`~ ()—–-."))
+            .lowercased()
+        return ["", "none", "n/a", "na", "nil", "nothing",
+                "no action items", "no items", "none."].contains(stripped)
     }
 }
 

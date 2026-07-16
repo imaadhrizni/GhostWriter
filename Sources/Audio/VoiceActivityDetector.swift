@@ -42,4 +42,21 @@ final class VoiceActivityDetector {
         guard rms > 0 else { return -Float.infinity }
         return 20.0 * log10f(rms)
     }
+
+    /// True if any short window of this 16-bit PCM blob rises above `threshold`
+    /// dBFS. Scans in ~100 ms windows so a single spoken word inside a long,
+    /// otherwise-silent recording is still detected (a whole-blob RMS would
+    /// average it away). Used to skip uploading silent dictation to Groq.
+    func containsVoice(in data: Data, aboveDBFS threshold: Float) -> Bool {
+        let windowBytes = 3200  // 100 ms @ 16 kHz Int16 (1600 samples × 2 bytes)
+        guard data.count >= MemoryLayout<Int16>.size else { return false }
+        var offset = 0
+        while offset < data.count {
+            let end = min(offset + windowBytes, data.count)
+            let window = data.subdata(in: offset..<end)
+            if rmsToDBFS(calculateRMS(from: window)) >= threshold { return true }
+            offset = end
+        }
+        return false
+    }
 }

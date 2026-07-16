@@ -18,6 +18,27 @@ enum DateDisplay {
         return f
     }()
 
+    /// Shared ISO-8601 formatter for writing front-matter `date:` stamps —
+    /// one instance instead of the ad-hoc `ISO8601DateFormatter()` that was
+    /// scattered across the note writer.
+    static let iso8601 = ISO8601DateFormatter()
+
+    /// Parse an ISO-8601 `date:` string, tolerating fractional seconds. Used by
+    /// the PDF export and note viewer (previously duplicated `isoDate(_:)`
+    /// helpers). Uses its own formatters so no shared mutable state is toggled.
+    static func parseISO(_ s: String) -> Date? {
+        if let d = isoPlain.date(from: s) { return d }
+        return isoFractional.date(from: s)
+    }
+    private static let isoPlain: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]; return f
+    }()
+    private static let isoFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
     /// Fixed formatter for the full `yyyy-MM-dd_HH-mm-ss` filename timestamp.
     static let posixTimestamp: DateFormatter = {
         let f = DateFormatter()
@@ -25,6 +46,17 @@ enum DateDisplay {
         f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         return f
     }()
+
+    /// Build a locale-independent (POSIX) formatter for an arbitrary fixed
+    /// pattern — the one place that stamps stable, non-display date strings
+    /// (month keys, folder names). Callers that reuse a fixed pattern should
+    /// prefer the cached `posixDay`/`posixTimestamp` above.
+    static func posixFormatter(_ format: String) -> DateFormatter {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = format
+        return f
+    }
 
     /// Parses the fixed `yyyy-MM-dd` day key. POSIX so it's locale-independent.
     private static var parser: DateFormatter { posixDay }

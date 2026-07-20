@@ -132,6 +132,7 @@ private struct NotesViewerView: View {
     @State private var showPacketConfirm = false
     @State private var summarizing = false
     @State private var regenerating = false
+    @State private var refining = false
     /// Locked (read-only) by default; unlock to edit. Drafts with no backing
     /// file open unlocked since editing is the whole point.
     @State private var isEditable: Bool
@@ -549,6 +550,14 @@ private struct NotesViewerView: View {
                 if isMeetingNote, let fileURL {
                     Button { NotificationCenter.default.post(name: .renameSpeakersForFile, object: fileURL) } label: { Label("Rename Speakers", systemImage: "person.crop.circle") }
                 }
+                if isMeetingNote {
+                    Divider()
+                    Button { regenerateRefinement() } label: {
+                        Label("Regenerate Meeting Notes", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(refining)
+                    .help("Re-run the AI summary, key details, chapters and agenda for this note — replaces the existing sections. Use if the original pass failed.")
+                }
             } label: { Image(systemName: "ellipsis.circle") }
                 .menuStyle(.borderlessButton).fixedSize()
 
@@ -566,6 +575,38 @@ private struct NotesViewerView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This uses cloud AI to generate \(packetSectionsSummary) from this meeting — several requests in one go. You can change what's included, or turn off this prompt, in Settings → Meetings → Draft Templates.")
+        }
+    }
+
+    /// Re-run the end-of-meeting AI refinement on this note **in place** —
+    /// regenerating the Summary, Key Details, Chapters, Agenda, and Mentions
+    /// from the transcript. Existing generated sections are replaced (not
+    /// duplicated). For recovering a note whose original pass failed (e.g. a
+    /// network error or a decommissioned model), or to refresh after edits.
+    private func regenerateRefinement() {
+        guard let fileURL else { return }
+        refining = true
+        status = "Regenerating meeting notes…"
+        Task { @MainActor in
+            defer { refining = false }
+            // Strip old generated sections first, then read the clean transcript
+            // so the summarizer never sees a previous summary.
+            MeetingRefinery.stripGeneratedSections(from: fileURL)
+            guard let transcript = MeetingNotesWriter().transcriptText(of: fileURL) else {
+                status = "Couldn't read this note."
+                return
+            }
+            var failure = ""
+            let produced = await MeetingRefinery.refine(
+                fileURL: fileURL, transcript: transcript,
+                options: .init(stripExisting: false),
+                onError: { failure = $0 })
+            // Reload the file into the viewer so the new sections show at once.
+            let fresh = (fileURL.readText()) ?? text
+            text = fresh
+            savedText = fresh
+            status = !failure.isEmpty ? failure
+                : (produced ? "Meeting notes regenerated." : "Nothing to regenerate.")
         }
     }
 

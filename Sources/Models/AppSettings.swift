@@ -12,7 +12,40 @@ final class AppSettings: ObservableObject {
     static let shared = AppSettings()
     private let defaults = UserDefaults.standard
 
-    private init() {}
+    private init() { migrateDeprecatedModels() }
+
+    /// Groq periodically decommissions models (a stored id then 404s on every
+    /// call). Rewrite any persisted model setting that points at a now-removed
+    /// id onto its recommended replacement, so upgrades self-heal.
+    private func migrateDeprecatedModels() {
+        // Deprecated Groq model id → live replacement (per console.groq.com/docs/deprecations).
+        // Targets a non-reasoning chat model: the summary/polish pipeline expects
+        // plain Markdown in `content`, which reasoning models (gpt-oss) leave empty.
+        let replacement = "llama-3.3-70b-versatile"
+        let deprecated: Set<String> = [
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "meta-llama/llama-4-maverick-17b-128e-instruct",
+            "qwen/qwen3-32b",
+            "moonshotai/kimi-k2-instruct-0905",
+            "moonshotai/kimi-k2-instruct",
+        ]
+        for key in [Key.polishingModel, Key.fastModel] {
+            if let cur = defaults.string(forKey: key), deprecated.contains(cur) {
+                defaults.set(replacement, forKey: key)
+            }
+        }
+        // One-time heal: an earlier build auto-migrated the retired Scout model
+        // onto gpt-oss-120b, whose reasoning output breaks the summarizer. Move
+        // those installs to a non-reasoning model once, without permanently
+        // blocking a user who later picks gpt-oss deliberately.
+        let healFlag = "api.healedGptOssPolishing"
+        if !defaults.bool(forKey: healFlag) {
+            if defaults.string(forKey: Key.polishingModel) == "openai/gpt-oss-120b" {
+                defaults.set(replacement, forKey: Key.polishingModel)
+            }
+            defaults.set(true, forKey: healFlag)
+        }
+    }
 
     // MARK: - Keys
 
@@ -164,7 +197,7 @@ final class AppSettings: ObservableObject {
 
     enum Default {
         static let transcriptionModel              = "whisper-large-v3"
-        static let polishingModel                  = "meta-llama/llama-4-scout-17b-16e-instruct"  // 500K TPD / 30K TPM — avoids the 70B daily cap
+        static let polishingModel                  = "llama-3.3-70b-versatile"  // non-reasoning chat model — plain Markdown output the summarizer can use
         static let fastModel                       = "llama-3.1-8b-instant"
         static let pttKeyCode: Int                 = 61     // Right Option
         static let pttActivation                   = "toggle" // hold | tapLock | toggle

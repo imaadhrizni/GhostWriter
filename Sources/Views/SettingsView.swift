@@ -525,12 +525,10 @@ private struct AIPane: View {
         "distil-whisper-large-v3-en",
     ]
     private static let polishingModels = [
-        "llama-3.3-70b-versatile",
-        "meta-llama/llama-4-scout-17b-16e-instruct",  // 500K TPD / 30K TPM — highest limits, avoids the 70B daily cap
+        "llama-3.3-70b-versatile",                      // non-reasoning, plain Markdown — default
         "llama-3.1-8b-instant",
-        "openai/gpt-oss-120b",                          // reasoning; higher quality for digests
+        "openai/gpt-oss-120b",                          // reasoning model (answer arrives via the reasoning field)
         "openai/gpt-oss-20b",
-        "qwen/qwen3-32b",
     ]
 
     var body: some View {

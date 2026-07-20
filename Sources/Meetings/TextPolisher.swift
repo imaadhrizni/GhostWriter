@@ -1029,6 +1029,10 @@ final class TextPolisher {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = timeout
+        // Reasoning models (gpt-oss) burn the token budget on hidden reasoning;
+        // cap the effort so the visible answer still fits.
+        var body = body
+        if body.model.contains("gpt-oss"), body.reasoning_effort == nil { body.reasoning_effort = "low" }
         request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await session.data(for: request)
@@ -1039,9 +1043,13 @@ final class TextPolisher {
         }
         let result = try JSONDecoder().decode(ChatResponse.self, from: data)
         recordUsage(result)
-        guard let content = result.choices.first?.message.content, !content.isEmpty else {
-            throw GroqError.invalidResponse
-        }
+        // Reasoning models (e.g. gpt-oss) can leave `content` empty and put the
+        // answer in `reasoning` — fall back to it so those models still work.
+        let msg = result.choices.first?.message
+        let content = [msg?.content, msg?.reasoning]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        guard let content, !content.isEmpty else { throw GroqError.invalidResponse }
         return content
     }
 
@@ -1084,6 +1092,9 @@ private struct ChatRequest: Codable {
     let messages: [ChatMessage]
     let temperature: Double
     let max_tokens: Int
+    /// Only sent for reasoning models (gpt-oss) — keeps their hidden reasoning
+    /// cheap so it doesn't consume the whole token budget before the answer.
+    var reasoning_effort: String? = nil
 }
 
 private struct ChatMessage: Codable {
@@ -1096,7 +1107,14 @@ private struct ChatResponse: Codable {
     let usage: Usage?
 
     struct Choice: Codable {
-        let message: ChatMessage
+        let message: Message
+    }
+
+    /// Response message — `content` is optional and `reasoning` carries a
+    /// reasoning model's output (which Groq returns in its own field).
+    struct Message: Codable {
+        let content: String?
+        let reasoning: String?
     }
 
     struct Usage: Codable {

@@ -50,9 +50,23 @@ struct CatalogOrg: Codable, Identifiable, Hashable {
 struct CatalogPerson: Codable, Identifiable, Hashable {
     var id = UUID().uuidString
     var name: String
-    /// Which side of the call they came from, when known.
-    var channel: String?      // "internal" | "external"
+    /// The person's type — a link into the user-managed `personTypes` vocabulary
+    /// (Internal, External › Partner, …). `nil` means "no type set".
+    var typeID: String?
+    /// Legacy free-text side ("internal" | "external"). Kept only so older
+    /// catalogs still decode; migrated into `typeID` on load, never surfaced.
+    var channel: String?
     var email: String?
+}
+
+/// A user-defined person classification (e.g. Internal, External, Partner).
+/// Forms an unlimited hierarchy via `parentID`, mirroring orgs/projects, so
+/// people can be grouped as, say, External › Partner. Cycles are prevented on
+/// assignment.
+struct CatalogPersonType: Codable, Identifiable, Hashable {
+    var id = UUID().uuidString
+    var name: String
+    var parentID: String?
 }
 
 enum OppStage: String, Codable, CaseIterable, Identifiable {
@@ -264,6 +278,7 @@ struct CatalogNote: Codable, Identifiable, Hashable {
 protocol Named { var name: String { get } }
 extension CatalogOrg: Named {}
 extension CatalogPerson: Named {}
+extension CatalogPersonType: Named {}
 extension CatalogProject: Named {}
 extension CatalogTag: Named {}
 
@@ -288,9 +303,32 @@ struct CatalogDocument: Codable {
     var schemaVersion = 1
     var orgs: [CatalogOrg] = []
     var people: [CatalogPerson] = []
+    /// User-managed person classifications (hierarchical). Optional on the wire
+    /// so catalogs written before the feature still decode.
+    var personTypes: [CatalogPersonType] = []
     var projects: [CatalogProject] = []
     var tags: [CatalogTag] = []
     var notes: [CatalogNote] = []
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion, orgs, people, personTypes, projects, tags, notes
+    }
+
+    /// Tolerant decoder: every collection is optional on the wire, so a catalog
+    /// written before a field existed (notably `personTypes`) still loads
+    /// instead of throwing and appearing to wipe the catalog.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        orgs = try c.decodeIfPresent([CatalogOrg].self, forKey: .orgs) ?? []
+        people = try c.decodeIfPresent([CatalogPerson].self, forKey: .people) ?? []
+        personTypes = try c.decodeIfPresent([CatalogPersonType].self, forKey: .personTypes) ?? []
+        projects = try c.decodeIfPresent([CatalogProject].self, forKey: .projects) ?? []
+        tags = try c.decodeIfPresent([CatalogTag].self, forKey: .tags) ?? []
+        notes = try c.decodeIfPresent([CatalogNote].self, forKey: .notes) ?? []
+    }
 }
 
 // MARK: Store
@@ -329,6 +367,39 @@ final class CatalogStore: ObservableObject {
         guard let data = try? Data(contentsOf: fileURL),
               let decoded = try? Self.makeDecoder().decode(CatalogDocument.self, from: data) else { return }
         doc = decoded
+        migratePersonTypes()
+    }
+
+    /// One-time upgrade of the legacy free-text `channel` into the managed
+    /// `personTypes` vocabulary. Seeds a default hierarchy the first time any
+    /// legacy channel is seen (or the doc has people but no types), then maps
+    /// each person's channel onto the matching type and clears the old field.
+    /// Idempotent: a doc that already has types and no channels is left alone.
+    private func migratePersonTypes() {
+        // Nothing to migrate unless some person still carries a legacy channel.
+        guard doc.people.contains(where: { !($0.channel ?? "").isEmpty }) else { return }
+
+        // Seed defaults only when the vocabulary is empty, so we never clobber a
+        // user's own types. External is a parent of the sales-facing kinds.
+        if doc.personTypes.isEmpty {
+            let internalT = CatalogPersonType(name: "Internal")
+            let external  = CatalogPersonType(name: "External")
+            let partner   = CatalogPersonType(name: "Partner",  parentID: external.id)
+            let customer  = CatalogPersonType(name: "Customer", parentID: external.id)
+            let prospect  = CatalogPersonType(name: "Prospect", parentID: external.id)
+            doc.personTypes = [internalT, external, partner, customer, prospect]
+        }
+
+        // Map each legacy channel string onto a type by name (case-insensitive).
+        func typeID(named name: String) -> String? {
+            doc.personTypes.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.id
+        }
+        for i in doc.people.indices {
+            defer { doc.people[i].channel = nil }
+            guard let ch = doc.people[i].channel, !ch.isEmpty, doc.people[i].typeID == nil else { continue }
+            doc.people[i].typeID = typeID(named: ch)
+        }
+        save()
     }
 
     private func save() {
@@ -372,6 +443,7 @@ final class CatalogStore: ObservableObject {
             case .merge:
                 Self.upsert(&doc.orgs, incoming.orgs)
                 Self.upsert(&doc.people, incoming.people)
+                Self.upsert(&doc.personTypes, incoming.personTypes)
                 Self.upsert(&doc.projects, incoming.projects)
                 Self.upsert(&doc.tags, incoming.tags)
                 Self.upsert(&doc.notes, incoming.notes)
@@ -857,6 +929,100 @@ final class CatalogStore: ObservableObject {
         }
     }
 
+    // MARK: Bulk person operations
+
+    /// Create many people at once from a list of names (one per line in the UI).
+    /// Blank lines are ignored; existing names are skipped so re-running is safe.
+    /// Returns the people that were actually created.
+    @discardableResult
+    func addPeople(names: [String], typeID: String? = nil) -> [CatalogPerson] {
+        let existing = Set(doc.people.map { $0.name.lowercased() })
+        var seen = Set<String>(), created: [CatalogPerson] = []
+        for raw in names {
+            let n = raw.trimmingCharacters(in: .whitespaces)
+            let key = n.lowercased()
+            guard !n.isEmpty, !existing.contains(key), seen.insert(key).inserted else { continue }
+            var p = CatalogPerson(name: n); p.typeID = typeID
+            created.append(p)
+        }
+        guard !created.isEmpty else { return [] }
+        mutate { $0.people.append(contentsOf: created) }
+        return created
+    }
+
+    /// Delete several people and scrub them from every note in one pass.
+    func deletePeople(_ ids: [String]) {
+        let gone = Set(ids)
+        guard !gone.isEmpty else { return }
+        mutate { doc in
+            doc.people.removeAll { gone.contains($0.id) }
+            for i in doc.notes.indices { doc.notes[i].personIDs.removeAll { gone.contains($0) } }
+        }
+    }
+
+    /// Reassign the type of several people at once (nil = clear the type).
+    func setPersonType(_ ids: [String], to typeID: String?) {
+        let target = Set(ids)
+        guard !target.isEmpty else { return }
+        mutate { doc in
+            for i in doc.people.indices where target.contains(doc.people[i].id) {
+                doc.people[i].typeID = typeID
+            }
+        }
+    }
+
+    // MARK: Person types (hierarchical)
+
+    func personType(_ id: String?) -> CatalogPersonType? { doc.personTypes.first { $0.id == id } }
+    var personTypesSorted: [CatalogPersonType] { doc.personTypes.sortedByName }
+    var rootPersonTypes: [CatalogPersonType] {
+        personTypesSorted.filter { $0.parentID == nil || personType($0.parentID) == nil }
+    }
+    func childPersonTypes(of id: String) -> [CatalogPersonType] {
+        personTypesSorted.filter { $0.parentID == id }
+    }
+    /// `id` plus all descendant types — for cycle-safe parent choices and delete.
+    func personTypeSubtree(of id: String) -> Set<String> {
+        Self.subtree(of: id, children: { childPersonTypes(of: $0).map(\.id) })
+    }
+    /// "External › Partner" lineage for display.
+    func personTypePath(of id: String) -> String {
+        Self.lineage(of: id, exists: { personType($0) != nil }, parentOf: { personType($0)?.parentID })
+            .reversed().compactMap { personType($0)?.name }.joined(separator: " › ")
+    }
+
+    @discardableResult
+    func addPersonType(name: String, parentID: String? = nil) -> CatalogPersonType {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        if let existing = doc.personTypes.first(where: {
+            $0.name.caseInsensitiveCompare(n) == .orderedSame && $0.parentID == parentID
+        }) { return existing }
+        let t = CatalogPersonType(name: n.isEmpty ? "New Type" : n, parentID: parentID)
+        mutate { $0.personTypes.append(t) }
+        return t
+    }
+    func update(_ t: CatalogPersonType) {
+        var type = t
+        // Reject a parent that would create a cycle (self or a descendant).
+        if let parent = type.parentID, personTypeSubtree(of: type.id).contains(parent) { type.parentID = nil }
+        mutate { doc in if let i = doc.personTypes.firstIndex(where: { $0.id == type.id }) { doc.personTypes[i] = type } }
+    }
+    /// Delete a type and its whole subtree; people that pointed at any removed
+    /// type fall back to "no type".
+    func deletePersonType(_ id: String) {
+        let gone = personTypeSubtree(of: id)
+        mutate { doc in
+            doc.personTypes.removeAll { gone.contains($0.id) }
+            for i in doc.people.indices where doc.people[i].typeID.map(gone.contains) == true {
+                doc.people[i].typeID = nil
+            }
+        }
+    }
+    /// People carrying a given type (nil = untyped). Sorted by name.
+    func people(ofType typeID: String?) -> [CatalogPerson] {
+        doc.people.sortedByName.filter { $0.typeID == typeID }
+    }
+
     @discardableResult
     func addProject(name: String, orgID: String? = nil, parentID: String? = nil) -> CatalogProject {
         var p = CatalogProject(name: name, orgID: orgID)
@@ -913,6 +1079,33 @@ final class CatalogStore: ObservableObject {
                 }
             }
             doc.tags.removeAll { $0.id == sourceID }
+        }
+    }
+
+    // MARK: Bulk tag operations
+
+    /// Create many tags at once (one name per line). Folds onto existing tags by
+    /// name/alias, so re-running is safe. Returns the tags that were created.
+    @discardableResult
+    func addTags(names: [String]) -> [CatalogTag] {
+        var created: [CatalogTag] = []
+        for raw in names {
+            let n = raw.trimmingCharacters(in: .whitespaces)
+            guard !n.isEmpty else { continue }
+            let before = doc.tags.count
+            let t = addTag(name: n)          // dedupes by name/alias
+            if doc.tags.count > before { created.append(t) }
+        }
+        return created
+    }
+
+    /// Delete several tags and scrub them from every note in one pass.
+    func deleteTags(_ ids: [String]) {
+        let gone = Set(ids)
+        guard !gone.isEmpty else { return }
+        mutate { doc in
+            doc.tags.removeAll { gone.contains($0.id) }
+            for i in doc.notes.indices { doc.notes[i].tagIDs.removeAll { gone.contains($0) } }
         }
     }
 
@@ -1058,6 +1251,63 @@ final class CatalogStore: ObservableObject {
                 doc.notes[i].projectIDs = [projID]               // a note sits in one project
             } else {
                 doc.notes[i].projectIDs.removeAll { $0 == projID }
+            }
+        }
+    }
+
+    // MARK: Bulk note operations
+
+    /// Drop several catalog rows at once (Markdown files are left untouched).
+    func deleteNotes(_ ids: [String]) {
+        let gone = Set(ids)
+        guard !gone.isEmpty else { return }
+        mutate { $0.notes.removeAll { gone.contains($0.id) } }
+    }
+
+    /// Trash the Markdown files for several notes and drop their rows. Best
+    /// effort: files that fail to trash are skipped but their rows are still
+    /// removed (matching `trashNote`). Returns how many files were trashed.
+    @discardableResult
+    func trashNotes(_ ids: [String]) -> Int {
+        var trashed = 0
+        for id in ids { if (try? trashNote(id)) == true { trashed += 1 } }
+        return trashed
+    }
+
+    /// Add a tag / person to every note in `ids` (idempotent per note).
+    func addTag(_ tagID: String, toNotes ids: [String]) {
+        let set = Set(ids)
+        mutate { doc in
+            for i in doc.notes.indices where set.contains(doc.notes[i].id) {
+                if !doc.notes[i].tagIDs.contains(tagID) { doc.notes[i].tagIDs.append(tagID) }
+            }
+        }
+    }
+    func addPerson(_ personID: String, toNotes ids: [String]) {
+        let set = Set(ids)
+        mutate { doc in
+            for i in doc.notes.indices where set.contains(doc.notes[i].id) {
+                if !doc.notes[i].personIDs.contains(personID) { doc.notes[i].personIDs.append(personID) }
+            }
+        }
+    }
+    /// File every note in `ids` under one org or project (mutually exclusive,
+    /// matching the single-note rule). Pass `.org` or `.project` scope.
+    func fileNotes(_ ids: [String], underOrg orgID: String) {
+        let set = Set(ids)
+        mutate { doc in
+            for i in doc.notes.indices where set.contains(doc.notes[i].id) {
+                doc.notes[i].projectIDs.removeAll()
+                doc.notes[i].orgIDs = [orgID]
+            }
+        }
+    }
+    func fileNotes(_ ids: [String], underProject projID: String) {
+        let set = Set(ids)
+        mutate { doc in
+            for i in doc.notes.indices where set.contains(doc.notes[i].id) {
+                doc.notes[i].orgIDs.removeAll()
+                doc.notes[i].projectIDs = [projID]
             }
         }
     }

@@ -1879,6 +1879,12 @@ private struct MeetingNotesPane: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
+            SettingsGroup("Recording") {
+                Toggle("Retain meeting audio", isOn: $settings.retainMeetingAudio)
+                Text("Saves a compressed recording of each meeting under a “Audio” folder beside your notes, so a note whose transcription failed can be regenerated from the audio (Catalog → the note → Recording). Delete recordings any time from there. Audio is otherwise never written to disk.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
             SettingsGroup("Summary Content") {
                 Toggle("Append AI summary when a meeting ends", isOn: $settings.summariesEnabled)
                 Text("Adds the template's sections to the notes file.")

@@ -121,9 +121,8 @@ enum MeetingRefinery {
 
             if wantsTitle, !facts.title.isEmpty {
                 MeetingNotesWriter.setFrontMatterTitle(facts.title, to: fileURL)
-                let root = AppSettings.shared.notesFolder.path + "/"
                 CatalogStore.shared.renameNote(
-                    relativePath: fileURL.path.replacingOccurrences(of: root, with: ""), to: facts.title)
+                    relativePath: AppSettings.shared.relativePath(of: fileURL), to: facts.title)
             }
 
             if wantsMeta {

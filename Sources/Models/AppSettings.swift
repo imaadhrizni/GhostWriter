@@ -79,6 +79,7 @@ final class AppSettings: ObservableObject {
         static let liveAssistantEnabled   = "meeting.liveAssistantEnabled"
         static let meetingPrepCard        = "meeting.prepCard"
         static let notifyOnMeetingEnd     = "meeting.notifyOnMeetingEnd"
+        static let retainMeetingAudio     = "meeting.retainAudio"
         static let frontMatterEnabled     = "meeting.frontMatterEnabled"
         static let diarizationEnabled     = "meeting.diarizationEnabled"
         static let offlineFallback        = "transcription.offlineFallback"
@@ -165,7 +166,7 @@ final class AppSettings: ObservableObject {
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
                           structuredExtraction, extractKeyFields, extractUnanswered, watchlistKeywords, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, liveAssistantEnabled, meetingPrepCard,
-                          notifyOnMeetingEnd, frontMatterEnabled,
+                          notifyOnMeetingEnd, retainMeetingAudio, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, preferOnDeviceAI, transcriptionLanguage,
                           digestEnabled, digestFrequency, digestHour, digestWeekday, staleRelationshipDays, lastDigestDay,
                           vocabulary, replacements, appProfiles,
@@ -221,6 +222,7 @@ final class AppSettings: ObservableObject {
         static let liveAssistantEnabled            = true
         static let meetingPrepCard                 = true
         static let notifyOnMeetingEnd              = true
+        static let retainMeetingAudio              = true
         static let frontMatterEnabled              = true
         static let diarizationEnabled              = true
         static let offlineFallback                 = true
@@ -544,6 +546,13 @@ final class AppSettings: ObservableObject {
         set { set(newValue, Key.notifyOnMeetingEnd) }
     }
 
+    /// Keep a compressed recording of each meeting under `<notes>/Audio/`, so a
+    /// note whose transcription failed can be regenerated from the audio.
+    var retainMeetingAudio: Bool {
+        get { bool(Key.retainMeetingAudio, Default.retainMeetingAudio) }
+        set { set(newValue, Key.retainMeetingAudio) }
+    }
+
     /// Prepend YAML front-matter (Obsidian/Notion friendly) to notes files.
     var frontMatterEnabled: Bool {
         get { bool(Key.frontMatterEnabled, Default.frontMatterEnabled) }
@@ -616,6 +625,14 @@ final class AppSettings: ObservableObject {
         set { set(min(1.0, max(0.15, newValue)), Key.pttTapThreshold) }
     }
 
+    /// Path of `url` relative to the notes folder (the leading folder + "/"
+    /// dropped) — the form stored in the Catalog and in `gw_audio`. Returns the
+    /// absolute path unchanged if it isn't under the notes folder.
+    func relativePath(of url: URL) -> String {
+        let root = notesFolder.path + "/"
+        return url.path.hasPrefix(root) ? String(url.path.dropFirst(root.count)) : url.path
+    }
+
     /// Apply the folder-organization setting to any base folder for a given
     /// date (e.g. base/2026/2026-07/03/). Folder names are POSIX-stable across
     /// user locales/calendars. Existing files are never moved.
@@ -648,6 +665,13 @@ final class AppSettings: ObservableObject {
     /// setting (independent of meetings), under the dictations folder.
     func dictationDestinationFolder(for date: Date = Date()) -> URL {
         organizedFolder(base: dictationsFolder, using: dictationOrganization, for: date)
+    }
+
+    /// Folder a retained meeting recording goes into — `<notes>/Audio/` mirrored
+    /// with the *same* dated organization as meeting notes (e.g. …/Audio/2026/2026-08/25/).
+    func audioDestinationFolder(for date: Date = Date()) -> URL {
+        organizedFolder(base: notesFolder.appendingPathComponent("Audio", isDirectory: true),
+                        using: notesOrganization, for: date)
     }
 
     /// Experimental: label distinct remote speakers (Them / Them 2) by

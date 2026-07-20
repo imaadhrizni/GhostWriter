@@ -34,75 +34,14 @@ final class GroqService {
     ///     names/jargon stay consistent once they first appear. Optional.
     /// - Returns: Transcribed text
     func transcribe(audioData: Data, context: String = "") async throws -> String {
-        guard !apiKey.isEmpty else {
-            throw GroqError.missingAPIKey
-        }
-
-        // Convert PCM to WAV for the API
+        // Convert PCM to WAV for the API.
         let wavData = AudioCapture.createWAV(from: audioData)
-
-        // Build multipart form data
-        let boundary = UUID().uuidString
-        var request = URLRequest(url: URL(string: "\(baseURL)/audio/transcriptions")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = TimeInterval(AppSettings.shared.transcriptionTimeout)
-
-        var body = Data()
-
-        // Model parameter (user-configurable in Settings)
-        body.appendMultipart(name: "model", value: AppSettings.shared.transcriptionModel, boundary: boundary)
-
-        // Prompt hint: Whisper biases decoding toward text it has already
-        // "seen". We combine the user's static glossary with rolling context —
-        // the recent transcript — so names, acronyms, and jargon transcribe
-        // consistently once they first appear. Self-priming needs no setup and
-        // is the same for every user, which matters for a distributed build.
-        let glossary = [AppSettings.shared.vocabularyHint(), Self.sessionGlossary]
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        let promptHint = Self.composePrompt(vocabulary: glossary, context: context)
-        if !promptHint.isEmpty {
-            body.appendMultipart(name: "prompt", value: promptHint, boundary: boundary)
-        }
-
-        // Language hint (optional — helps accuracy; user-configurable)
-        let language = AppSettings.shared.transcriptionLanguage.trimmingCharacters(in: .whitespaces)
-        if !language.isEmpty {
-            body.appendMultipart(name: "language", value: language, boundary: boundary)
-        }
-
-        // Response format
-        body.appendMultipart(name: "response_format", value: "json", boundary: boundary)
-
-        // Audio file
-        body.appendMultipartFile(name: "file", filename: "audio.wav", mimeType: "audio/wav", data: wavData, boundary: boundary)
-
-        // Close boundary
-        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-
-        request.httpBody = body
-
-        // Send request
-        let (data, response) = try await session.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw GroqError.invalidResponse
-        }
-
-        guard httpResponse.statusCode == 200 else {
-            let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw GroqError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
-        }
-
+        let text = try await postTranscription(
+            fileData: wavData, filename: "audio.wav", mimeType: "audio/wav",
+            timeout: TimeInterval(AppSettings.shared.transcriptionTimeout), context: context)
         // Bill estimate: 16 kHz, 16-bit, mono PCM → 2 bytes/sample.
-        let audioSeconds = Double(audioData.count) / 2.0 / 16_000.0
-        UsageStats.shared.recordTranscription(audioSeconds: audioSeconds)
-
-        // Parse response, then apply the user's find→replace rules
-        let result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
-        return AppSettings.shared.applyReplacements(to: result.text)
+        UsageStats.shared.recordTranscription(audioSeconds: Double(audioData.count) / 2.0 / 16_000.0)
+        return text
     }
 
     /// Transcribe an audio *file* (wav/mp3/m4a/ogg/flac/webm…) by uploading it
@@ -114,22 +53,38 @@ final class GroqService {
     ///   - audioSeconds: duration for the usage/cost estimate (0 if unknown)
     ///   - context: optional priming text
     func transcribe(fileURL: URL, mimeType: String, audioSeconds: Double, context: String = "") async throws -> String {
-        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
-
         let fileData = try Data(contentsOf: fileURL)
+        // Whole files are larger than live chunks — use the dedicated (longer),
+        // user-configurable import timeout.
+        let text = try await postTranscription(
+            fileData: fileData, filename: fileURL.lastPathComponent, mimeType: mimeType,
+            timeout: TimeInterval(AppSettings.shared.importTranscriptionTimeout), context: context)
+        if audioSeconds > 0 { UsageStats.shared.recordTranscription(audioSeconds: audioSeconds) }
+        return text
+    }
+
+    /// The one Whisper multipart upload both `transcribe` entry points share:
+    /// model + glossary/rolling-context prompt + language + `json` format, POST,
+    /// status check, decode, and the user's find→replace pass. Callers differ
+    /// only in the file part, timeout, and usage accounting.
+    private func postTranscription(fileData: Data, filename: String, mimeType: String,
+                                   timeout: TimeInterval, context: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
 
         let boundary = UUID().uuidString
         var request = URLRequest(url: URL(string: "\(baseURL)/audio/transcriptions")!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        // Whole files are larger than live chunks — use the dedicated (longer),
-        // user-configurable import timeout.
-        request.timeoutInterval = TimeInterval(AppSettings.shared.importTranscriptionTimeout)
+        request.timeoutInterval = timeout
 
         var body = Data()
+        // Model parameter (user-configurable in Settings).
         body.appendMultipart(name: "model", value: AppSettings.shared.transcriptionModel, boundary: boundary)
 
+        // Prompt hint: Whisper biases decoding toward text it has already "seen".
+        // We combine the user's static glossary with rolling context (the recent
+        // transcript) so names, acronyms, and jargon transcribe consistently.
         let glossary = [AppSettings.shared.vocabularyHint(), Self.sessionGlossary]
             .filter { !$0.isEmpty }
             .joined(separator: " ")
@@ -138,14 +93,14 @@ final class GroqService {
             body.appendMultipart(name: "prompt", value: promptHint, boundary: boundary)
         }
 
+        // Language hint (optional — helps accuracy; user-configurable).
         let language = AppSettings.shared.transcriptionLanguage.trimmingCharacters(in: .whitespaces)
         if !language.isEmpty {
             body.appendMultipart(name: "language", value: language, boundary: boundary)
         }
 
         body.appendMultipart(name: "response_format", value: "json", boundary: boundary)
-        body.appendMultipartFile(name: "file", filename: fileURL.lastPathComponent,
-                                 mimeType: mimeType, data: fileData, boundary: boundary)
+        body.appendMultipartFile(name: "file", filename: filename, mimeType: mimeType, data: fileData, boundary: boundary)
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         request.httpBody = body
 
@@ -155,8 +110,6 @@ final class GroqService {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw GroqError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
         }
-
-        if audioSeconds > 0 { UsageStats.shared.recordTranscription(audioSeconds: audioSeconds) }
         let result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
         return AppSettings.shared.applyReplacements(to: result.text)
     }

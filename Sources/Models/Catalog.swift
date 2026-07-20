@@ -1148,6 +1148,34 @@ final class CatalogStore: ObservableObject {
         mutate { $0.notes.removeAll { $0.id == id } }
     }
 
+    /// Every retained recording under `<notes>/Audio/` (any accepted audio type,
+    /// recursively across the dated subfolders). Unsorted — callers sort. Shared
+    /// by the Recordings hub and the per-note "assign recording" picker.
+    func audioRecordings() -> [URL] {
+        let root = AppSettings.shared.notesFolder.appendingPathComponent("Audio", isDirectory: true)
+        guard let en = FileManager.default.enumerator(
+            at: root, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]) else { return [] }
+        var out: [URL] = []
+        for case let url as URL in en where AudioFileImporter.isAccepted(url) { out.append(url) }
+        return out
+    }
+
+    /// Move a recording to the Trash and clear the `gw_audio` link on its note
+    /// (when known) — the safe-delete used by the Recordings hub and note editor.
+    func trashRecording(at url: URL, unlinkFrom note: CatalogNote?) {
+        try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        if let note { MeetingNotesWriter.setAudioPath("", to: self.url(of: note)) }
+    }
+
+    /// The retained recording linked to a note via its `gw_audio` front-matter,
+    /// if the file still exists. Path is relative to the notes folder.
+    func audioURL(of note: CatalogNote) -> URL? {
+        guard let text = url(of: note).readText(),
+              let rel = FrontMatter.field("gw_audio", in: text), !rel.isEmpty else { return nil }
+        let url = AppSettings.shared.notesFolder.appendingPathComponent(rel)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
     /// Move a note's Markdown file to the Trash, then drop its catalog row.
     /// Recoverable (the file lands in Trash, not a hard delete). Returns whether
     /// the file was trashed; the row is removed regardless so the Catalog never
@@ -1257,13 +1285,6 @@ final class CatalogStore: ObservableObject {
 
     // MARK: Bulk note operations
 
-    /// Drop several catalog rows at once (Markdown files are left untouched).
-    func deleteNotes(_ ids: [String]) {
-        let gone = Set(ids)
-        guard !gone.isEmpty else { return }
-        mutate { $0.notes.removeAll { gone.contains($0.id) } }
-    }
-
     /// Trash the Markdown files for several notes and drop their rows. Best
     /// effort: files that fail to trash are skipped but their rows are still
     /// removed (matching `trashNote`). Returns how many files were trashed.
@@ -1330,7 +1351,7 @@ final class CatalogStore: ObservableObject {
             guard url.pathExtension.lowercased() == "md",
                   url.lastPathComponent.hasPrefix("Meeting_"),   // notes only
                   !url.path.hasPrefix(dictations) else { continue }
-            let rel = url.path.replacingOccurrences(of: root.path + "/", with: "")
+            let rel = AppSettings.shared.relativePath(of: url)
             guard !known.contains(rel) else { continue }
             let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
             let date = values?.creationDate ?? values?.contentModificationDate

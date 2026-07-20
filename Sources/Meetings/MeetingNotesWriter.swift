@@ -478,6 +478,34 @@ final class MeetingNotesWriter {
         if replaced { Log.meeting.info("🏷 Meeting title set") }
     }
 
+    /// Set the note's `gw_meeting_type:` front-matter to a template id (replacing
+    /// an existing line, or inserting one when the note has none — e.g. an older
+    /// note). Lets the meeting type be corrected after the fact.
+    static func setMeetingType(_ templateID: String, to fileURL: URL) {
+        let id = templateID.trimmingCharacters(in: .whitespaces)
+        guard !id.isEmpty else { return }
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            if !FrontMatter.replaceLine(prefix: "gw_meeting_type:", with: "gw_meeting_type: \(id)", in: &lines) {
+                lines.append("gw_meeting_type: \(id)")
+            }
+        }
+        Log.meeting.info("🗂 Meeting type set to \(id)")
+    }
+
+    /// Record (or clear) the note's retained-audio path in `gw_audio:`
+    /// front-matter. Path is relative to the notes folder (e.g. `Audio/x.m4a`).
+    /// An empty path removes the line.
+    static func setAudioPath(_ relativePath: String, to fileURL: URL) {
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            let clean = relativePath.trimmingCharacters(in: .whitespaces)
+            if clean.isEmpty {
+                lines.removeAll { $0.hasPrefix("gw_audio:") }
+            } else if !FrontMatter.replaceLine(prefix: "gw_audio:", with: "gw_audio: \(clean)", in: &lines) {
+                lines.append("gw_audio: \(clean)")
+            }
+        }
+    }
+
     /// Count case-insensitive whole-word-ish occurrences of each watchlist term
     /// in the transcript. Returns only matched terms, most-mentioned first.
     static func mentionCounts(in transcript: String, terms: [String]) -> [(term: String, count: Int)] {

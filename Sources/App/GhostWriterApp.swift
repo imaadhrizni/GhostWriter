@@ -70,6 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Meeting notes
     private let meetingNotes = MeetingNotesWriter()
+    /// Optional per-meeting audio recorder (retention safety net).
+    private var audioRetainer: AudioRetainer?
     private var meetingStartTime: Date?
     private var meetingTimer: Timer?
 
@@ -825,8 +827,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             await MainActor.run {
                 guard let target = catalogTarget else { return }
                 let store = CatalogStore.shared
-                let root = AppSettings.shared.notesFolder.path + "/"
-                let rel = fileURL.path.replacingOccurrences(of: root, with: "")
+                let rel = AppSettings.shared.relativePath(of: fileURL)
                 let note = store.note(forRelativePath: rel,
                                       title: fileURL.deletingPathExtension().lastPathComponent,
                                       date: start)
@@ -907,8 +908,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Resolve the org / project chain from the Catalog link.
         var org: String?, project: String?
         let store = CatalogStore.shared
-        let root = s.notesFolder.path + "/"
-        let rel = fileURL.path.replacingOccurrences(of: root, with: "")
+        let rel = s.relativePath(of: fileURL)
         if let note = store.doc.notes.first(where: { $0.filePath == rel }) {
             if let projID = note.projectIDs.first, let proj = store.project(projID) {
                 project = proj.name
@@ -1803,6 +1803,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingDetector.suppressed = true
         meetingNotes.beginSession()
 
+        // Retain the raw audio (opt-out) so a failed transcription can be
+        // regenerated from the recording. Keyed to this meeting's note file.
+        if settings.retainMeetingAudio, let noteURL = meetingNotes.currentFilePath {
+            // Mirror the note's dated organization under <notes>/Audio/.
+            let retainer = AudioRetainer(
+                baseName: noteURL.deletingPathExtension().lastPathComponent,
+                audioDir: settings.audioDestinationFolder(for: meetingStartTime ?? Date()))
+            retainer.start()
+            audioRetainer = retainer
+        } else {
+            audioRetainer = nil
+        }
+
         // Prime Whisper with the proper nouns for this meeting (linked entity,
         // its people, taught voices) so names transcribe right from the start.
         GroqService.sessionGlossary = buildSessionGlossary(for: meetingCatalogTarget)
@@ -1907,11 +1920,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Finalize asynchronously: wait for in-flight transcriptions (incl.
             // the tail we just flushed) so they land in the file, give queued
             // failures one last retry, then write the footer + summary.
+            let retainer = audioRetainer
+            audioRetainer = nil
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 await self.waitForPendingTranscriptions(timeout: 20)
                 await self.finalRetryPass()
                 self.meetingNotes.endSession(startedAt: start)
+                // Finish the recording and record its path on the note before the
+                // refinement pass writes the rest of the front-matter.
+                if let retainer, let audioURL = await retainer.finish(),
+                   let noteURL = self.meetingNotes.lastCompletedFilePath {
+                    // Path relative to the notes folder (includes the dated subfolders).
+                    MeetingNotesWriter.setAudioPath(self.settings.relativePath(of: audioURL), to: noteURL)
+                }
                 self.finalizeMeetingNotes(startedAt: start, agenda: agendaForNotes,
                                           catalogTarget: catalogTargetForNotes)
             }
@@ -1942,6 +1964,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let vad = VoiceActivityDetector()
         systemAudioCapture.onAudioBuffer = { [weak self] buffer in
             guard let self, !self.isTranscriptionPaused else { return }
+            self.audioRetainer?.appendSystem(buffer)
             let rms = vad.calculateRMS(from: buffer)
             let dbfs = vad.rmsToDBFS(rms)
             let isVoice = dbfs >= self.settings.systemAudioThreshold
@@ -1957,6 +1980,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let vad = VoiceActivityDetector()
         micCapture.onAudioBuffer = { [weak self] buffer in
             guard let self, !self.isTranscriptionPaused else { return }
+            self.audioRetainer?.appendMic(buffer)
             let rms = vad.calculateRMS(from: buffer)
             let isVoice = vad.rmsToDBFS(rms) >= self.settings.meetingMicThreshold  // mic threshold — louder than system audio
             self.micMeetingQueue.async { [weak self] in

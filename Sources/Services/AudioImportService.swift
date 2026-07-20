@@ -52,6 +52,26 @@ final class AudioImportService: ObservableObject {
     func clearFinished() { items.removeAll { $0.status == .done } }
     var queuedCount: Int { items.filter { $0.status == .queued }.count }
 
+    /// Re-transcribe a retained recording into a **fresh** note, filed under the
+    /// same org/project as `sourceNote`, and point the new note back at the same
+    /// recording. Used by the Catalog's "Regenerate from audio" recovery when a
+    /// meeting's original transcription/summary failed. Returns the new note URL.
+    func regenerate(fromAudio url: URL, like sourceNote: CatalogNote) async -> URL? {
+        let prevKind = targetKind, prevID = targetID
+        if let pid = sourceNote.projectIDs.first { targetKind = "project"; targetID = pid }
+        else if let oid = sourceNote.orgIDs.first { targetKind = "org"; targetID = oid }
+        else { targetKind = ""; targetID = "" }
+        defer { targetKind = prevKind; targetID = prevID }
+        do {
+            let newURL = try await importOne(url)
+            MeetingNotesWriter.setAudioPath(settings.relativePath(of: url), to: newURL)
+            return newURL
+        } catch {
+            Log.meeting.error("🎙️ Regenerate from audio failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
     // MARK: Run
 
     func run() async {
@@ -118,8 +138,7 @@ final class AudioImportService: ObservableObject {
         // transcript intact.
         await enrich(fileURL: fileURL, transcript: trimmed)
 
-        let root = settings.notesFolder.path + "/"
-        let rel = fileURL.path.replacingOccurrences(of: root, with: "")
+        let rel = settings.relativePath(of: fileURL)
         let note = CatalogStore.shared.note(forRelativePath: rel, title: title, date: meta.date)
         if targetKind == "project", !targetID.isEmpty {
             CatalogStore.shared.setProject(targetID, on: note.id, true)

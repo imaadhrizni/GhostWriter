@@ -212,12 +212,23 @@ enum MeetingRefinery {
 
     // MARK: Helpers
 
-    /// Total characters across dialogue lines (`**[timestamp]** …`) — the
-    /// meeting's real speech, ignoring headers, bookmarks, and generated notes.
+    /// How much real content there is to summarize. Live meetings write
+    /// timestamped dialogue (`**[timestamp]** …`), so those lines are the
+    /// truest measure. Imported or re-transcribed notes have no timestamp
+    /// markers — for those we fall back to counting substantive body text
+    /// (anything that isn't a heading, a divider, or an event marker) so they
+    /// can still be refined rather than being wrongly rejected as "not enough
+    /// content". Callers should strip previously-generated sections first so a
+    /// prior summary isn't counted as content.
     static func dialogueLength(of transcript: String) -> Int {
-        transcript.split(whereSeparator: \.isNewline)
-            .filter { $0.hasPrefix("**[") }
-            .reduce(0) { $0 + $1.count }
+        let lines = transcript.split(whereSeparator: \.isNewline)
+        let spoken = lines.filter { $0.hasPrefix("**[") }.reduce(0) { $0 + $1.count }
+        if spoken > 0 { return spoken }
+        return lines.reduce(0) { total, line in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard !t.isEmpty, !t.hasPrefix("#"), t != "---", !t.hasPrefix("*[") else { return total }
+            return total + t.count
+        }
     }
 
     /// Guard against low-confidence `customer` guesses from entity extraction:
@@ -240,6 +251,14 @@ enum MeetingRefinery {
     /// `# Chapters`, `# Mentions`) from a note file, leaving front-matter, the
     /// header, transcript, and any Bookmarks intact — so a re-run replaces
     /// rather than duplicates. Matching is on the heading text, at any `#` depth.
+    ///
+    /// A generated section's body may itself contain sub-headings — the Summary
+    /// carries `## Decisions`, `## Action Items`, etc. — so we keep dropping a
+    /// section's body until we reach either another generated heading or a
+    /// **top-level** (`# `) heading (a real new section such as the note header,
+    /// Bookmarks, or the transcript). Stopping at any heading would leave those
+    /// summary sub-sections behind, which is exactly what produced duplicated
+    /// content on re-run / template change.
     static func stripGeneratedSections(from fileURL: URL) {
         guard let text = fileURL.readText() else { return }
         let headings = Set(generatedHeadings.map { $0.lowercased() })
@@ -249,12 +268,16 @@ enum MeetingRefinery {
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("#") {
+                let hashes = trimmed.prefix { $0 == "#" }.count
                 let title = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "# ")).lowercased()
                 if headings.contains(title) {
                     skipping = true          // drop this heading and its body …
                     continue
                 }
-                if skipping { skipping = false }   // … until the next heading of any kind
+                // … until the next generated heading (handled above) or a
+                // top-level heading. A deeper (`## `+) non-generated heading is
+                // part of the generated section's body, so keep dropping it.
+                if skipping, hashes == 1 { skipping = false }
             }
             if !skipping { out.append(line) }
         }

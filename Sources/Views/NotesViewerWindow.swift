@@ -13,6 +13,10 @@ final class NotesViewerWindowController: NSWindowController {
     /// ones are pruned on the next present.
     private static var open: [NotesViewerWindowController] = []
 
+    /// The note this viewer is backing, if any (nil for generated drafts) —
+    /// used to avoid opening the same file in two windows.
+    private var fileURL: URL?
+
     /// Open a notes file in a viewer (used from the menu and Catalog). When
     /// "open notes in external editor" is on, hand the file to the OS default
     /// app (e.g. VS Code) instead.
@@ -22,6 +26,13 @@ final class NotesViewerWindowController: NSWindowController {
             return
         }
         open.removeAll { $0.window?.isVisible == false }
+        // One window per note: if this file is already open, just surface it
+        // rather than spawning a second editor that would clobber the first on
+        // save.
+        if let existing = open.first(where: { $0.fileURL == fileURL }) {
+            existing.bringToFront()
+            return
+        }
         let controller = NotesViewerWindowController(fileURL: fileURL)
         open.append(controller)
         controller.bringToFront()
@@ -64,6 +75,7 @@ final class NotesViewerWindowController: NSWindowController {
         window.titlebarAppearsTransparent = true
 
         self.init(window: window)
+        self.fileURL = fileURL
         window.contentView = NSHostingView(rootView: NotesViewerView(
             fileURL: fileURL, initialText: initialText, regenerate: regenerate,
             documentTitle: fileURL == nil ? title : nil))
@@ -553,10 +565,10 @@ private struct NotesViewerView: View {
                 if isMeetingNote {
                     Divider()
                     Button { regenerateRefinement() } label: {
-                        Label("Regenerate Meeting Notes", systemImage: "arrow.clockwise")
+                        Label("Regenerate AI Summary", systemImage: "arrow.clockwise")
                     }
                     .disabled(refining)
-                    .help("Re-run the AI summary, key details, chapters and agenda for this note — replaces the existing sections. Use if the original pass failed.")
+                    .help("Re-run the AI-generated sections (summary, key details, chapters, agenda, mentions) from this note's transcript, replacing the existing ones. The transcript itself is left untouched. Use if the original pass failed or after changing the note template.")
                 }
             } label: { Image(systemName: "ellipsis.circle") }
                 .menuStyle(.borderlessButton).fixedSize()
@@ -586,7 +598,7 @@ private struct NotesViewerView: View {
     private func regenerateRefinement() {
         guard let fileURL else { return }
         refining = true
-        status = "Regenerating meeting notes…"
+        status = "Regenerating AI summary…"
         Task { @MainActor in
             defer { refining = false }
             // Strip old generated sections first, then read the clean transcript
@@ -606,7 +618,7 @@ private struct NotesViewerView: View {
             text = fresh
             savedText = fresh
             status = !failure.isEmpty ? failure
-                : (produced ? "Meeting notes regenerated." : "Nothing to regenerate.")
+                : (produced ? "AI summary regenerated." : "Nothing to regenerate.")
         }
     }
 

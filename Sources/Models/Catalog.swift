@@ -927,6 +927,7 @@ final class CatalogStore: ObservableObject {
             doc.people.removeAll { $0.id == id }
             for i in doc.notes.indices { doc.notes[i].personIDs.removeAll { $0 == id } }
         }
+        VoiceIdentityStore.shared.forget(personID: id)   // drop any taught voice
     }
 
     // MARK: Bulk person operations
@@ -1129,6 +1130,16 @@ final class CatalogStore: ObservableObject {
         mutate { doc in if let i = doc.notes.firstIndex(where: { $0.filePath == relativePath }) { doc.notes[i].title = t } }
     }
     func note(id: String) -> CatalogNote? { doc.notes.first { $0.id == id } }
+
+    /// Link a Catalog person to the note backing `fileURL` (creating the row on
+    /// demand), so identifying a speaker attributes the meeting to that person.
+    /// Idempotent. Used by persistent speaker identification.
+    func linkPerson(_ personID: String, toFile fileURL: URL) {
+        let rel = AppSettings.shared.relativePath(of: fileURL)
+        let title = fileURL.deletingPathExtension().lastPathComponent
+        let row = note(forRelativePath: rel, title: title, date: nil)
+        setPerson(personID, on: row.id, true)
+    }
 
     /// Whether a note's backing Markdown file still exists on disk. Catalog rows
     /// only reference files by path, so a file deleted in Finder leaves a stale

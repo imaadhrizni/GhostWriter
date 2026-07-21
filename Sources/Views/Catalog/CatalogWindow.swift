@@ -1295,6 +1295,7 @@ struct PersonEditor: View {
     }
     private func commit() { store.update(draft) }
     @State private var showManageTypes = false
+    @State private var hasVoice = false
 
     var body: some View {
         Form {
@@ -1310,6 +1311,23 @@ struct PersonEditor: View {
                     get: { draft.email ?? "" },
                     set: { draft.email = $0.isEmpty ? nil : $0 })).onSubmit(commit)
             }
+            Section("Voice") {
+                if hasVoice {
+                    Label("Voice taught — recognized automatically in meetings", systemImage: "waveform")
+                        .foregroundStyle(.secondary).font(.callout)
+                    Button("Forget Voice", role: .destructive) {
+                        VoiceIdentityStore.shared.forget(personID: draft.id)
+                        hasVoice = false
+                    }
+                } else {
+                    Text("No voice taught yet. In a meeting note, use “Identify Speakers” to link \(draft.name.isEmpty ? "this person" : draft.name)’s voice — it's then recognized in future meetings.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Toggle("This is my voice", isOn: Binding(
+                    get: { AppSettings.shared.myVoicePersonID == draft.id },
+                    set: { AppSettings.shared.myVoicePersonID = $0 ? draft.id : "" }))
+                    .help("Attribute your own microphone speech to this person in every meeting.")
+            }
             let notes = store.notes(forPerson: draft.id)
             if !notes.isEmpty {
                 Section("Timeline") { RelationshipTimeline(notes: notes) }
@@ -1318,6 +1336,7 @@ struct PersonEditor: View {
         }
         .formStyle(.grouped)
         .navigationTitle(draft.name.isEmpty ? "Person" : draft.name)
+        .onAppear { hasVoice = VoiceIdentityStore.shared.hasVoice(personID: draft.id) }
         .onDisappear(perform: commit)
         .sheet(isPresented: $showManageTypes) { ManageTypesSheet(store: store) }
     }

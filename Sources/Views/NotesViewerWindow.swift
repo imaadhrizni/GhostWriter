@@ -560,7 +560,7 @@ private struct NotesViewerView: View {
                     Button { NSWorkspace.shared.activateFileViewerSelecting([fileURL]) } label: { Label("Reveal in Finder", systemImage: "folder") }
                 }
                 if isMeetingNote, let fileURL {
-                    Button { NotificationCenter.default.post(name: .renameSpeakersForFile, object: fileURL) } label: { Label("Rename Speakers", systemImage: "person.crop.circle") }
+                    Button { NotificationCenter.default.post(name: .renameSpeakersForFile, object: fileURL) } label: { Label("Identify Speakers", systemImage: "person.crop.circle") }
                 }
                 if isMeetingNote {
                     Divider()

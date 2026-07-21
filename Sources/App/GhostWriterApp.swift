@@ -860,7 +860,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             // Auto-name recurring voices (learned from past renames) before
             // summarizing, so real names flow into the summary and tags too.
-            self.applyVoiceIdentities(to: fileURL)
+            await self.applyVoiceIdentities(to: fileURL)
 
             // Re-runnable AI refinement (summary, key details, chapters,
             // agenda, mentions), shared with the manual retry in the notes
@@ -2386,7 +2386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             // (Catalog has its own top-level menu entry — no duplicate here.)
             menu.addItem(NSMenuItem.separator())
-            let renameItem = NSMenuItem(title: "Rename Speakers…", action: #selector(showRenameSpeakers), keyEquivalent: "")
+            let renameItem = NSMenuItem(title: "Identify Speakers…", action: #selector(showRenameSpeakers), keyEquivalent: "")
             renameItem.target = self
             menu.addItem(renameItem)
             let folderItem = NSMenuItem(title: "Open Notes Folder…", action: #selector(openNotesFolder), keyEquivalent: "")
@@ -2428,13 +2428,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renameSpeakersWindowController = RenameSpeakersWindowController(
             liveFile: meetingNotes.currentFilePath,
             preselect: preselect,
-            onRename: { [weak self] old, new, file in
+            onRename: { [weak self] old, new, personID, file in
                 guard let self else { return }
                 // Teach the voice identity: if we have this meeting's fingerprint
-                // for the renamed label, save it under the new name so this voice
-                // is auto-labeled in future meetings.
+                // for the renamed label, save it under the linked person so this
+                // voice is auto-recognized in future meetings.
                 if let fp = VoiceIdentityStore.shared.fingerprint(forLabel: old, file: file.path) {
-                    VoiceIdentityStore.shared.remember(name: new, pitch: fp.pitch, zcr: fp.zcr)
+                    VoiceIdentityStore.shared.remember(name: new, pitch: fp.pitch, zcr: fp.zcr, personID: personID)
+                }
+                // Link the person to this note in the Catalog.
+                if let personID {
+                    Task { @MainActor in CatalogStore.shared.linkPerson(personID, toFile: file) }
                 }
                 // Keep a live meeting using the new name for later segments.
                 if self.meetingNotes.currentFilePath == file {
@@ -2444,16 +2448,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renameSpeakersWindowController?.bringToFront()
     }
 
-    /// Cache this meeting's voice fingerprints and auto-rename any speaker whose
-    /// voice matches a saved identity (taught by a previous rename).
+    /// Cache this meeting's voice fingerprints and, for each speaker whose voice
+    /// confidently matches a taught identity, relabel the transcript and link
+    /// that person to the note in the Catalog. Unmatched voices stay generic
+    /// ("Them 2") for the user to identify later. Also attributes the mic
+    /// speaker to the designated "my voice" person, if set.
+    @MainActor
     private func applyVoiceIdentities(to fileURL: URL) {
         let snaps = speakerProfiler.snapshot()
         guard !snaps.isEmpty else { return }
         VoiceIdentityStore.shared.cacheSnapshot(snaps, forFile: fileURL.path)
         for s in snaps {
-            guard let name = VoiceIdentityStore.shared.match(pitch: s.pitch, zcr: s.zcr),
-                  name != s.label else { continue }
-            MeetingNotesWriter.renameSpeaker(from: s.label, to: name, in: fileURL)
+            guard let match = VoiceIdentityStore.shared.matchIdentity(pitch: s.pitch, zcr: s.zcr) else { continue }
+            if match.name != s.label {
+                MeetingNotesWriter.renameSpeaker(from: s.label, to: match.name, in: fileURL)
+            }
+            if let pid = match.personID { CatalogStore.shared.linkPerson(pid, toFile: fileURL) }
+        }
+        let myVoice = settings.myVoicePersonID
+        if !myVoice.isEmpty, CatalogStore.shared.person(myVoice) != nil {
+            CatalogStore.shared.linkPerson(myVoice, toFile: fileURL)
         }
     }
 

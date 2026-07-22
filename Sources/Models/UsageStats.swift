@@ -51,11 +51,8 @@ final class UsageStats: ObservableObject {
     /// Rough USD estimate of Groq spend, using the editable prices in Settings.
     /// An estimate only — actual billing is authoritative on Groq's console.
     var estimatedCostUSD: Double {
-        let s = AppSettings.shared
-        let audio = Double(audioSecondsTranscribed) / 3600.0 * s.priceAudioPerHour
-        let input = Double(inputTokens) / 1_000_000.0 * s.priceInputPerMTok
-        let output = Double(outputTokens) / 1_000_000.0 * s.priceOutputPerMTok
-        return audio + input + output
+        GroqPricing.audioCost(seconds: Double(audioSecondsTranscribed))
+            + GroqPricing.chatCost(inputTokens: inputTokens, outputTokens: outputTokens)
     }
 
     // MARK: - Monthly spend & budget
@@ -81,11 +78,9 @@ final class UsageStats: ObservableObject {
         // A read shouldn't mutate; if the month rolled over the stored counters
         // are last month's, so treat a stale anchor as $0 this month.
         guard defaults.string(forKey: Key.monthAnchor) == currentMonthKey else { return 0 }
-        let s = AppSettings.shared
-        let audio = Double(defaults.integer(forKey: Key.monthAudioSeconds)) / 3600.0 * s.priceAudioPerHour
-        let input = Double(defaults.integer(forKey: Key.monthInputTokens)) / 1_000_000.0 * s.priceInputPerMTok
-        let output = Double(defaults.integer(forKey: Key.monthOutputTokens)) / 1_000_000.0 * s.priceOutputPerMTok
-        return audio + input + output
+        return GroqPricing.audioCost(seconds: Double(defaults.integer(forKey: Key.monthAudioSeconds)))
+            + GroqPricing.chatCost(inputTokens: defaults.integer(forKey: Key.monthInputTokens),
+                                   outputTokens: defaults.integer(forKey: Key.monthOutputTokens))
     }
 
     /// Fraction of the monthly budget used (0…1+); nil when no budget is set.

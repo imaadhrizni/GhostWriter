@@ -368,6 +368,7 @@ final class CatalogStore: ObservableObject {
               let decoded = try? Self.makeDecoder().decode(CatalogDocument.self, from: data) else { return }
         doc = decoded
         migratePersonTypes()
+        backfillDates()   // heal rows saved without a date so they aren't hidden
     }
 
     /// One-time upgrade of the legacy free-text `channel` into the managed
@@ -927,7 +928,6 @@ final class CatalogStore: ObservableObject {
             doc.people.removeAll { $0.id == id }
             for i in doc.notes.indices { doc.notes[i].personIDs.removeAll { $0 == id } }
         }
-        VoiceIdentityStore.shared.forget(personID: id)   // drop any taught voice
     }
 
     // MARK: Bulk person operations
@@ -1116,9 +1116,20 @@ final class CatalogStore: ObservableObject {
     @discardableResult
     func note(forRelativePath path: String, title: String, date: Date?) -> CatalogNote {
         if let existing = doc.notes.first(where: { $0.filePath == path }) { return existing }
-        let n = CatalogNote(filePath: path, title: title, date: date)
+        // Always give a note a date — a nil date makes it vanish under any active
+        // time-window filter (e.g. the default "30 days"). Fall back to the file's
+        // own creation/modification time when the caller didn't supply one.
+        let n = CatalogNote(filePath: path, title: title, date: date ?? Self.fileDate(forRelativePath: path))
         mutate { $0.notes.append(n) }
         return n
+    }
+
+    /// The on-disk creation (else modification) date of a note file, used as a
+    /// fallback so every catalog row carries a date.
+    private static func fileDate(forRelativePath path: String) -> Date? {
+        let url = AppSettings.shared.notesFolder.appendingPathComponent(path)
+        let v = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+        return v?.creationDate ?? v?.contentModificationDate
     }
     func update(_ n: CatalogNote) {
         mutate { doc in if let i = doc.notes.firstIndex(where: { $0.filePath == n.filePath }) { doc.notes[i] = n } }
@@ -1372,7 +1383,23 @@ final class CatalogStore: ObservableObject {
         }
         if !newRows.isEmpty { mutate { $0.notes.append(contentsOf: newRows) } }
         backfillTitles()
+        backfillDates()
         return newRows.count
+    }
+
+    /// Repair rows that ended up without a date (e.g. created via `linkPerson`
+    /// or an import with no metadata date) by reading the file's timestamp — so
+    /// they stop being hidden by the notes list's time-window filter.
+    private func backfillDates() {
+        let root = AppSettings.shared.notesFolder
+        var notes = doc.notes
+        var changed = false
+        for i in notes.indices where notes[i].date == nil {
+            let url = root.appendingPathComponent(notes[i].filePath)
+            let v = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+            if let d = v?.creationDate ?? v?.contentModificationDate { notes[i].date = d; changed = true }
+        }
+        if changed { mutate { $0.notes = notes } }
     }
 
     /// Prefer a note's front-matter `title:` over its filename for display.

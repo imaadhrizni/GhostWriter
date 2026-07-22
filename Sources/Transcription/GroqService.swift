@@ -17,8 +17,8 @@ final class GroqService {
     private let baseURL = "https://api.groq.com/openai/v1"
     private let session = URLSession.shared
 
-    /// Proper nouns for the meeting in progress — the linked org / project,
-    /// its people, and taught voice-identity names — set when a
+    /// Proper nouns for the meeting in progress — the linked org / project
+    /// and its people — set when a
     /// meeting starts and cleared when it ends. Merged into the Whisper prompt
     /// so these names transcribe correctly from the very first mention (vs.
     /// self-priming, which only helps *after* a term first appears). Set/read

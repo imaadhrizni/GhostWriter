@@ -346,7 +346,7 @@ struct ReportsView: View {
     private func activity() -> [ReportContent] {
         var out: [ReportContent] = [head(.activity, "Activity")]
         guard let m = data?.metrics else { return out + [.note("Scanning…")] }
-        out.append(.kpis([("Meetings", "\(m.meetingsScanned)"), ("Recorded", hoursMinutes(m.recordedSeconds))]))
+        out.append(.kpis([("Meetings", "\(m.meetingsScanned)"), ("Recorded", UsageStats.hoursMinutes(m.recordedSeconds))]))
         if !m.weekTrend.isEmpty {
             out.append(.bars(title: "Meetings per week",
                              bars: m.weekTrend.map { ReportBar(label: $0.label, value: Double($0.count), tint: .orange) },
@@ -427,10 +427,6 @@ struct ReportsView: View {
     private func money(_ cents: Int, _ currency: String) -> String {
         let f = NumberFormatter(); f.numberStyle = .currency; f.currencyCode = currency; f.maximumFractionDigits = 0
         return f.string(from: NSNumber(value: Double(cents) / 100)) ?? "\(cents / 100) \(currency)"
-    }
-    private func hoursMinutes(_ seconds: Int) -> String {
-        let h = seconds / 3600, m = (seconds % 3600) / 60
-        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
     }
     private func deadlineText(_ d: Date) -> String {
         let base = d.formatted(date: .abbreviated, time: .omitted)

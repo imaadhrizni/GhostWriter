@@ -228,11 +228,8 @@ actor SemanticIndex {
     // MARK: Persistence
 
     private var cacheURL: URL {
-        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GhostWriter", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // v2: chunk format now carries lexical term tables + optional vectors.
-        return dir.appendingPathComponent("semantic-index-v2.json")
+        AppPaths.caches().appendingPathComponent("semantic-index-v2.json")
     }
 
     private func loadIfNeeded() {

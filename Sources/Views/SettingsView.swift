@@ -1825,23 +1825,8 @@ private struct MeetingPane: View {
                 Text("How you and the other participants are named in the transcript.")
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
-                HStack {
-                    Text("My voice is")
-                    Spacer()
-                    Picker("", selection: $settings.myVoicePersonID) {
-                        Text("Not set").tag("")
-                        ForEach(CatalogStore.shared.doc.people.sortedByName) { p in
-                            Text(p.name).tag(p.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 180)
-                }
-                Text("Attributes your own microphone speech to a Catalog person, so meetings you led show up in that person's history. Manage people in the Catalog.")
-                    .font(.caption).foregroundColor(.secondary)
-                Divider()
                 Toggle("Identify distinct speakers (experimental)", isOn: $settings.diarizationEnabled)
-                Text("Fingerprints each voice (pitch and timbre) and clusters segments, labeling remote voices Them / Them 2 / Them 3. On-device and lightweight — similar-sounding voices may still merge. Use the Notes menu ▸ Identify Speakers… to link them to real people — once linked, the same voice is recognized automatically in future meetings.")
+                Text("Fingerprints each voice (pitch and timbre) and clusters segments within a meeting, labeling remote voices Them / Them 2 / Them 3. On-device and lightweight — similar-sounding voices may still merge. Use the Notes menu ▸ Identify Speakers… to give them real names in that meeting.")
                     .font(.caption).foregroundColor(.secondary)
                 if settings.diarizationEnabled {
                     HStack {

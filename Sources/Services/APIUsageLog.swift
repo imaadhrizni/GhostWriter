@@ -39,11 +39,7 @@ final class APIUsageLog {
     private let maxEntries = 2000
 
     private init() {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("GhostWriter", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        url = base.appendingPathComponent("APIUsageLog.json")
+        url = AppPaths.support().appendingPathComponent("APIUsageLog.json")
         if let data = try? Data(contentsOf: url),
            let decoded = try? JSONDecoder().decode([Entry].self, from: data) {
             model = decoded
@@ -59,9 +55,7 @@ final class APIUsageLog {
 
     func recordChat(source: String, model modelID: String,
                     inputTokens: Int, outputTokens: Int, ok: Bool = true) {
-        let s = AppSettings.shared
-        let cost = Double(inputTokens) / 1_000_000.0 * s.priceInputPerMTok
-                 + Double(outputTokens) / 1_000_000.0 * s.priceOutputPerMTok
+        let cost = GroqPricing.chatCost(inputTokens: inputTokens, outputTokens: outputTokens)
         append(Entry(date: Date(), kind: .chat, source: source, model: modelID,
                      inputTokens: inputTokens, outputTokens: outputTokens,
                      audioSeconds: 0, costUSD: cost, ok: ok))
@@ -69,7 +63,7 @@ final class APIUsageLog {
 
     func recordTranscription(source: String, model modelID: String,
                              audioSeconds: Double, ok: Bool = true) {
-        let cost = audioSeconds / 3600.0 * AppSettings.shared.priceAudioPerHour
+        let cost = GroqPricing.audioCost(seconds: audioSeconds)
         append(Entry(date: Date(), kind: .transcription, source: source, model: modelID,
                      inputTokens: 0, outputTokens: 0,
                      audioSeconds: audioSeconds, costUSD: cost, ok: ok))

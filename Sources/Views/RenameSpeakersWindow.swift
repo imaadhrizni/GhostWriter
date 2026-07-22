@@ -5,10 +5,10 @@ import AppKit
 //
 // Identify "Them / Them 2" as real people — per meeting. Pick any meeting,
 // assign each speaker to a Catalog person (or create one), and only that notes
-// file is rewritten. Assigning a speaker also *teaches that person's voice*, so
-// the same voice is recognized automatically in future meetings, and links the
-// person to the note in the Catalog. When the chosen meeting is the one
-// currently recording, future segments use the new names too.
+// file is rewritten and the person is linked to the note in the Catalog. This
+// is per-meeting and manual — no voice is learned and nothing is auto-applied to
+// other meetings. When the chosen meeting is the one currently recording, future
+// segments use the new names too.
 
 final class RenameSpeakersWindowController: NSWindowController {
 
@@ -86,7 +86,7 @@ private struct RenameSpeakersView: View {
                 Form {
                     ForEach(labels, id: \.self) { label in speakerRow(label) }
                 }
-                Text("Assigning a speaker teaches their voice — GhostWriter recognizes them automatically next time — and links the person to this note.")
+                Text("Assigning a speaker renames them in this note and links the person to it in the Catalog. Applies to this meeting only.")
                     .font(.caption2).foregroundColor(.secondary)
                 Spacer()
             }

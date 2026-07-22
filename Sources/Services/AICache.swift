@@ -46,11 +46,7 @@ final class AICache {
     private var maxEntries: Int { AppSettings.shared.aiCacheLimit }
 
     private init() {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("GhostWriter", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        url = base.appendingPathComponent("AICache.json")
+        url = AppPaths.support().appendingPathComponent("AICache.json")
         load()
     }
 

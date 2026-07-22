@@ -156,7 +156,6 @@ final class AppSettings: ObservableObject {
         static let packetIncludeActions   = "packet.includeActions"   // legacy — migrated into packetSections
         static let packetConfirmBeforeRun = "packet.confirmBeforeRun"
         static let packetSections         = "packet.sections"
-        static let myVoicePersonID        = "meeting.myVoicePersonID"
 
         static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
                           pttActivation,
@@ -192,7 +191,7 @@ final class AppSettings: ObservableObject {
                           monthlyBudgetUSD,
                           webhookEnabled, webhookURL, scriptHookEnabled, scriptHookPath,
                           packetIncludeEmail, packetIncludePOC, packetIncludeActions,
-                          packetConfirmBeforeRun, packetSections, myVoicePersonID]
+                          packetConfirmBeforeRun, packetSections]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -399,14 +398,6 @@ final class AppSettings: ObservableObject {
     var speakerLabelThem: String {
         get { string(Key.speakerLabelThem, Default.speakerLabelThem) }
         set { set(newValue, Key.speakerLabelThem) }
-    }
-
-    /// The Catalog person that represents *you* (the mic speaker). When set,
-    /// meetings attribute your own speech to this person, so per-person history
-    /// includes the meetings you led. Empty = not designated.
-    var myVoicePersonID: String {
-        get { string(Key.myVoicePersonID, "") }
-        set { set(newValue, Key.myVoicePersonID) }
     }
 
     /// Folder where meeting notes markdown files are written.

@@ -485,7 +485,14 @@ struct CatalogView: View {
             Button {
                 let n = store.indexNotesFolder()
                 store.refresh()   // also re-checks existing rows against disk
-                status = n > 0 ? "Imported \(n) note\(n == 1 ? "" : "s")" : "Up to date"
+                let total = store.doc.notes.count
+                let missing = store.missingNotes.count
+                let totalLabel = "\(total) note\(total == 1 ? "" : "s")"
+                if n > 0 {
+                    status = "Imported \(n) · \(totalLabel) total"
+                } else {
+                    status = "Up to date — \(totalLabel)" + (missing > 0 ? " · \(missing) missing" : "")
+                }
             } label: {
                 Label("Import / reload", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
             }
@@ -1295,7 +1302,6 @@ struct PersonEditor: View {
     }
     private func commit() { store.update(draft) }
     @State private var showManageTypes = false
-    @State private var hasVoice = false
 
     var body: some View {
         Form {
@@ -1311,23 +1317,6 @@ struct PersonEditor: View {
                     get: { draft.email ?? "" },
                     set: { draft.email = $0.isEmpty ? nil : $0 })).onSubmit(commit)
             }
-            Section("Voice") {
-                if hasVoice {
-                    Label("Voice taught — recognized automatically in meetings", systemImage: "waveform")
-                        .foregroundStyle(.secondary).font(.callout)
-                    Button("Forget Voice", role: .destructive) {
-                        VoiceIdentityStore.shared.forget(personID: draft.id)
-                        hasVoice = false
-                    }
-                } else {
-                    Text("No voice taught yet. In a meeting note, use “Identify Speakers” to link \(draft.name.isEmpty ? "this person" : draft.name)’s voice — it's then recognized in future meetings.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Toggle("This is my voice", isOn: Binding(
-                    get: { AppSettings.shared.myVoicePersonID == draft.id },
-                    set: { AppSettings.shared.myVoicePersonID = $0 ? draft.id : "" }))
-                    .help("Attribute your own microphone speech to this person in every meeting.")
-            }
             let notes = store.notes(forPerson: draft.id)
             if !notes.isEmpty {
                 Section("Timeline") { RelationshipTimeline(notes: notes) }
@@ -1336,7 +1325,6 @@ struct PersonEditor: View {
         }
         .formStyle(.grouped)
         .navigationTitle(draft.name.isEmpty ? "Person" : draft.name)
-        .onAppear { hasVoice = VoiceIdentityStore.shared.hasVoice(personID: draft.id) }
         .onDisappear(perform: commit)
         .sheet(isPresented: $showManageTypes) { ManageTypesSheet(store: store) }
     }

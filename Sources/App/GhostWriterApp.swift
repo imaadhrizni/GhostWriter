@@ -868,10 +868,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Bookmarks jump-list (timestamps dropped via ⌃⌥B during the meeting).
             self.meetingNotes.appendBookmarks(to: fileURL)
 
-            // Auto-name recurring voices (learned from past renames) before
-            // summarizing, so real names flow into the summary and tags too.
-            await self.applyVoiceIdentities(to: fileURL)
-
             // Re-runnable AI refinement (summary, key details, chapters,
             // agenda, mentions), shared with the manual retry in the notes
             // viewer — see MeetingRefinery.
@@ -1378,8 +1374,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // People who appear on the linked entity's notes.
         let personIDs = Set(scope.flatMap { $0.personIDs })
         terms.append(contentsOf: store.doc.people.filter { personIDs.contains($0.id) }.map(\.name))
-        // Voices you've taught by renaming speakers in past meetings.
-        terms.append(contentsOf: VoiceIdentityStore.shared.knownNames)
 
         // Dedupe (case-insensitive), drop empties, cap length for Whisper's
         // short prompt window.
@@ -1829,8 +1823,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             audioRetainer = nil
         }
 
-        // Prime Whisper with the proper nouns for this meeting (linked entity,
-        // its people, taught voices) so names transcribe right from the start.
+        // Prime Whisper with the proper nouns for this meeting (linked entity
+        // and its people) so names transcribe right from the start.
         GroqService.sessionGlossary = buildSessionGlossary(for: meetingCatalogTarget)
 
         // Reset the speaker profiles for the new session (safe to touch
@@ -2443,13 +2437,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             preselect: preselect,
             onRename: { [weak self] old, new, personID, file in
                 guard let self else { return }
-                // Teach the voice identity: if we have this meeting's fingerprint
-                // for the renamed label, save it under the linked person so this
-                // voice is auto-recognized in future meetings.
-                if let fp = VoiceIdentityStore.shared.fingerprint(forLabel: old, file: file.path) {
-                    VoiceIdentityStore.shared.remember(name: new, pitch: fp.pitch, zcr: fp.zcr, personID: personID)
-                }
-                // Link the person to this note in the Catalog.
+                // Manual identification only: rename the label in this note and
+                // link the person to it. No voiceprint is taught — cross-meeting
+                // acoustic auto-identification was removed (too unreliable).
                 if let personID {
                     Task { @MainActor in CatalogStore.shared.linkPerson(personID, toFile: file) }
                 }
@@ -2459,29 +2449,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             })
         renameSpeakersWindowController?.bringToFront()
-    }
-
-    /// Cache this meeting's voice fingerprints and, for each speaker whose voice
-    /// confidently matches a taught identity, relabel the transcript and link
-    /// that person to the note in the Catalog. Unmatched voices stay generic
-    /// ("Them 2") for the user to identify later. Also attributes the mic
-    /// speaker to the designated "my voice" person, if set.
-    @MainActor
-    private func applyVoiceIdentities(to fileURL: URL) {
-        let snaps = speakerProfiler.snapshot()
-        guard !snaps.isEmpty else { return }
-        VoiceIdentityStore.shared.cacheSnapshot(snaps, forFile: fileURL.path)
-        for s in snaps {
-            guard let match = VoiceIdentityStore.shared.matchIdentity(pitch: s.pitch, zcr: s.zcr) else { continue }
-            if match.name != s.label {
-                MeetingNotesWriter.renameSpeaker(from: s.label, to: match.name, in: fileURL)
-            }
-            if let pid = match.personID { CatalogStore.shared.linkPerson(pid, toFile: fileURL) }
-        }
-        let myVoice = settings.myVoicePersonID
-        if !myVoice.isEmpty, CatalogStore.shared.person(myVoice) != nil {
-            CatalogStore.shared.linkPerson(myVoice, toFile: fileURL)
-        }
     }
 
     /// Opens today's QuickNotes file, or the most recent one, or the folder.

@@ -33,13 +33,6 @@ final class SpeakerProfiler {
         profiles.removeAll()
     }
 
-    /// The voice fingerprint learned for each remote speaker this meeting, keyed
-    /// by the label it was given ("Them", "Them 2", …). Used to match against
-    /// saved voice identities and to teach new ones when the user renames.
-    func snapshot() -> [(label: String, pitch: Float, zcr: Float)] {
-        profiles.enumerated().map { (labelForIndex($0.offset), $0.element.pitch, $0.element.zcr) }
-    }
-
     /// Returns "Them", "Them 2", … for the voice in this segment.
     func label(for audio: Data) -> String {
         guard let features = extractFeatures(from: audio) else {

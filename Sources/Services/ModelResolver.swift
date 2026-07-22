@@ -59,11 +59,7 @@ final class ModelResolver {
     private var apiKey: String { KeychainService.groqAPIKey() ?? "" }
 
     private init() {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("GhostWriter", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        url = base.appendingPathComponent("ModelCatalog.json")
+        url = AppPaths.support().appendingPathComponent("ModelCatalog.json")
         if let data = try? Data(contentsOf: url),
            let decoded = try? JSONDecoder().decode(Cache.self, from: data) {
             cache = decoded

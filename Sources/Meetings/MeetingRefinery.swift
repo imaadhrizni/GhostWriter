@@ -85,46 +85,66 @@ enum MeetingRefinery {
         let wantsActions = settings.actionItemsEnabled
         let wantsStructured = settings.structuredExtraction
         let wantsOpenQuestions = settings.extractUnanswered
+        let wantsSummarySection = wantsSummary || wantsActions || wantsStructured || wantsOpenQuestions
 
-        if wantsSummary || wantsActions || wantsStructured || wantsOpenQuestions {
-            do {
-                let raw = try await tp.summarize(
-                    transcript: transcript,
-                    template: settings.selectedTemplate,
-                    includeSummary: wantsSummary,
-                    includeActionItems: wantsActions,
-                    includeStructured: wantsStructured,
-                    includeOpenQuestions: wantsOpenQuestions)
-                if let summary = MeetingNotesWriter.sanitizedSummary(raw) {
-                    writer.appendSummary(summary, to: fileURL)
-                    produced = true
-                } else {
-                    Log.meeting.info("⏭ Summary skipped — not enough content")
-                }
-            } catch {
-                Log.meeting.error("❌ Summary failed: \(error.localizedDescription)")
-                onError("Meeting summary failed: \(error.localizedDescription)")
-            }
-        }
-
-        // Meeting facts — title (front-matter), topic/entity metadata, and
-        // per-type key fields — in ONE fast structured call.
         let wantsTitle = settings.frontMatterEnabled
         let wantsMeta  = settings.autoTagging && settings.frontMatterEnabled
         let wantsFields = settings.extractKeyFields
-        if wantsTitle || wantsMeta || wantsFields {
-            let includePeople = !settings.redactionEnabled
-            let schema = wantsFields ? settings.selectedTemplate.keyFields : []
-            let facts = await tp.extractMeetingFacts(
+        let wantsFacts = wantsTitle || wantsMeta || wantsFields
+        let includePeople = !settings.redactionEnabled
+        let schema = wantsFields ? settings.selectedTemplate.keyFields : []
+
+        // Fan out the independent model calls concurrently — the AIGate bounds
+        // how many actually run at once. Each is independently optional so one
+        // failure never cancels the others (same graceful degradation as the
+        // old sequential path), and the FILE WRITES are done afterwards, in the
+        // canonical section order, so concurrent calls never race on the note.
+        async let summaryRawTask: String? = wantsSummarySection
+            ? (try? await tp.summarize(
+                transcript: transcript, template: settings.selectedTemplate,
+                includeSummary: wantsSummary, includeActionItems: wantsActions,
+                includeStructured: wantsStructured, includeOpenQuestions: wantsOpenQuestions))
+            : nil
+        async let factsTask: TextPolisher.MeetingFacts? = wantsFacts
+            ? await tp.extractMeetingFacts(
                 transcript: transcript, includeTitle: wantsTitle,
                 includePeople: includePeople, fields: schema)
+            : nil
+        async let chaptersTask: String? = settings.topicChapters
+            ? (try? await tp.chapters(transcript: transcript))
+            : nil
+        async let agendaStatusTask: TextPolisher.AgendaStatus? = options.liveAgenda.isEmpty
+            ? await tp.agendaStatus(userAgenda: options.userAgenda, transcript: transcript, preferFast: true)
+            : nil
 
+        let summaryRaw = await summaryRawTask
+        let facts = await factsTask
+        let chaptersText = await chaptersTask
+        let agendaStatus = await agendaStatusTask
+
+        // --- Writes, serialized in canonical order ---
+
+        // Summary.
+        if wantsSummarySection {
+            if let raw = summaryRaw, let summary = MeetingNotesWriter.sanitizedSummary(raw) {
+                writer.appendSummary(summary, to: fileURL)
+                produced = true
+            } else if summaryRaw == nil {
+                Log.meeting.error("❌ Summary failed or returned nothing")
+                onError("Meeting summary failed.")
+            } else {
+                Log.meeting.info("⏭ Summary skipped — not enough content")
+            }
+        }
+
+        // Meeting facts — title (front-matter), topic/entity metadata, per-type
+        // key fields (one fast structured call above).
+        if let facts {
             if wantsTitle, !facts.title.isEmpty {
                 MeetingNotesWriter.setFrontMatterTitle(facts.title, to: fileURL)
                 CatalogStore.shared.renameNote(
                     relativePath: AppSettings.shared.relativePath(of: fileURL), to: facts.title)
             }
-
             if wantsMeta {
                 var meta = facts.metadata
                 if meta.isEmpty {
@@ -137,7 +157,6 @@ enum MeetingRefinery {
                         customer: customer, project: meta.project, to: fileURL)
                 }
             }
-
             if wantsFields, !facts.keyFields.isEmpty {
                 writer.appendKeyDetails(facts.keyFields.map { ($0.field.label, $0.value) }, to: fileURL)
                 produced = true
@@ -152,22 +171,15 @@ enum MeetingRefinery {
             }
         }
 
-        if settings.topicChapters {
-            do {
-                let chapters = try await tp.chapters(transcript: transcript)
-                if !chapters.isEmpty { writer.appendChapters(chapters, to: fileURL); produced = true }
-            } catch {
-                Log.meeting.error("❌ Chapters failed: \(error.localizedDescription)")
-            }
+        // Chapters.
+        if let chaptersText, !chaptersText.isEmpty {
+            writer.appendChapters(chaptersText, to: fileURL); produced = true
         }
 
-        // Agenda: prefer the live panel's accumulated coverage; otherwise a
-        // one-shot scan of the transcript.
+        // Agenda: the live panel's accumulated coverage, else the one-shot scan.
         if !options.liveAgenda.isEmpty {
             writer.appendAgenda(options.liveAgenda, to: fileURL); produced = true
-        } else {
-            let status = await tp.agendaStatus(
-                userAgenda: options.userAgenda, transcript: transcript, preferFast: true)
+        } else if let status = agendaStatus {
             let userEntries = zip(options.userAgenda, status.userCovered)
                 .map { (text: $0.0, covered: $0.1, dynamic: false) }
             let dynEntries = status.newTopics.map { (text: $0, covered: false, dynamic: true) }

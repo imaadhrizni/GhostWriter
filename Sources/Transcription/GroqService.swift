@@ -71,6 +71,11 @@ final class GroqService {
                                    timeout: TimeInterval, context: String) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
 
+        // Resolve the configured Whisper model against Groq's live catalog, so a
+        // deprecated transcription model degrades to the best available one.
+        let resolvedModel = ModelResolver.shared.resolve(
+            .transcription, configured: AppSettings.shared.transcriptionModel)
+
         let boundary = UUID().uuidString
         var request = URLRequest(url: URL(string: "\(baseURL)/audio/transcriptions")!)
         request.httpMethod = "POST"
@@ -79,8 +84,8 @@ final class GroqService {
         request.timeoutInterval = timeout
 
         var body = Data()
-        // Model parameter (user-configurable in Settings).
-        body.appendMultipart(name: "model", value: AppSettings.shared.transcriptionModel, boundary: boundary)
+        // Model parameter (user-configurable in Settings; resolved above).
+        body.appendMultipart(name: "model", value: resolvedModel, boundary: boundary)
 
         // Prompt hint: Whisper biases decoding toward text it has already "seen".
         // We combine the user's static glossary with rolling context (the recent
@@ -104,14 +109,20 @@ final class GroqService {
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         request.httpBody = body
 
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
-        guard httpResponse.statusCode == 200 else {
-            let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw GroqError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
+        // Transcription runs on its own AIGate lane so live meeting audio is
+        // never starved by chat fan-out, and shares the rate-limit backoff.
+        let requestCopy = request
+        let text = try await AIGate.shared.run(.transcription) { [session] in
+            let (data, response) = try await session.data(for: requestCopy)
+            guard let httpResponse = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+            guard httpResponse.statusCode == 200 else {
+                let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+                throw GroqError.apiError(statusCode: httpResponse.statusCode, message: String(errorBody.prefix(200)))
+            }
+            let result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
+            return result.text
         }
-        let result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
-        return AppSettings.shared.applyReplacements(to: result.text)
+        return AppSettings.shared.applyReplacements(to: text)
     }
 
     /// Combine the static glossary with rolling transcript context into a single
@@ -154,6 +165,15 @@ enum GroqError: LocalizedError {
         case .apiError(let code, let message):
             return "Groq API error (\(code)): \(message)"
         }
+    }
+
+    /// A rate-limit / quota response (HTTP 429 or a matching error body) — the
+    /// signal AIGate backs off on. Distinct from a model-availability fault,
+    /// which ModelResolver handles.
+    var isRateLimited: Bool {
+        guard case let .apiError(code, message) = self else { return false }
+        let m = message.lowercased()
+        return code == 429 || m.contains("rate_limit") || m.contains("quota")
     }
 }
 

@@ -590,6 +590,12 @@ private struct AIPane: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
+            SettingsGroup("Model Availability") {
+                ModelAvailabilityView()
+                Text("Groq adds and retires models over time. Each choice above is checked against Groq's live catalog; an unavailable one is routed to the best working replacement automatically until you pick another.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
             SettingsGroup("On-Device & Fallback") {
                 Toggle("Offline fallback (Apple on-device recognition)", isOn: $settings.offlineFallback)
                 Text("If Groq can't be reached, transcribe on-device instead of failing — applies to dictation, quick notes, and meetings. Lower accuracy and no AI polishing or summaries (transcription only), but zero network. Triggers on connectivity errors, not on API-key or server errors.")
@@ -770,24 +776,130 @@ private struct ModelField: View {
     let defaultValue: String
     @Binding var value: String
 
+    /// Bumped once the live catalog is fetched, so the availability note
+    /// re-evaluates. ModelResolver isn't observable, hence the manual tick.
+    @State private var catalogTick = 0
+
+    /// True only when we have a catalog AND it doesn't contain the chosen id —
+    /// so we never warn just because the catalog hasn't loaded yet.
+    private var unavailable: Bool {
+        _ = catalogTick
+        let id = value.trimmingCharacters(in: .whitespaces)
+        return ModelResolver.shared.hasCatalog && !id.isEmpty && !ModelResolver.shared.isAvailable(id)
+    }
+
     var body: some View {
-        HStack {
-            Text(title)
-            Spacer()
-            TextField("", text: $value)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 230)
-                .multilineTextAlignment(.trailing)
-            Menu {
-                ForEach(presets, id: \.self) { preset in
-                    Button(preset) { value = preset }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                Spacer()
+                TextField("", text: $value)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 230)
+                    .multilineTextAlignment(.trailing)
+                Menu {
+                    ForEach(presets, id: \.self) { preset in
+                        Button(preset) { value = preset }
+                    }
+                } label: {
+                    Image(systemName: "chevron.up.chevron.down")
                 }
-            } label: {
-                Image(systemName: "chevron.up.chevron.down")
+                .menuStyle(.borderlessButton)
+                .frame(width: 24)
+                DefaultResetButton(isDefault: value == defaultValue) { value = defaultValue }
             }
-            .menuStyle(.borderlessButton)
-            .frame(width: 24)
-            DefaultResetButton(isDefault: value == defaultValue) { value = defaultValue }
+            if unavailable {
+                Label("Not in Groq's current model list — a working model is used automatically until you pick another.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundColor(.orange)
+            }
+        }
+        .task {
+            await ModelResolver.shared.refresh()
+            catalogTick += 1
+        }
+    }
+}
+
+/// Live view of how each configured model resolves against Groq's catalog:
+/// catalog freshness, a manual refresh, and a per-role configured→resolved row
+/// badged ✓ available / ⚠ substituted.
+private struct ModelAvailabilityView: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var tick = 0
+    @State private var refreshing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                let count = ModelResolver.shared.catalogCount
+                Text(count > 0 ? "\(count) models in catalog" : "Catalog not loaded yet")
+                    .font(.caption).foregroundColor(.secondary)
+                if let d = ModelResolver.shared.lastFetched {
+                    Text("· checked \(d.formatted(.relative(presentation: .named)))")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                Spacer()
+                Button { refresh() } label: {
+                    if refreshing { ProgressView().controlSize(.small) } else { Text("Refresh") }
+                }
+                .disabled(refreshing)
+            }
+            row("Transcription", .transcription, settings.transcriptionModel)
+            row("Polishing", .summary, settings.polishingModel)
+            row("Lightweight", .lightweight, settings.fastModel)
+        }
+        .id(tick)
+        .task { await ModelResolver.shared.refresh(); tick += 1 }
+    }
+
+    @ViewBuilder
+    private func row(_ label: String, _ role: ModelResolver.Role, _ configured: String) -> some View {
+        let ok = !ModelResolver.shared.hasCatalog || ModelResolver.shared.isAvailable(configured)
+        let resolved = ModelResolver.shared.resolve(role, configured: configured)
+        HStack(spacing: 6) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundColor(ok ? .green : .orange)
+            Text(label).frame(width: 92, alignment: .leading)
+            Text(ok ? configured : "\(configured) → \(resolved)")
+                .font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
+            Spacer()
+        }
+    }
+
+    private func refresh() {
+        refreshing = true
+        Task { await ModelResolver.shared.refresh(force: true); refreshing = false; tick += 1 }
+    }
+}
+
+/// Live readout of the shared AIGate: in-flight/queued requests per lane and
+/// any rate-limit backoff. Polls the actor while the pane is visible.
+private struct AIActivityView: View {
+    @State private var snap: AIGate.Snapshot?
+
+    var body: some View {
+        Group {
+            if let s = snap {
+                StatRow(label: "Chat requests",
+                        value: "\(s.chatActive)/\(s.chatCap) in flight" + (s.chatWaiting > 0 ? " · \(s.chatWaiting) queued" : ""))
+                StatRow(label: "Transcription requests",
+                        value: "\(s.transcriptionActive)/\(s.transcriptionCap) in flight" + (s.transcriptionWaiting > 0 ? " · \(s.transcriptionWaiting) queued" : ""))
+                if s.pausedFor > 0 {
+                    Label("Rate-limited — backing off ~\(Int(s.pausedFor.rounded()))s", systemImage: "clock.badge.exclamationmark")
+                        .font(.caption).foregroundColor(.orange)
+                } else {
+                    Text("No rate-limit backoff active.").font(.caption).foregroundColor(.secondary)
+                }
+            } else {
+                Text("Reading…").font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                snap = await AIGate.shared.snapshot()
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+            }
         }
     }
 }
@@ -2756,6 +2868,12 @@ private struct StatsPane: View {
                 StatRow(label: "Meetings recorded", value: "\(stats.meetingCount)")
                 StatRow(label: "This week", value: "\(stats.meetingsThisWeek(in: settings.notesFolder))")
                 StatRow(label: "Total meeting time", value: UsageStats.hoursMinutes(stats.meetingSeconds))
+            }
+
+            SettingsGroup("AI Activity") {
+                AIActivityView()
+                Text("Live view of the shared request gate — how many Groq calls are in flight or queued, and whether a rate-limit backoff is active. Chat and transcription have separate limits.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Estimated Cost") {

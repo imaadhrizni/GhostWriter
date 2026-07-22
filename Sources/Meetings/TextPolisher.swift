@@ -262,10 +262,13 @@ final class TextPolisher {
 
     private let baseURL = "https://api.groq.com/openai/v1"
     private let session = URLSession.shared
-    private var model: String { AppSettings.shared.polishingModel }  // user-configurable in Settings
+    // Model ids resolve the user's choice against Groq's live catalog (see
+    // ModelResolver): an unavailable pick routes to the best available fallback
+    // for the role, so a Groq deprecation degrades gracefully instead of failing.
+    private var model: String { ModelResolver.shared.resolve(.summary, configured: AppSettings.shared.polishingModel) }
     /// Cheap/fast model for lightweight, high-frequency work (live brief,
     /// tagging, query expansion, agenda coverage) — keeps latency and cost low.
-    private var fastModel: String { AppSettings.shared.fastModel }
+    private var fastModel: String { ModelResolver.shared.resolve(.lightweight, configured: AppSettings.shared.fastModel) }
 
     // Prompt versions for the AICache. Bump the matching one whenever a cached
     // method's system prompt changes, so stale cached outputs miss and refresh.
@@ -487,7 +490,7 @@ final class TextPolisher {
                 temperature: 0.1,
                 max_tokens: 700
             )
-            if let text = try? await send(body, timeout: 30) {
+            if let text = try? await send(body, timeout: 30, role: .lightweight) {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty { condensed.append(trimmed) }
             } else {
@@ -593,7 +596,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 24
         )
-        let raw = try await send(requestBody, timeout: 15)
+        let raw = try await send(requestBody, timeout: 15, role: .lightweight)
         // One clean line, strip stray quotes/punctuation the model may add.
         return raw.trimmingCharacters(in: .whitespacesAndNewlines)
             .components(separatedBy: "\n").first?
@@ -694,7 +697,7 @@ final class TextPolisher {
     // MARK: - Usage
 
     /// Record LLM token usage for the cost estimate in Stats.
-    private func recordUsage(_ result: ChatResponse) {
+    private static func recordUsage(_ result: ChatResponse) {
         guard let u = result.usage else { return }
         UsageStats.shared.recordChat(inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens)
     }
@@ -730,7 +733,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 400
         )
-        let content = try await send(body, timeout: 20)
+        let content = try await send(body, timeout: 20, role: .lightweight)
         return Self.parseLiveBrief(content)
     }
 
@@ -800,7 +803,7 @@ final class TextPolisher {
             temperature: 0,
             max_tokens: 220
         )
-        guard let content = try? await send(body, timeout: 18),
+        guard let content = try? await send(body, timeout: 18, role: preferFast ? .lightweight : .summary),
               let obj = Self.firstJSONObject(in: content)
         else { return AgendaStatus(userCovered: Array(repeating: false, count: items.count)) }
 
@@ -1001,7 +1004,7 @@ final class TextPolisher {
             temperature: 0,
             max_tokens: 400
         )
-        guard let content = try? await send(request, timeout: 20) else { return MeetingFacts() }
+        guard let content = try? await send(request, timeout: 20, role: .lightweight) else { return MeetingFacts() }
         return Self.parseMeetingFacts(content, includeTitle: includeTitle,
                                       includePeople: includePeople, fields: fields)
     }
@@ -1022,35 +1025,62 @@ final class TextPolisher {
         return facts
     }
 
-    /// Shared chat request: sends, records usage, returns the message content.
-    private func send(_ body: ChatRequest, timeout: TimeInterval) async throws -> String {
-        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = timeout
+    /// Shared chat request: sends (through the AIGate concurrency/rate-limit
+    /// guard), records usage, returns the message content. `role` lets a
+    /// model-availability fault refresh the catalog and retry once on the best
+    /// available replacement for that kind of model.
+    private func send(_ body: ChatRequest, timeout: TimeInterval,
+                      role: ModelResolver.Role = .summary) async throws -> String {
+        do {
+            return try await perform(body, timeout: timeout)
+        } catch {
+            // A decommissioned/unknown model → refresh the live catalog, re-resolve
+            // for this role, and retry once. Rate-limit/quota is NOT a model fault
+            // (AIGate already backed off) — rethrow it untouched.
+            guard ModelResolver.shared.classify(error) != nil else { throw error }
+            await ModelResolver.shared.refresh(force: true)
+            var retry = body
+            let resolved = ModelResolver.shared.resolve(role, configured: body.model)
+            guard resolved != body.model else { throw error }
+            retry.model = resolved
+            return try await perform(retry, timeout: timeout)
+        }
+    }
+
+    private func perform(_ body: ChatRequest, timeout: TimeInterval) async throws -> String {
+        var body = body
         // Reasoning models (gpt-oss) burn the token budget on hidden reasoning;
         // cap the effort so the visible answer still fits.
-        var body = body
         if body.model.contains("gpt-oss"), body.reasoning_effort == nil { body.reasoning_effort = "low" }
-        request.httpBody = try JSONEncoder().encode(body)
+        let payload = try JSONEncoder().encode(body)
+        let url = URL(string: "\(baseURL)/chat/completions")!
+        let key = apiKey
 
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
-        guard http.statusCode == 200 else {
-            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
+        return try await AIGate.shared.run(.chat) { [session] in
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = timeout
+            request.httpBody = payload
+
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+            guard http.statusCode == 200 else {
+                let errBody = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                throw GroqError.apiError(statusCode: http.statusCode, message: String(errBody.prefix(200)))
+            }
+            let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+            Self.recordUsage(result)
+            // Reasoning models (e.g. gpt-oss) can leave `content` empty and put
+            // the answer in `reasoning` — fall back to it so those models work.
+            let msg = result.choices.first?.message
+            let content = [msg?.content, msg?.reasoning]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+            guard let content, !content.isEmpty else { throw GroqError.invalidResponse }
+            return content
         }
-        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
-        recordUsage(result)
-        // Reasoning models (e.g. gpt-oss) can leave `content` empty and put the
-        // answer in `reasoning` — fall back to it so those models still work.
-        let msg = result.choices.first?.message
-        let content = [msg?.content, msg?.reasoning]
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty }
-        guard let content, !content.isEmpty else { throw GroqError.invalidResponse }
-        return content
     }
 
     // MARK: - Context-Aware Prompts
@@ -1088,7 +1118,7 @@ final class TextPolisher {
 // MARK: - Models
 
 private struct ChatRequest: Codable {
-    let model: String
+    var model: String
     let messages: [ChatMessage]
     let temperature: Double
     let max_tokens: Int

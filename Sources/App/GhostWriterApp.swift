@@ -140,6 +140,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupOverlayPanel()
         setupHotkeyCallbacks()
 
+        // Warm the Groq model catalog so model choices resolve against what
+        // actually exists (see ModelResolver) before the first meeting.
+        Task { await ModelResolver.shared.refresh() }
+        NotificationCenter.default.addObserver(
+            forName: ModelResolver.didAutoSwitch, object: nil, queue: .main) { note in
+            guard let from = note.userInfo?["from"] as? String,
+                  let to = note.userInfo?["to"] as? String else { return }
+            NotificationManager.shared.notifyModelSwitched(from: from, to: to)
+        }
+
         NotificationCenter.default.addObserver(self, selector: #selector(onAPIKeySaved), name: NSNotification.Name("APIKeySaved"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(showAPIKeyWindow), name: .showAPIKeyWindow, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onSettingsChanged), name: .settingsDidReset, object: nil)
@@ -867,6 +877,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // viewer — see MeetingRefinery.
             if let transcript = self.meetingNotes.transcriptText(of: fileURL) {
                 let liveAgenda = await LiveMeetingAssistant.shared.coverageSnapshot
+                // Ensure no in-flight live-assistant tick is still running before
+                // the refinery fans out its own calls.
+                await LiveMeetingAssistant.shared.quiesce()
                 await MeetingRefinery.refine(
                     fileURL: fileURL, transcript: transcript,
                     options: .init(userAgenda: agenda, liveAgenda: liveAgenda, stripExisting: false),

@@ -904,6 +904,32 @@ private struct AIActivityView: View {
     }
 }
 
+/// Compact summary of the per-call API log with a button to the full window.
+private struct APICallLogSummary: View {
+    @State private var count = 0
+    @State private var cost = 0.0
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(count > 0 ? "\(count) calls logged" : "No calls logged yet")
+                Text("\(UsageStats.currency(cost)) estimated across logged calls")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Open Full Log…") { APIUsageLogWindowController.present() }
+        }
+        .onAppear(perform: reload)
+        .onReceive(NotificationCenter.default.publisher(for: APIUsageLog.didLog)) { _ in reload() }
+    }
+
+    private func reload() {
+        let e = APIUsageLog.shared.entries
+        count = e.count
+        cost = e.reduce(0) { $0 + $1.costUSD }
+    }
+}
+
 /// Date format used across the menu and Catalog, with presets,
 /// a custom pattern field, and a live preview of today's date.
 private struct DateFormatField: View {
@@ -2873,6 +2899,12 @@ private struct StatsPane: View {
             SettingsGroup("AI Activity") {
                 AIActivityView()
                 Text("Live view of the shared request gate — how many Groq calls are in flight or queued, and whether a rate-limit backoff is active. Chat and transcription have separate limits.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("API Call Log") {
+                APICallLogSummary()
+                Text("A full per-call history of every Groq request — feature, model, tokens or audio, time, and estimated cost — for auditing exactly what hit the API and from where.")
                     .font(.caption).foregroundColor(.secondary)
             }
 

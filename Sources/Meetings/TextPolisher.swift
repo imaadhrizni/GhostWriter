@@ -389,7 +389,7 @@ final class TextPolisher {
 
         // Graceful degradation: on any failure, return the raw text unchanged.
         do {
-            return try await send(requestBody, timeout: 15)
+            return try await send(requestBody, timeout: 15, source: "Dictation polish")
         } catch {
             Log.api.warning("⚠️ Polishing failed — returning raw text")
             return rawText
@@ -461,7 +461,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 1024
         )
-        return try await send(requestBody, timeout: 30)
+        return try await send(requestBody, timeout: 30, source: "Meeting summary")
     }
 
     /// Map step of map-reduce summarization: when a transcript is longer than
@@ -490,7 +490,7 @@ final class TextPolisher {
                 temperature: 0.1,
                 max_tokens: 700
             )
-            if let text = try? await send(body, timeout: 30, role: .lightweight) {
+            if let text = try? await send(body, timeout: 30, role: .lightweight, source: "Summary condense") {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty { condensed.append(trimmed) }
             } else {
@@ -540,7 +540,7 @@ final class TextPolisher {
             max_tokens: 400
         )
 
-        let content = try await send(requestBody, timeout: 30)
+        let content = try await send(requestBody, timeout: 30, source: "Chapters")
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed == "NONE" ? "" : trimmed
     }
@@ -570,7 +570,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 400
         )
-        let raw = try await send(requestBody, timeout: 40).trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = try await send(requestBody, timeout: 40, source: "POC criteria").trimmingCharacters(in: .whitespacesAndNewlines)
         if raw.uppercased() == "NONE" { return [] }
         return raw.components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "-*• \t")) }
@@ -596,7 +596,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 24
         )
-        let raw = try await send(requestBody, timeout: 15, role: .lightweight)
+        let raw = try await send(requestBody, timeout: 15, role: .lightweight, source: "Meeting title")
         // One clean line, strip stray quotes/punctuation the model may add.
         return raw.trimmingCharacters(in: .whitespacesAndNewlines)
             .components(separatedBy: "\n").first?
@@ -631,7 +631,7 @@ final class TextPolisher {
         return try await generateCached(
             kind: .brief, source: clipped, version: Self.briefPromptVersion,
             forceRefresh: forceRefresh, footer: false,
-            groq: { try await self.send(requestBody, timeout: 40).trimmingCharacters(in: .whitespacesAndNewlines) },
+            groq: { try await self.send(requestBody, timeout: 40, source: "Note brief").trimmingCharacters(in: .whitespacesAndNewlines) },
             apple: { await AppleIntelligence.noteBrief(text: clipped) })
     }
 
@@ -665,7 +665,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 1024
         )
-        return try await send(requestBody, timeout: 30)
+        return try await send(requestBody, timeout: 30, source: "Ask (meeting)")
     }
 
     // MARK: - Cross-Meeting Q&A
@@ -691,7 +691,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 1024
         )
-        return try await send(requestBody, timeout: 30)
+        return try await send(requestBody, timeout: 30, source: "Ask (across meetings)")
     }
 
     // MARK: - Usage
@@ -733,7 +733,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 400
         )
-        let content = try await send(body, timeout: 20, role: .lightweight)
+        let content = try await send(body, timeout: 20, role: .lightweight, source: "Live brief")
         return Self.parseLiveBrief(content)
     }
 
@@ -803,7 +803,7 @@ final class TextPolisher {
             temperature: 0,
             max_tokens: 220
         )
-        guard let content = try? await send(body, timeout: 18, role: preferFast ? .lightweight : .summary),
+        guard let content = try? await send(body, timeout: 18, role: preferFast ? .lightweight : .summary, source: "Agenda coverage"),
               let obj = Self.firstJSONObject(in: content)
         else { return AgendaStatus(userCovered: Array(repeating: false, count: items.count)) }
 
@@ -870,7 +870,7 @@ final class TextPolisher {
         return try await generateCached(
             kind: .followUp, source: cacheSource, version: Self.followUpPromptVersion,
             forceRefresh: forceRefresh, footer: true,
-            groq: { try await self.send(body, timeout: 30) },
+            groq: { try await self.send(body, timeout: 30, source: "Draft") },
             apple: { await AppleIntelligence.draftFollowUp(notes: clipped, guidance: guidance) })
     }
 
@@ -1004,7 +1004,7 @@ final class TextPolisher {
             temperature: 0,
             max_tokens: 400
         )
-        guard let content = try? await send(request, timeout: 20, role: .lightweight) else { return MeetingFacts() }
+        guard let content = try? await send(request, timeout: 20, role: .lightweight, source: "Meeting facts") else { return MeetingFacts() }
         return Self.parseMeetingFacts(content, includeTitle: includeTitle,
                                       includePeople: includePeople, fields: fields)
     }
@@ -1030,9 +1030,10 @@ final class TextPolisher {
     /// model-availability fault refresh the catalog and retry once on the best
     /// available replacement for that kind of model.
     private func send(_ body: ChatRequest, timeout: TimeInterval,
-                      role: ModelResolver.Role = .summary) async throws -> String {
+                      role: ModelResolver.Role = .summary,
+                      source: String = "Chat") async throws -> String {
         do {
-            return try await perform(body, timeout: timeout)
+            return try await perform(body, timeout: timeout, source: source)
         } catch {
             // A decommissioned/unknown model → refresh the live catalog, re-resolve
             // for this role, and retry once. Rate-limit/quota is NOT a model fault
@@ -1043,11 +1044,11 @@ final class TextPolisher {
             let resolved = ModelResolver.shared.resolve(role, configured: body.model)
             guard resolved != body.model else { throw error }
             retry.model = resolved
-            return try await perform(retry, timeout: timeout)
+            return try await perform(retry, timeout: timeout, source: source)
         }
     }
 
-    private func perform(_ body: ChatRequest, timeout: TimeInterval) async throws -> String {
+    private func perform(_ body: ChatRequest, timeout: TimeInterval, source: String) async throws -> String {
         var body = body
         // Reasoning models (gpt-oss) burn the token budget on hidden reasoning;
         // cap the effort so the visible answer still fits.
@@ -1055,6 +1056,7 @@ final class TextPolisher {
         let payload = try JSONEncoder().encode(body)
         let url = URL(string: "\(baseURL)/chat/completions")!
         let key = apiKey
+        let modelID = body.model
 
         return try await AIGate.shared.run(.chat) { [session] in
             var request = URLRequest(url: url)
@@ -1067,11 +1069,16 @@ final class TextPolisher {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
             guard http.statusCode == 200 else {
+                APIUsageLog.shared.recordChat(source: source, model: modelID,
+                                              inputTokens: 0, outputTokens: 0, ok: false)
                 let errBody = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 throw GroqError.apiError(statusCode: http.statusCode, message: String(errBody.prefix(200)))
             }
             let result = try JSONDecoder().decode(ChatResponse.self, from: data)
             Self.recordUsage(result)
+            APIUsageLog.shared.recordChat(source: source, model: modelID,
+                                          inputTokens: result.usage?.prompt_tokens ?? 0,
+                                          outputTokens: result.usage?.completion_tokens ?? 0)
             // Reasoning models (e.g. gpt-oss) can leave `content` empty and put
             // the answer in `reasoning` — fall back to it so those models work.
             let msg = result.choices.first?.message

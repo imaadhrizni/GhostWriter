@@ -33,14 +33,16 @@ final class GroqService {
     ///   - context: Recent transcript text used to self-prime decoding, so
     ///     names/jargon stay consistent once they first appear. Optional.
     /// - Returns: Transcribed text
-    func transcribe(audioData: Data, context: String = "") async throws -> String {
+    func transcribe(audioData: Data, context: String = "", source: String = "Live transcription") async throws -> String {
         // Convert PCM to WAV for the API.
         let wavData = AudioCapture.createWAV(from: audioData)
         let text = try await postTranscription(
             fileData: wavData, filename: "audio.wav", mimeType: "audio/wav",
             timeout: TimeInterval(AppSettings.shared.transcriptionTimeout), context: context)
         // Bill estimate: 16 kHz, 16-bit, mono PCM → 2 bytes/sample.
-        UsageStats.shared.recordTranscription(audioSeconds: Double(audioData.count) / 2.0 / 16_000.0)
+        let seconds = Double(audioData.count) / 2.0 / 16_000.0
+        UsageStats.shared.recordTranscription(audioSeconds: seconds)
+        logTranscription(source: source, audioSeconds: seconds)
         return text
     }
 
@@ -52,7 +54,8 @@ final class GroqService {
     ///   - mimeType: MIME for the multipart part (e.g. "audio/ogg")
     ///   - audioSeconds: duration for the usage/cost estimate (0 if unknown)
     ///   - context: optional priming text
-    func transcribe(fileURL: URL, mimeType: String, audioSeconds: Double, context: String = "") async throws -> String {
+    func transcribe(fileURL: URL, mimeType: String, audioSeconds: Double, context: String = "",
+                    source: String = "Audio import") async throws -> String {
         let fileData = try Data(contentsOf: fileURL)
         // Whole files are larger than live chunks — use the dedicated (longer),
         // user-configurable import timeout.
@@ -60,7 +63,15 @@ final class GroqService {
             fileData: fileData, filename: fileURL.lastPathComponent, mimeType: mimeType,
             timeout: TimeInterval(AppSettings.shared.importTranscriptionTimeout), context: context)
         if audioSeconds > 0 { UsageStats.shared.recordTranscription(audioSeconds: audioSeconds) }
+        logTranscription(source: source, audioSeconds: audioSeconds)
         return text
+    }
+
+    /// Record a successful transcription call in the per-call API usage log,
+    /// resolving the model the same way `postTranscription` did.
+    private func logTranscription(source: String, audioSeconds: Double) {
+        let model = ModelResolver.shared.resolve(.transcription, configured: AppSettings.shared.transcriptionModel)
+        APIUsageLog.shared.recordTranscription(source: source, model: model, audioSeconds: audioSeconds)
     }
 
     /// The one Whisper multipart upload both `transcribe` entry points share:

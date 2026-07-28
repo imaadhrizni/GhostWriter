@@ -10,6 +10,7 @@ import Foundation
 enum FollowUpKind: String, CaseIterable, Identifiable {
     case minutes, followUpEmail, statusUpdate, executiveSummary, actionItemList, thankYou
     case recap, decisionLog, talkingPoints, retrospective, faq, proposal, pocPlan
+    case solutionSummary, requirementsChecklist, mutualActionPlan
 
     var id: String { rawValue }
 
@@ -28,6 +29,9 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .faq:              return "FAQ"
         case .proposal:         return "Proposal / Next Steps"
         case .pocPlan:          return "POC Plan"
+        case .solutionSummary:      return "Solution Architecture Summary"
+        case .requirementsChecklist: return "Requirements & Config Checklist"
+        case .mutualActionPlan:     return "Mutual Action Plan"
         }
     }
 
@@ -47,17 +51,21 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .faq:              return "questionmark.circle"
         case .proposal:         return "doc.badge.gearshape"
         case .pocPlan:          return "flask"
+        case .solutionSummary:      return "square.stack.3d.up"
+        case .requirementsChecklist: return "list.bullet.clipboard"
+        case .mutualActionPlan:     return "person.2.badge.gearshape"
         }
     }
 
     /// Category used to group the draft-document pickers and menus.
     enum Category: String, CaseIterable {
-        case emailRecap, records, sales, reports, retro
+        case emailRecap, records, sales, technical, reports, retro
         var title: String {
             switch self {
             case .emailRecap:  return "Email & Recap"
             case .records:     return "Records"
             case .sales:       return "Sales"
+            case .technical:   return "Technical"
             case .reports:     return "Reports"
             case .retro:       return "Retro"
             }
@@ -69,6 +77,7 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .followUpEmail, .recap, .thankYou:        return .emailRecap
         case .minutes, .decisionLog, .actionItemList:  return .records
         case .proposal, .pocPlan, .talkingPoints:      return .sales
+        case .solutionSummary, .requirementsChecklist, .mutualActionPlan: return .technical
         case .statusUpdate, .executiveSummary, .faq:   return .reports
         case .retrospective:                           return .retro
         }
@@ -90,6 +99,9 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .faq:              return "The meeting's questions and answers as Q&A pairs."
         case .proposal:         return "A short proposal memo — context, recommendation, next steps."
         case .pocPlan:          return "A proof-of-concept plan — objective, success criteria, scope, timeline."
+        case .solutionSummary:      return "A technical solution-architecture recap — requirements, proposed design, and integration points."
+        case .requirementsChecklist: return "The customer's technical requirements & environment as an owner-tagged checklist."
+        case .mutualActionPlan:     return "A shared vendor↔customer plan of dated milestones toward a decision."
         }
     }
 
@@ -156,6 +168,18 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .pocPlan:
             return """
             Write a PROOF-OF-CONCEPT (POC) PLAN in Markdown for a technical evaluation, with "## " sections: Objective (what the POC must prove), Success Criteria (specific, measurable pass/fail items as a bullet list), Scope & Use Cases (what will and won't be tested), Environment & Prerequisites (access, data, accounts needed — from either side), Timeline & Milestones (phases with target dates), Roles (who owns what, on the vendor and customer side), and Risks / Open Questions. Draw strictly on the notes; where a detail wasn't discussed, add it as a bracketed placeholder like "[TBD: …]" rather than inventing it.
+            """
+        case .solutionSummary:
+            return """
+            Write a SOLUTION ARCHITECTURE SUMMARY for a technical evaluation, in Markdown with "## " sections: Requirements (the customer's stated technical needs and constraints), Proposed Solution (the architecture/approach discussed, component by component), Integration Points (systems, APIs, data flows, auth it must connect to), Assumptions & Dependencies, and Open Technical Questions. Precise and vendor-neutral in tone. Draw strictly on the notes; mark anything not discussed as "[TBD: …]".
+            """
+        case .requirementsChecklist:
+            return """
+            Output the customer's TECHNICAL REQUIREMENTS & ENVIRONMENT as a Markdown checklist, grouped under "## " headings where natural (e.g. Functional, Security & Compliance, Environment & Access, Integrations, Performance/Scale). Each item: "- [ ] <requirement> — @<owner> (due: <date>)", appending owner/date only when the notes make them clear. Capture must-haves and stated constraints; don't invent requirements. If none are captured, output "_No requirements captured._".
+            """
+        case .mutualActionPlan:
+            return """
+            Write a MUTUAL ACTION PLAN (MAP) — a shared vendor↔customer plan toward a decision — as a Markdown table with columns: Milestone | Owner (Vendor/Customer) | Target Date | Status. Order rows chronologically toward the goal (e.g. POC start → success-criteria sign-off → business case → decision). Use "[TBD]" for dates not yet agreed and default Status to "Not started". Below the table add a one-line "**Decision target:** <date or [TBD]>". Draw strictly on the notes.
             """
         }
     }
@@ -577,6 +601,50 @@ final class TextPolisher {
             .filter { !$0.isEmpty && $0.uppercased() != "NONE" }
     }
 
+    /// Extract sales intelligence from a meeting transcript: the objections /
+    /// concerns the other side raised (pricing, security, timeline, adoption,
+    /// authority, competition …) and any competitor / incumbent tools mentioned,
+    /// each with the context it came up in. Returns a Markdown body with an
+    /// `### Objections` and/or `### Competitors` sub-section, or "" when neither
+    /// is present. Draws only from the transcript — never invents.
+    func extractObjectionsAndCompetitors(transcript: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(Self.summarizableBody(transcript).prefix(20_000))
+        let requestBody = ChatRequest(
+            model: model,   // nuanced sales-signal reading — use the polishing model
+            messages: [
+                .init(role: "system", content: """
+                You are a sales engineer's analyst. From this meeting transcript, extract TWO things \
+                the account team needs — using ONLY what was actually said, never inventing:
+
+                1. OBJECTIONS — concerns, hesitations, pushback, blockers, or risks the customer/prospect \
+                raised (e.g. price, security/compliance, timeline, integration effort, missing feature, \
+                lack of buy-in, budget/authority). For each, note who raised it and, if stated, any \
+                response or resolution given.
+                2. COMPETITORS — any competing product, incumbent tool, vendor, or "we already use X" \
+                mentioned, with the context (evaluating against us, currently in place, ruled out, …).
+
+                Output GitHub Markdown in EXACTLY this shape, omitting a section entirely if it has no items:
+
+                ### Objections
+                - **<short label>** — <the objection in one line>. _Response:_ <response, or "none given">.
+
+                ### Competitors
+                - **<name>** — <context in one line>.
+
+                No preamble, no other headings, no "N/A" filler. If NEITHER objections nor competitors \
+                are present, output exactly NONE and nothing else.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.2,
+            max_tokens: 700
+        )
+        let raw = try await send(requestBody, timeout: 40, source: "Objections & competitors")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.uppercased() == "NONE" ? "" : raw
+    }
+
     /// A short, human-readable title for a finished meeting (used as the note's
     /// front-matter `title:` in place of the timestamp). Cheap fast-model call.
     func meetingTitle(transcript: String) async throws -> String {
@@ -692,6 +760,76 @@ final class TextPolisher {
             max_tokens: 1024
         )
         return try await send(requestBody, timeout: 30, source: "Ask (across meetings)")
+    }
+
+    // MARK: - Agentic Ask
+
+    /// Plan step for agentic Ask: decompose a question into 1–4 focused search
+    /// queries so retrieval can gather evidence from several angles (e.g.
+    /// "renewal risk with Acme" → "Acme renewal", "Acme objections", "Acme
+    /// contract end date"). Returns the distinct queries; on any failure or a
+    /// trivial question it returns `[question]` so the caller always has one.
+    /// Uses the cheap fast model — this is a lightweight planning hop.
+    func planQueries(question: String, history: String = "") async -> [String] {
+        let fallback = [question]
+        guard !apiKey.isEmpty else { return fallback }
+        let framed = history.isEmpty ? question
+            : "Conversation so far:\n\(history)\n\nLatest question: \(question)"
+        let requestBody = ChatRequest(
+            model: fastModel,
+            messages: [
+                .init(role: "system", content: """
+                You plan a search over a knowledge base of meeting notes to answer the user's question.
+                Break the question into 1–4 short, keyword-style search queries that together cover \
+                everything needed to answer it — distinct angles, entities, and time frames, not \
+                paraphrases of each other. A simple question needs just ONE query.
+                Output ONLY the queries, one per line, no numbering, no quotes, no commentary.
+                """),
+                .init(role: "user", content: framed)
+            ],
+            temperature: 0.1,
+            max_tokens: 120
+        )
+        guard let raw = try? await send(requestBody, timeout: 15, role: .lightweight, source: "Ask (plan)") else {
+            return fallback
+        }
+        let queries = raw.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "-*•0123456789. \t\"")) }
+            .filter { !$0.isEmpty }
+        return queries.isEmpty ? fallback : Array(queries.prefix(4))
+    }
+
+    /// Answer step for agentic Ask: like `answerAcrossMeetings`, but the context
+    /// also carries a `=== Knowledge Base … ===` snapshot of the Catalog
+    /// (accounts, opportunities, POC health, people). The model may draw on
+    /// either source and is told to cite meetings by their header and to name
+    /// the account/POC when the answer comes from the catalog snapshot.
+    func answerAcrossKnowledge(question: String, excerpts: String, catalog: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+
+        let clippedExcerpts = String(excerpts.suffix(AppSettings.shared.summaryContextChars))
+        let context = catalog.isEmpty
+            ? "Meeting excerpts:\n\(clippedExcerpts)"
+            : "\(catalog)\n\nMeeting excerpts:\n\(clippedExcerpts)"
+        let requestBody = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                You answer questions about the user's sales/work knowledge base using ONLY the context provided.
+                The context has two parts: a "=== Knowledge Base … ===" snapshot of accounts, opportunities, \
+                POC health and people; and meeting-transcript excerpts grouped under "=== Meeting <date · time> ===" headers.
+                Use whichever part answers the question — structured facts (pipeline value, POC status, who someone is) \
+                from the snapshot, specifics and quotes from the excerpts.
+                Always cite your source: name the account/opportunity/POC for snapshot facts, and cite the meeting \
+                (e.g. "(2026-07-03 · 14:30)") for excerpt facts. Different meetings are different conversations — don't blend them.
+                Be concise. If the context doesn't contain the answer, say so plainly — never guess.
+                """),
+                .init(role: "user", content: "\(context)\n\nQuestion: \(question)")
+            ],
+            temperature: 0.2,
+            max_tokens: 1024
+        )
+        return try await send(requestBody, timeout: 40, source: "Ask (knowledge base)")
     }
 
     // MARK: - Usage

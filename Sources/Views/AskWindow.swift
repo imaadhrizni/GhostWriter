@@ -3,11 +3,14 @@ import AppKit
 
 // MARK: - Ask Your Knowledge Base
 //
-// A persistent, multi-turn chat over the WHOLE meeting archive. Each question
-// retrieves the most relevant excerpts (on-device semantic search when
-// available, keyword otherwise), then answers with cited sources you can click
-// to open. Follow-up questions carry the recent conversation for context, so
-// "what about pricing?" resolves against the prior turn.
+// A persistent, multi-turn chat across your WHOLE knowledge base — every meeting
+// note plus the Catalog (accounts, opportunities, POC health, people). In
+// agentic mode a question is first decomposed into several planned searches and
+// a Catalog snapshot is folded into the context, so both "what did we decide
+// about pricing with Acme?" and "which POCs are at risk?" get answered. Each
+// answer cites sources you can click to open; follow-up questions carry the
+// recent conversation, so "what about their timeline?" resolves against the
+// prior turn.
 
 final class AskWindowController: NSWindowController {
     private static var shared: AskWindowController?
@@ -29,7 +32,7 @@ final class AskWindowController: NSWindowController {
             backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.center()
-        window.title = "Ask Your Notes"
+        window.title = "Ask Anything"
         window.titlebarAppearsTransparent = true
         super.init(window: window)
         window.contentView = NSHostingView(rootView: AskView())
@@ -92,7 +95,7 @@ private struct AskView: View {
             Divider()
 
             HStack(spacing: 8) {
-                TextField("Ask about your meetings…", text: $draft, axis: .vertical)
+                TextField("Ask about your meetings, accounts, POCs…", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...4)
                     .onSubmit(send)
@@ -194,9 +197,9 @@ private struct AskView: View {
         VStack(spacing: 10) {
             Image(systemName: "sparkles.rectangle.stack")
                 .font(.system(size: 40)).foregroundStyle(.tertiary)
-            Text("Ask your whole meeting archive")
+            Text("Ask across everything")
                 .font(.headline)
-            Text("“What did we decide about pricing with Acme?”\n“Summarize the DESC compliance thread.”\n“What are my open commitments to the platform team?”")
+            Text("“What did we decide about pricing with Acme?”\n“Which POCs are at risk, and why?”\n“What objections came up about security this quarter?”\n“What are my open commitments to the platform team?”")
                 .font(.caption).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
@@ -223,10 +226,12 @@ private struct AskView: View {
             "\($0.role == .user ? "Q" : "A"): \($0.text)"
         }.joined(separator: "\n")
         let files = resolvedFiles()
+        let currentScope = scope
 
         Task { @MainActor in
             defer { asking = false }
-            let result = await Self.answer(question: q, history: history, files: files)
+            let result = await Self.answer(question: q, history: history,
+                                           files: files, scope: currentScope)
             messages.append(AskMessage(role: .assistant, text: result.text,
                                        citations: result.citations, source: result.engine))
         }
@@ -234,18 +239,47 @@ private struct AskView: View {
 
     private struct Answer { let text: String; let citations: [NotesLibrary.ExcerptResult.Citation]; let engine: String? }
 
-    /// Retrieve excerpts across the archive and answer, with an on-device
-    /// fallback when Groq is unavailable or fails. Retrieval is hybrid
-    /// (meaning + keyword), so it works even without an embedding model.
+    /// Retrieve across the knowledge base and answer, with an on-device fallback
+    /// when Groq is unavailable or fails. In agentic mode the question is first
+    /// decomposed into several planned searches, and a Catalog snapshot
+    /// (accounts, opportunities, POC health, people) is folded into the context
+    /// so structured questions ("which POCs are at risk?") can be answered too.
+    /// Retrieval is hybrid (meaning + keyword), so it works without an embedding
+    /// model.
+    @MainActor
     private static func answer(question: String, history: String,
-                               files: [NotesLibrary.MeetingFile]?) async -> Answer {
+                               files: [NotesLibrary.MeetingFile]?, scope: AskScope) async -> Answer {
         if let files, files.isEmpty {
             return Answer(text: "That scope has no meetings to search. Pick a different scope.", citations: [], engine: nil)
         }
-        let retrieved = files == nil
-            ? await NotesLibrary.semanticExcerpts(for: question)
-            : await NotesLibrary.semanticExcerpts(for: question, files: files!)
-        guard !retrieved.text.isEmpty else {
+
+        let settings = AppSettings.shared
+        let localFirst = settings.localOnlyMode || settings.preferOnDeviceAI
+        // Agentic planning uses a cloud fast-model hop, so only when going cloud.
+        let agentic = settings.agenticAsk && !localFirst
+        let tp = TextPolisher()
+
+        // Plan → retrieve. One query in the simple path, several when agentic.
+        let queries = agentic ? await tp.planQueries(question: question, history: history) : [question]
+        let retrieved = queries.count > 1
+            ? await NotesLibrary.semanticExcerpts(forQueries: queries, files: files)
+            : (files == nil
+                ? await NotesLibrary.semanticExcerpts(for: question)
+                : await NotesLibrary.semanticExcerpts(for: question, files: files!))
+
+        // Catalog snapshot — the structured half of "everything". Included when
+        // agentic and the scope isn't an explicit hand-picked set of meetings.
+        var catalog = ""
+        if agentic {
+            switch scope {
+            case .all:               catalog = KnowledgeBase.catalogSnapshot()
+            case .org(let id):       catalog = KnowledgeBase.catalogSnapshot(orgID: id)
+            case .project(let id):   catalog = KnowledgeBase.catalogSnapshot(projectID: id)
+            case .meetings:          catalog = ""
+            }
+        }
+
+        guard !retrieved.text.isEmpty || !catalog.isEmpty else {
             return Answer(text: "I couldn't find anything relevant in this scope. Try rewording, widening the scope, or check that you have meetings recorded.", citations: [], engine: nil)
         }
 
@@ -254,21 +288,25 @@ private struct AskView: View {
             : "Conversation so far:\n\(history)\n\nAnswer this follow-up: \(question)"
 
         // Cloud first (unless Local-only / prefer-on-device), Apple fallback.
-        let localFirst = AppSettings.shared.localOnlyMode || AppSettings.shared.preferOnDeviceAI
         if !localFirst {
             do {
-                let text = try await TextPolisher().answerAcrossMeetings(question: framed, excerpts: retrieved.text)
+                let text = agentic || !catalog.isEmpty
+                    ? try await tp.answerAcrossKnowledge(question: framed, excerpts: retrieved.text, catalog: catalog)
+                    : try await tp.answerAcrossMeetings(question: framed, excerpts: retrieved.text)
                 return Answer(text: text, citations: retrieved.citations, engine: "Groq")
             } catch {
                 // fall through to on-device
             }
         }
+        let catalogBlock = catalog.isEmpty ? "" : "\(catalog)\n\n"
         if let local = await AppleIntelligence.generate(
             instructions: """
-            You answer questions using ONLY the provided meeting excerpts, grouped under "=== Meeting … ===" headers. \
-            Cite which meeting each point comes from. Be concise. If the excerpts don't contain the answer, say so — never guess.
+            You answer questions using ONLY the provided context — a "=== Knowledge Base … ===" snapshot of \
+            accounts, opportunities, POC health and people, plus meeting excerpts grouped under "=== Meeting … ===" headers. \
+            Cite the account/POC for snapshot facts and the meeting for excerpt facts. Be concise. \
+            If the context doesn't contain the answer, say so — never guess.
             """,
-            prompt: "Excerpts:\n\(retrieved.text)\n\n\(framed)") {
+            prompt: "\(catalogBlock)Meeting excerpts:\n\(retrieved.text)\n\n\(framed)") {
             return Answer(text: local, citations: retrieved.citations, engine: "Apple Intelligence")
         }
         return Answer(text: "Couldn't reach an AI model to answer. Check your Groq key, or enable Apple Intelligence for on-device answers.", citations: [], engine: nil)

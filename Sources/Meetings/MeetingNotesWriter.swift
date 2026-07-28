@@ -463,6 +463,15 @@ final class MeetingNotesWriter {
         Log.meeting.info("📖 Chapters appended")
     }
 
+    /// Append the local talk-time / engagement readout (no AI). No-op when the
+    /// body is empty (too little dialogue to be meaningful).
+    func appendEngagement(_ body: String, to fileURL: URL) {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        append("\n# Engagement\n\n\(trimmed)\n", to: fileURL)
+        Log.meeting.info("📊 Engagement analytics appended")
+    }
+
     /// Replace the front-matter `title:` with an AI-generated meeting title.
     /// No-op without front-matter or a title line (the on-disk filename is left
     /// unchanged, so Catalog links stay valid).
@@ -530,6 +539,18 @@ final class MeetingNotesWriter {
             .joined(separator: "\n")
         append("\n## Mentions\n\n\(lines)\n", to: fileURL)
         Log.meeting.info("📡 Watchlist mentions appended")
+    }
+
+    /// Append an "Objections & Competitors" section — the sales-intelligence
+    /// readout of objections raised and competitors mentioned. `body` is the
+    /// pre-formatted Markdown (with its own `### Objections` / `### Competitors`
+    /// sub-headings) from `TextPolisher.extractObjectionsAndCompetitors`. No-op
+    /// when empty.
+    func appendObjections(_ body: String, to fileURL: URL) {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        append("\n# Objections & Competitors\n\n\(trimmed)\n", to: fileURL)
+        Log.meeting.info("🛡 Objections & competitors appended")
     }
 
     /// Merge topic tags into the YAML front-matter `tags: [...]` line. No-op if

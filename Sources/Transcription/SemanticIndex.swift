@@ -227,9 +227,16 @@ actor SemanticIndex {
 
     // MARK: Persistence
 
+    /// The on-disk semantic-index cache file. `nonisolated` so UI (Settings'
+    /// Reveal button) can point at it without hopping onto the actor. The file
+    /// may not exist yet — nothing is written until the first search.
+    nonisolated static var cacheFileURL: URL {
+        AppPaths.caches().appendingPathComponent("semantic-index-v2.json")
+    }
+
     private var cacheURL: URL {
         // v2: chunk format now carries lexical term tables + optional vectors.
-        AppPaths.caches().appendingPathComponent("semantic-index-v2.json")
+        Self.cacheFileURL
     }
 
     private func loadIfNeeded() {

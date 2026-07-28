@@ -155,6 +155,9 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Notes folder location", section: .general, keywords: ["storage", "save", "directory", "path", "choose", "change", "default", "reset"]),
         .init(label: "Back up & restore notes", section: .general, keywords: ["backup", "restore", "export", "import", "archive", "recover"]),
         .init(label: "Automatic backups", section: .general, keywords: ["automatic", "auto backup", "daily", "retention", "keep", "schedule", "back up now", "snapshot", "last backup", "recover"]),
+        .init(label: "Talk-time analytics", section: .notes, keywords: ["talk time", "engagement", "talk share", "who spoke", "turns", "questions", "monologue", "analytics", "diarization"]),
+        .init(label: "Objections & competitors", section: .notes, keywords: ["objection", "competitor", "competition", "incumbent", "pushback", "concern", "blocker", "sales intelligence", "compete", "rival"]),
+        .init(label: "Agentic Ask", section: .notes, keywords: ["ask", "agentic", "knowledge base", "everything", "search", "query planning", "catalog facts", "ask anything"]),
         .init(label: "Date format", section: .general, keywords: ["timestamp", "filename", "default", "reset"]),
         .init(label: "PDF paper size (Letter / A4)", section: .general, keywords: ["pdf", "export", "paper", "a4", "letter", "page size", "print", "report", "poc"]),
         .init(label: "Menu-bar icon", section: .general, keywords: ["status item", "tray", "default", "reset"]),
@@ -2125,6 +2128,14 @@ private struct MeetingNotesPane: View {
                 Toggle("Add topic chapters", isOn: $settings.topicChapters)
                 Text("Appends a timestamped jump-list segmenting the meeting into topics. One extra AI call per meeting.")
                     .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Add talk-time analytics", isOn: $settings.talkTimeAnalytics)
+                Text("Appends a local engagement readout — per-speaker talk share, turns, questions, longest monologue, and whether next steps were captured. Computed on-device from the transcript; no AI call.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("Extract objections & competitors", isOn: $settings.objectionIntel)
+                Text("Appends an Objections & Competitors section — the concerns and pushback the customer raised (with any response given) and any competing or incumbent tools mentioned, each with context. One extra AI call per meeting.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Keyword Radar") {
@@ -2139,7 +2150,26 @@ private struct MeetingNotesPane: View {
                 Toggle("Notify when notes are saved", isOn: $settings.notifyOnMeetingEnd)
             }
 
-            SettingsGroup("Catalog Search") {
+            SettingsGroup("Ask & Search") {
+                Toggle("Agentic Ask across everything", isOn: $settings.agenticAsk)
+                Text("When on, Ask plans several searches per question and folds in Catalog facts — accounts, opportunities, POC health, and people — so it can answer structured questions (\u{201C}which POCs are at risk?\u{201D}) as well as \u{201C}what did we decide with Acme?\u{201D}. When off, Ask does a single keyword/meaning search over meeting notes only. Planning uses a cloud call, so it's skipped in Local-only mode.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
+                HStack {
+                    Text("Search index cache")
+                    Spacer()
+                    Button("Reveal in Finder") {
+                        let url = SemanticIndex.cacheFileURL
+                        if FileManager.default.fileExists(atPath: url.path) {
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        } else {
+                            NSWorkspace.shared.activateFileViewerSelecting([url.deletingLastPathComponent()])
+                        }
+                    }
+                }
+                Text("The on-device semantic search index (Apple NLEmbedding vectors, cached in ~/Library/Caches). Rebuilt automatically as notes change; delete the file to force a full re-index. Private, never uploaded.")
+                    .font(.caption).foregroundColor(.secondary)
+                Divider()
                 HStack {
                     Text("Search depth (recent meetings)")
                     Spacer()

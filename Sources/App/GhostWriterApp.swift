@@ -515,7 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         digestItem.target = self
         menu.addItem(digestItem)
 
-        let askItem = NSMenuItem(title: "Ask Your Notes…", action: #selector(showAskWindow), keyEquivalent: "")
+        let askItem = NSMenuItem(title: "Ask Anything…", action: #selector(showAskWindow), keyEquivalent: "")
         askItem.image = NSImage(systemSymbolName: "sparkle.magnifyingglass", accessibilityDescription: nil)
         askItem.target = self
         menu.addItem(askItem)

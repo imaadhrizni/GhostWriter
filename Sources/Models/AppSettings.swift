@@ -76,6 +76,9 @@ final class AppSettings: ObservableObject {
         static let userDraftTemplates     = "meeting.userDraftTemplates"
         static let openNotesExternally    = "notes.openExternally"
         static let topicChapters          = "meeting.topicChapters"
+        static let talkTimeAnalytics      = "meeting.talkTimeAnalytics"
+        static let objectionIntel         = "meeting.objectionIntel"
+        static let agenticAsk             = "meeting.agenticAsk"
         static let liveAssistantEnabled   = "meeting.liveAssistantEnabled"
         static let meetingPrepCard        = "meeting.prepCard"
         static let notifyOnMeetingEnd     = "meeting.notifyOnMeetingEnd"
@@ -169,7 +172,7 @@ final class AppSettings: ObservableObject {
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
-                          structuredExtraction, extractKeyFields, extractUnanswered, watchlistKeywords, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, liveAssistantEnabled, meetingPrepCard,
+                          structuredExtraction, extractKeyFields, extractUnanswered, watchlistKeywords, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, talkTimeAnalytics, objectionIntel, agenticAsk, liveAssistantEnabled, meetingPrepCard,
                           notifyOnMeetingEnd, retainMeetingAudio, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, preferOnDeviceAI, transcriptionLanguage,
                           digestEnabled, digestFrequency, digestHour, digestWeekday, staleRelationshipDays, lastDigestDay,
@@ -224,6 +227,9 @@ final class AppSettings: ObservableObject {
         static let extractUnanswered               = true
         static let openNotesExternally             = false
         static let topicChapters                   = true
+        static let talkTimeAnalytics               = true
+        static let objectionIntel                  = true
+        static let agenticAsk                      = true
         static let liveAssistantEnabled            = true
         static let meetingPrepCard                 = true
         static let notifyOnMeetingEnd              = true
@@ -531,6 +537,29 @@ final class AppSettings: ObservableObject {
     var topicChapters: Bool {
         get { bool(Key.topicChapters, Default.topicChapters) }
         set { set(newValue, Key.topicChapters) }
+    }
+
+    /// Append a local talk-time / engagement readout (talk share, turns,
+    /// questions, longest monologue, next-steps captured) to finished meeting
+    /// notes. Computed on-device from the transcript — no AI, no network.
+    var talkTimeAnalytics: Bool {
+        get { bool(Key.talkTimeAnalytics, Default.talkTimeAnalytics) }
+        set { set(newValue, Key.talkTimeAnalytics) }
+    }
+
+    /// Extract objections raised and competitor mentions (with context) into an
+    /// "Objections & Competitors" section at the end of a meeting. One AI call.
+    var objectionIntel: Bool {
+        get { bool(Key.objectionIntel, Default.objectionIntel) }
+        set { set(newValue, Key.objectionIntel) }
+    }
+
+    /// Let Ask plan multiple sub-searches and pull in Catalog facts (accounts,
+    /// POC health, people) so it can answer across your whole knowledge base,
+    /// not just one keyword search over meeting notes.
+    var agenticAsk: Bool {
+        get { bool(Key.agenticAsk, Default.agenticAsk) }
+        set { set(newValue, Key.agenticAsk) }
     }
 
     /// Show a live rolling brief (TL;DR + open action items) during a meeting.

@@ -107,6 +107,44 @@ enum NotesLibrary {
         return ExcerptResult(text: out, sources: sources, citations: citations)
     }
 
+    /// Agentic retrieval: run several planned queries and merge their excerpts
+    /// into one context, deduping meetings by URL (first query to surface a
+    /// meeting keeps its citation) and staying under `maxChars`. Used by Ask's
+    /// agentic path so evidence is gathered from several angles at once. `files`
+    /// nil = the whole archive.
+    static func semanticExcerpts(forQueries queries: [String], files: [MeetingFile]?,
+                                 maxChars: Int = 20_000, topK: Int = 16) async -> ExcerptResult {
+        let unique = Array(NSOrderedSet(array: queries.filter { !$0.isEmpty })) as? [String] ?? queries
+        guard !unique.isEmpty else { return ExcerptResult(text: "", sources: [], citations: []) }
+
+        // Per-query retrieval, each capped so no single angle floods the budget.
+        let perQueryChars = max(4_000, maxChars / unique.count)
+        var text = ""
+        var sources: [MeetingFile] = []
+        var citations: [ExcerptResult.Citation] = []
+        var seenBlocks = Set<String>()
+        var seenSources = Set<URL>()
+
+        for query in unique {
+            let r = files == nil
+                ? await semanticExcerpts(for: query, maxChars: perQueryChars, topK: topK)
+                : await semanticExcerpts(for: query, files: files!, maxChars: perQueryChars, topK: topK)
+            // Append per-meeting blocks we haven't already included.
+            for block in r.text.components(separatedBy: "\n=== Meeting ") {
+                let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                let normalized = "=== Meeting " + trimmed
+                guard seenBlocks.insert(normalized).inserted else { continue }
+                if text.count + normalized.count > maxChars { break }
+                text += "\n" + normalized + "\n"
+            }
+            for c in r.citations where seenSources.insert(c.file.url).inserted {
+                sources.append(c.file); citations.append(c)
+            }
+        }
+        return ExcerptResult(text: text, sources: sources, citations: citations)
+    }
+
     /// Excerpts retrieved for Ask, plus the meetings they came from.
     struct ExcerptResult {
         let text: String

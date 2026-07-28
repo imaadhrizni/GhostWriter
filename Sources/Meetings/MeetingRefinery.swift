@@ -22,7 +22,7 @@ enum MeetingRefinery {
     /// Top-level Markdown headings this pass produces. Removed before a manual
     /// re-run so re-running never duplicates a section. `Bookmarks` and the
     /// transcript are intentionally excluded — they're not regenerated.
-    static let generatedHeadings = ["Summary", "Key Details", "Agenda", "Chapters", "Mentions"]
+    static let generatedHeadings = ["Summary", "Key Details", "Agenda", "Chapters", "Mentions", "Objections & Competitors", "Engagement"]
 
     struct Options {
         /// The user's planned agenda (live meeting only).
@@ -65,11 +65,23 @@ enum MeetingRefinery {
             }
         }
 
+        let produced: Bool
         if settings.localOnlyMode {
-            return await refineOnDevice(fileURL: fileURL, transcript: transcript, writer: writer)
+            produced = await refineOnDevice(fileURL: fileURL, transcript: transcript, writer: writer)
+        } else {
+            produced = await refineCloud(fileURL: fileURL, transcript: transcript,
+                                         options: options, writer: writer, onError: onError)
         }
-        return await refineCloud(fileURL: fileURL, transcript: transcript,
-                                 options: options, writer: writer, onError: onError)
+
+        // Talk-time / engagement — a purely local read of the transcript, so it
+        // runs regardless of cloud/on-device and offline. Appended last so it
+        // can see the action items the summary step may have written (the
+        // "next steps captured" signal).
+        if settings.talkTimeAnalytics, let content = fileURL.readText(),
+           let engagement = EngagementAnalyzer.section(fromNote: content) {
+            writer.appendEngagement(engagement, to: fileURL)
+        }
+        return produced
     }
 
     // MARK: Cloud
@@ -113,6 +125,9 @@ enum MeetingRefinery {
         async let chaptersTask: String? = settings.topicChapters
             ? (try? await tp.chapters(transcript: transcript))
             : nil
+        async let objectionsTask: String? = settings.objectionIntel
+            ? (try? await tp.extractObjectionsAndCompetitors(transcript: transcript))
+            : nil
         async let agendaStatusTask: TextPolisher.AgendaStatus? = options.liveAgenda.isEmpty
             ? await tp.agendaStatus(userAgenda: options.userAgenda, transcript: transcript, preferFast: true)
             : nil
@@ -120,6 +135,7 @@ enum MeetingRefinery {
         let summaryRaw = await summaryRawTask
         let facts = await factsTask
         let chaptersText = await chaptersTask
+        let objectionsText = await objectionsTask
         let agendaStatus = await agendaStatusTask
 
         // --- Writes, serialized in canonical order ---
@@ -174,6 +190,11 @@ enum MeetingRefinery {
         // Chapters.
         if let chaptersText, !chaptersText.isEmpty {
             writer.appendChapters(chaptersText, to: fileURL); produced = true
+        }
+
+        // Objections & competitors — sales intelligence.
+        if let objectionsText, !objectionsText.isEmpty {
+            writer.appendObjections(objectionsText, to: fileURL); produced = true
         }
 
         // Agenda: the live panel's accumulated coverage, else the one-shot scan.

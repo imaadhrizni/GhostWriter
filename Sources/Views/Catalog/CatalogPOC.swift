@@ -9,10 +9,11 @@ enum PocState: String, CaseIterable, Identifiable {
          notStarted = "Not started", noCriteria = "No criteria"
     var id: String { rawValue }
 
-    /// Classify from criteria tallies.
-    static func of(total: Int, passed: Int, failed: Int) -> PocState {
+    /// Classify from criteria tallies. A failed *or* blocked leaf makes the POC
+    /// at-risk.
+    static func of(total: Int, passed: Int, failed: Int, blocked: Int = 0) -> PocState {
         if total == 0 { return .noCriteria }
-        if failed > 0 { return .atRisk }
+        if failed > 0 || blocked > 0 { return .atRisk }
         if passed == total { return .complete }
         if passed == 0 { return .notStarted }
         return .inProgress
@@ -94,8 +95,9 @@ struct PocRow: Identifiable {
     var total: Int  { poc.total }
     var passed: Int { poc.passed }
     var failed: Int { poc.failed }
-    var pending: Int { total - passed - failed }
-    var state: PocState { .of(total: total, passed: passed, failed: failed) }
+    var blocked: Int { poc.blocked }
+    var pending: Int { total - passed - failed - blocked }
+    var state: PocState { .of(total: total, passed: passed, failed: failed, blocked: blocked) }
     var progress: Double { total == 0 ? 0 : Double(passed) / Double(total) }
     var deadline: Date? { poc.deadline }
 }
@@ -442,9 +444,16 @@ struct PocProjectList: View {
                         DisclosureGroup(isExpanded: binding(g.key)) {
                             ForEach(g.rows) { pocBlock($0) }
                         } label: {
+                            // For account/project groupings, roll the group's POC
+                            // health up into a red/amber/green dot + at-risk count.
+                            let rollup = (grouping == .account || grouping == .project) ? rollUpHealth(g.rows) : nil
+                            let atRisk = g.rows.filter { $0.total > 0 && $0.state == .atRisk }.count
                             HStack(spacing: 6) {
-                                Circle().fill(g.tint).frame(width: 7, height: 7)
+                                Circle().fill(rollup?.color ?? g.tint).frame(width: 7, height: 7)
                                 Text(g.title).font(.subheadline.weight(.semibold))
+                                if let rollup, rollup == .atRisk, atRisk > 0 {
+                                    Text("\(atRisk) at risk").font(.caption2).foregroundStyle(.red)
+                                }
                                 Spacer()
                                 Text("\(g.rows.count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                             }
@@ -453,6 +462,16 @@ struct PocProjectList: View {
                 }
             }
         }
+    }
+
+    /// Roll a group's POCs up into one health state: at-risk if any POC is,
+    /// else complete only if all (with criteria) are, else in-progress.
+    private func rollUpHealth(_ rows: [PocRow]) -> PocState {
+        let scored = rows.filter { $0.total > 0 }
+        guard !scored.isEmpty else { return .noCriteria }
+        if scored.contains(where: { $0.state == .atRisk }) { return .atRisk }
+        if scored.allSatisfy({ $0.state == .complete }) { return .complete }
+        return .inProgress
     }
 
     private func binding(_ key: String) -> Binding<Bool> {
@@ -643,6 +662,8 @@ struct PocDetail: View {
     @State private var editText = ""
     @State private var expandedDetail: Set<String> = []   // criteria showing their description
     @State private var detailDrafts: [String: String] = [:] // in-flight description edits, by criterion id
+    @State private var ownerDrafts: [String: String] = [:]  // in-flight owner edits, by criterion id
+    @FocusState private var critOwnerFocus: String?
     @FocusState private var editFocused: Bool
     @FocusState private var nameFocused: Bool
     @FocusState private var detailFocused: Bool
@@ -956,7 +977,7 @@ struct PocDetail: View {
                     critIcon(collapsedCrit.contains(c.id) ? "chevron.right" : "chevron.down",
                              "Collapse or expand sub-criteria") { toggleCollapse(c.id) }
                 } else {
-                    critIcon(c.status.icon, "Click to cycle: Pending → Passed → Failed",
+                    critIcon(c.status.icon, "Click to cycle: Pending → Passed → Failed → Blocked",
                              size: 16, color: c.status.color) {
                         store.setPocStatus(c.status.next, criterionID: c.id, pocID: poc.id, projID: opp.id)
                     }
@@ -1017,7 +1038,25 @@ struct PocDetail: View {
                         .onChange(of: critDetailFocus) { old, _ in if old == c.id { commitDetail(opp, poc, c.id) } }
                 }
                 .padding(.leading, 6)
-                .padding(.bottom, 8)
+                .padding(.bottom, 4)
+                // Owner + target date for this criterion (leaves only).
+                if !parent {
+                    HStack(spacing: 8) {
+                        Color.clear.frame(width: CGFloat(node.depth + 1) * 18, height: 1)
+                        Image(systemName: "person.crop.circle").font(.caption2).foregroundStyle(.secondary)
+                        TextField("Owner (Vendor / Customer / name)", text: ownerBinding(c))
+                            .textFieldStyle(.roundedBorder).font(.callout).frame(maxWidth: 220)
+                            .focused($critOwnerFocus, equals: c.id)
+                            .onSubmit { commitOwner(opp, poc, c.id) }
+                            .onChange(of: critOwnerFocus) { old, _ in if old == c.id { commitOwner(opp, poc, c.id) } }
+                        dateControl("Due", date: c.dueDate, defaultDays: 7) {
+                            store.setPocCriterionDueDate($0, criterionID: c.id, pocID: poc.id, projID: opp.id)
+                        }
+                        Spacer()
+                    }
+                    .padding(.leading, 6)
+                    .padding(.bottom, 8)
+                }
             } else if !c.detail.isEmpty {
                 // Collapsed but has detail: show a one-line preview so it's discoverable.
                 HStack(alignment: .top, spacing: 6) {
@@ -1030,6 +1069,24 @@ struct PocDetail: View {
                 }
                 .padding(.leading, 6)
                 .padding(.bottom, 6)
+            }
+            // Collapsed leaf with an owner or due date: show a compact meta line
+            // so assignment/timing is visible without expanding.
+            if !parent, !expandedDetail.contains(c.id), c.owner != nil || c.dueDate != nil {
+                HStack(spacing: 6) {
+                    Color.clear.frame(width: CGFloat(node.depth + 1) * 18, height: 1)
+                    if let owner = c.owner, !owner.isEmpty {
+                        Label(owner, systemImage: "person.crop.circle").labelStyle(.titleAndIcon)
+                    }
+                    if let due = c.dueDate {
+                        let overdue = due < Calendar.current.startOfDay(for: Date()) && c.status != .pass
+                        Label(DateDisplay.day(DateDisplay.posixDay.string(from: due)), systemImage: "calendar")
+                            .foregroundStyle(overdue ? Color.red : .secondary)
+                    }
+                    Spacer()
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(.leading, 6).padding(.bottom, 6)
             }
             if addingUnder == c.id {
                 VStack(alignment: .leading, spacing: 2) {
@@ -1091,6 +1148,18 @@ struct PocDetail: View {
     private func commitDetail(_ opp: CatalogProject, _ poc: Poc, _ id: String) {
         guard let draft = detailDrafts[id] else { return }
         store.setPocCriterionDetail(draft, criterionID: id, pocID: poc.id, projID: opp.id)
+    }
+
+    /// Two-way binding to a criterion's in-flight owner draft.
+    private func ownerBinding(_ c: PocCriterion) -> Binding<String> {
+        Binding(get: { ownerDrafts[c.id] ?? c.owner ?? "" },
+                set: { ownerDrafts[c.id] = $0 })
+    }
+
+    /// Persist a criterion's edited owner to the store.
+    private func commitOwner(_ opp: CatalogProject, _ poc: Poc, _ id: String) {
+        guard let draft = ownerDrafts[id] else { return }
+        store.setPocCriterionOwner(draft, criterionID: id, pocID: poc.id, projID: opp.id)
     }
 
     private func commitChild(_ opp: CatalogProject, _ poc: Poc, parent: String) {

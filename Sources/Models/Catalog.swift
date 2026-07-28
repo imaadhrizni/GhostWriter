@@ -57,6 +57,9 @@ struct CatalogPerson: Codable, Identifiable, Hashable {
     /// catalogs still decode; migrated into `typeID` on load, never surfaced.
     var channel: String?
     var email: String?
+    var phone: String?
+    /// Job title / role (e.g. "VP Engineering"). Optional so older catalogs decode.
+    var designation: String?
 }
 
 /// A user-defined person classification (e.g. Internal, External, Partner).
@@ -164,15 +167,16 @@ struct Poc: Codable, Identifiable, Hashable {
         let parents = Set(criteria.compactMap { $0.parentID })
         return criteria.filter { !parents.contains($0.id) }
     }
-    var passed: Int { leaves.filter { $0.status == .pass }.count }
-    var failed: Int { leaves.filter { $0.status == .fail }.count }
-    var total: Int  { leaves.count }
+    var passed: Int  { leaves.filter { $0.status == .pass }.count }
+    var failed: Int  { leaves.filter { $0.status == .fail }.count }
+    var blocked: Int { leaves.filter { $0.status == .blocked }.count }
+    var total: Int   { leaves.count }
 
-    /// At risk when a leaf has failed, or nothing has passed yet. Only
-    /// meaningful once criteria exist.
+    /// At risk when a leaf has failed or is blocked, or nothing has passed yet.
+    /// Only meaningful once criteria exist.
     var isAtRisk: Bool {
         let ls = leaves
-        return ls.contains { $0.status == .fail } || !ls.contains { $0.status == .pass }
+        return ls.contains { $0.status == .fail || $0.status == .blocked } || !ls.contains { $0.status == .pass }
     }
 
     enum CodingKeys: String, CodingKey { case id, name, detail, phase, criteria, startDate, deadline }
@@ -221,13 +225,23 @@ enum PocPhase: String, Codable, CaseIterable, Identifiable {
 
 /// Where a POC success criterion stands. `pending` until an evaluation lands.
 enum PocStatus: String, Codable, CaseIterable {
-    case pending, pass, fail
+    case pending, pass, fail, blocked
     var label: String {
-        switch self { case .pending: return "Pending"; case .pass: return "Passed"; case .fail: return "Failed" }
+        switch self {
+        case .pending: return "Pending"
+        case .pass:    return "Passed"
+        case .fail:    return "Failed"
+        case .blocked: return "Blocked"
+        }
     }
-    /// Cycle pending → pass → fail → pending for a one-tap status control.
+    /// Cycle pending → pass → fail → blocked → pending for a one-tap control.
     var next: PocStatus {
-        switch self { case .pending: return .pass; case .pass: return .fail; case .fail: return .pending }
+        switch self {
+        case .pending: return .pass
+        case .pass:    return .fail
+        case .fail:    return .blocked
+        case .blocked: return .pending
+        }
     }
 }
 
@@ -244,6 +258,10 @@ struct PocCriterion: Codable, Identifiable, Hashable {
     var status: PocStatus = .pending
     /// Parent criterion — nil for a top-level item. Enables sub-criteria.
     var parentID: String?
+    /// Who owns this criterion (free text — a name, or "Vendor" / "Customer")
+    /// and its target date. Both optional so older Catalog.json decodes cleanly.
+    var owner: String?
+    var dueDate: Date?
 }
 
 /// Controlled-vocabulary tag. Aliases fold variants (renewal/renewals) into one.
@@ -599,6 +617,23 @@ final class CatalogStore: ObservableObject {
         }
     }
 
+    /// Set a criterion's owner (trimmed; empty clears it to nil).
+    func setPocCriterionOwner(_ owner: String, criterionID: String, pocID: String, projID: String) {
+        let o = owner.trimmingCharacters(in: .whitespaces)
+        mutatePoc(pocID, in: projID) { poc in
+            if let ci = poc.criteria.firstIndex(where: { $0.id == criterionID }) {
+                poc.criteria[ci].owner = o.isEmpty ? nil : o
+            }
+        }
+    }
+
+    /// Set (or clear) a criterion's target date.
+    func setPocCriterionDueDate(_ date: Date?, criterionID: String, pocID: String, projID: String) {
+        mutatePoc(pocID, in: projID) { poc in
+            if let ci = poc.criteria.firstIndex(where: { $0.id == criterionID }) { poc.criteria[ci].dueDate = date }
+        }
+    }
+
     /// Reorder a criterion among its siblings (same `parentID`) by swapping with
     /// the adjacent one. Descendants stay linked via `parentID`, so the whole
     /// sub-tree moves with it. No-op at the ends.
@@ -932,18 +967,19 @@ final class CatalogStore: ObservableObject {
 
     // MARK: Bulk person operations
 
-    /// Create many people at once from a list of names (one per line in the UI).
-    /// Blank lines are ignored; existing names are skipped so re-running is safe.
-    /// Returns the people that were actually created.
+    /// Create many people at once from fully-formed records (name + optional
+    /// email / phone / designation / type). De-duplicates by name against the
+    /// existing catalog and within the batch, so re-running is safe. Returns the
+    /// people actually created.
     @discardableResult
-    func addPeople(names: [String], typeID: String? = nil) -> [CatalogPerson] {
+    func addPeople(_ incoming: [CatalogPerson]) -> [CatalogPerson] {
         let existing = Set(doc.people.map { $0.name.lowercased() })
         var seen = Set<String>(), created: [CatalogPerson] = []
-        for raw in names {
-            let n = raw.trimmingCharacters(in: .whitespaces)
+        for var p in incoming {
+            let n = p.name.trimmingCharacters(in: .whitespaces)
             let key = n.lowercased()
             guard !n.isEmpty, !existing.contains(key), seen.insert(key).inserted else { continue }
-            var p = CatalogPerson(name: n); p.typeID = typeID
+            p.name = n
             created.append(p)
         }
         guard !created.isEmpty else { return [] }

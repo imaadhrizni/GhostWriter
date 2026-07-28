@@ -1043,7 +1043,14 @@ struct EntityList: View {
             }
             .padding(.leading, CGFloat(depth) * 14).padding(.top, 2)
         case .person(let p, let depth):
-            Text(p.name).padding(.leading, CGFloat(depth) * 14).tag(p.id)
+            let subtitle = [p.designation, p.email].compactMap { $0 }.first
+            VStack(alignment: .leading, spacing: 1) {
+                Text(p.name)
+                if let subtitle {
+                    Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            .padding(.leading, CGFloat(depth) * 14).tag(p.id)
         }
     }
 
@@ -1313,9 +1320,15 @@ struct PersonEditor: View {
                         set: { draft.typeID = $0; commit() }),
                         onManage: { showManageTypes = true })
                 }
+                TextField("Designation", text: Binding(
+                    get: { draft.designation ?? "" },
+                    set: { draft.designation = $0.isEmpty ? nil : $0 })).onSubmit(commit)
                 TextField("Email", text: Binding(
                     get: { draft.email ?? "" },
                     set: { draft.email = $0.isEmpty ? nil : $0 })).onSubmit(commit)
+                TextField("Phone", text: Binding(
+                    get: { draft.phone ?? "" },
+                    set: { draft.phone = $0.isEmpty ? nil : $0 })).onSubmit(commit)
             }
             let notes = store.notes(forPerson: draft.id)
             if !notes.isEmpty {
@@ -1457,9 +1470,11 @@ struct ManageTypesSheet: View {
     }
 }
 
-/// Paste-many creator for People or Tags: one name per line. For People an
-/// optional type is applied to all created rows. Existing names are skipped, so
-/// the sheet is safe to reuse.
+/// Paste-many creator for People or Tags. Tags take one name per line; People
+/// take one person per line with optional **Name, Email, Phone, Designation**
+/// columns (comma- or tab-separated — tab-separated pastes straight from a
+/// spreadsheet), an optional type applied to all created rows. Existing names
+/// are skipped, so the sheet is safe to reuse.
 struct BulkAddSheet: View {
     @ObservedObject var store: CatalogStore
     let section: CatalogSection
@@ -1467,11 +1482,34 @@ struct BulkAddSheet: View {
     @State private var text = ""
     @State private var typeID: String? = nil
 
-    private var noun: String { section == .people ? "People" : "Tags" }
-    private var names: [String] {
+    private var isPeople: Bool { section == .people }
+    private var noun: String { isPeople ? "People" : "Tags" }
+
+    /// Tag names — one per line.
+    private var tagNames: [String] {
         text.split(whereSeparator: \.isNewline).map(String.init)
             .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
+
+    /// People parsed from `Name, Email, Phone, Designation` columns. A line is
+    /// split on tab when it contains one (spreadsheet paste), else on comma;
+    /// only the name is required.
+    private var people: [CatalogPerson] {
+        text.split(whereSeparator: \.isNewline).compactMap { line -> CatalogPerson? in
+            let raw = String(line)
+            let sep: Character = raw.contains("\t") ? "\t" : ","
+            let cols = raw.split(separator: sep, omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard let name = cols.first, !name.isEmpty else { return nil }
+            var p = CatalogPerson(name: name)
+            p.typeID = typeID
+            func col(_ i: Int) -> String? { cols.count > i && !cols[i].isEmpty ? cols[i] : nil }
+            p.email = col(1); p.phone = col(2); p.designation = col(3)
+            return p
+        }
+    }
+
+    private var count: Int { isPeople ? people.count : tagNames.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1482,12 +1520,15 @@ struct BulkAddSheet: View {
             }.padding()
             Divider()
             VStack(alignment: .leading, spacing: 8) {
-                Text("One name per line.").font(.caption).foregroundStyle(.secondary)
+                Text(isPeople
+                     ? "One person per line: **Name, Email, Phone, Designation** — comma- or tab-separated (paste from a spreadsheet). Only Name is required."
+                     : "One name per line.")
+                    .font(.caption).foregroundStyle(.secondary)
                 TextEditor(text: $text)
                     .font(.body.monospaced())
                     .frame(minHeight: 180)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-                if section == .people {
+                if isPeople {
                     LabeledContent("Type for all") {
                         PersonTypePicker(store: store, selection: $typeID)
                     }
@@ -1495,18 +1536,19 @@ struct BulkAddSheet: View {
             }.padding()
             Divider()
             HStack {
-                Text("\(names.count) name\(names.count == 1 ? "" : "s")")
+                Text(isPeople ? "\(count) \(count == 1 ? "person" : "people")"
+                              : "\(count) name\(count == 1 ? "" : "s")")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Add") {
-                    if section == .people { store.addPeople(names: names, typeID: typeID) }
-                    else { store.addTags(names: names) }
+                    if isPeople { store.addPeople(people) }
+                    else { store.addTags(names: tagNames) }
                     dismiss()
                 }
-                .keyboardShortcut(.defaultAction).disabled(names.isEmpty)
+                .keyboardShortcut(.defaultAction).disabled(count == 0)
             }.padding()
         }
-        .frame(width: 460, height: 420)
+        .frame(width: 480, height: 440)
     }
 }
 

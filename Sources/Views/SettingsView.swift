@@ -154,6 +154,7 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Launch at login", section: .general, keywords: ["startup", "boot", "open at login", "autostart", "default", "reset"]),
         .init(label: "Notes folder location", section: .general, keywords: ["storage", "save", "directory", "path", "choose", "change", "default", "reset"]),
         .init(label: "Back up & restore notes", section: .general, keywords: ["backup", "restore", "export", "import", "archive", "recover"]),
+        .init(label: "Automatic backups", section: .general, keywords: ["automatic", "auto backup", "daily", "retention", "keep", "schedule", "back up now", "snapshot", "last backup", "recover"]),
         .init(label: "Date format", section: .general, keywords: ["timestamp", "filename", "default", "reset"]),
         .init(label: "PDF paper size (Letter / A4)", section: .general, keywords: ["pdf", "export", "paper", "a4", "letter", "page size", "print", "report", "poc"]),
         .init(label: "Menu-bar icon", section: .general, keywords: ["status item", "tray", "default", "reset"]),
@@ -792,7 +793,7 @@ private struct AutomaticBackupRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Toggle("Back up automatically every day", isOn: $settings.autoBackupEnabled)
+            Toggle("Back up automatically once a day", isOn: $settings.autoBackupEnabled)
             Text("Once a day, GhostWriter saves a dated `.zip` of everything it stores into a private folder, keeping only the most recent copies. It runs the first time the app is awake on a new day, so a Mac that slept overnight isn't skipped, and never during a live meeting.")
                 .font(.caption)
                 .foregroundColor(.secondary)

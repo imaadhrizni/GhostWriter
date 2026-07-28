@@ -121,7 +121,6 @@ enum AudioFileImporter {
 
     enum ImportError: LocalizedError {
         case tooLarge(mb: Int, limit: Int)
-        case unsupported(ext: String)
         case decodeFailed
         case emptyTranscript
         case transcriptionFailed(primary: String, fallback: String)
@@ -130,8 +129,6 @@ enum AudioFileImporter {
             switch self {
             case .tooLarge(let mb, let limit):
                 return "That file is \(mb) MB — over the \(limit) MB import limit."
-            case .unsupported(let ext):
-                return "“.\(ext)” isn't a supported audio format."
             case .decodeFailed:
                 return "Couldn't decode that audio file for on-device transcription."
             case .emptyTranscript:

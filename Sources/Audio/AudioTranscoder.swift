@@ -72,8 +72,7 @@ enum AudioTranscoder {
     /// Returns nil (and cleans up) if the platform can't encode that format.
     private static func encode(_ source: AVAudioPCMBuffer, settings: [String: Any],
                                ext: String, mime: String) -> Encoded? {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gw-upload-\(UUID().uuidString).\(ext)")
+        let url = tempURL(ext: ext)
         do {
             // Force the processing (common) format to match our source buffer so
             // no manual sample-rate conversion is needed; Core Audio encodes on
@@ -96,10 +95,15 @@ enum AudioTranscoder {
         return Encoded(url: url, mime: mime, bytes: size)
     }
 
+    /// A uniquely-named temp URL for an upload file with the given extension.
+    private static func tempURL(ext: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("gw-upload-\(UUID().uuidString).\(ext)")
+    }
+
     /// Write raw bytes to a uniquely-named temp file with the given extension.
     private static func writeTemp(_ data: Data, ext: String) -> URL? {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gw-upload-\(UUID().uuidString).\(ext)")
+        let url = tempURL(ext: ext)
         do { try data.write(to: url); return url } catch { return nil }
     }
 

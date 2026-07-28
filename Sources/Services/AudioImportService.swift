@@ -51,6 +51,24 @@ final class AudioImportService: ObservableObject {
     func remove(_ id: UUID) { items.removeAll { $0.id == id && $0.status != .working } }
     func clearFinished() { items.removeAll { $0.status == .done } }
     var queuedCount: Int { items.filter { $0.status == .queued }.count }
+    var failedCount: Int { items.filter { $0.status == .failed }.count }
+
+    /// Reset a failed item back to the queue so the next run retries it.
+    func retry(_ id: UUID) {
+        guard let i = items.firstIndex(where: { $0.id == id }), items[i].status == .failed else { return }
+        items[i].status = .queued
+        items[i].error = nil
+        items[i].noteURL = nil
+    }
+
+    /// Requeue every failed item for a one-click retry-all.
+    func retryFailed() {
+        for i in items.indices where items[i].status == .failed {
+            items[i].status = .queued
+            items[i].error = nil
+            items[i].noteURL = nil
+        }
+    }
 
     /// Re-transcribe a retained recording into a **fresh** note, filed under the
     /// same org/project as `sourceNote`, and point the new note back at the same
@@ -176,19 +194,92 @@ final class AudioImportService: ObservableObject {
     }
 
     private func transcribe(_ url: URL, mime: String, seconds: Double) async throws -> String {
-        let text: String
         if settings.localOnlyMode {
             let pcm = try AudioFileImporter.decodePCM16k(from: url)
-            text = try await offline.transcribe(audioData: pcm)
-        } else {
+            return Redactor.redact(try await offline.transcribe(audioData: pcm))
+        }
+
+        // Cloud path. When we can decode the file, normalize it to a compact,
+        // Whisper-optimal 16 kHz-mono upload (Opus → FLAC → WAV) and chunk it if
+        // it would exceed Groq's request limit — smaller uploads, and the
+        // "unsupported container" failure class disappears because we control
+        // what's sent. Containers Core Audio can't read (ogg/opus/webm) can't be
+        // decoded, so those upload as-is.
+        if let pcm = try? AudioFileImporter.decodePCM16k(from: url) {
             do {
-                text = try await groq.transcribe(fileURL: url, mimeType: mime, audioSeconds: seconds)
-            } catch {
-                guard settings.offlineFallback, let pcm = try? AudioFileImporter.decodePCM16k(from: url) else { throw error }
-                Log.api.warning("⚠️ Groq file transcription failed (\(error.localizedDescription)) — trying on-device")
-                text = try await offline.transcribe(audioData: pcm)
+                return Redactor.redact(try await cloudTranscribe(pcm16k: pcm))
+            } catch let cloudError {
+                guard settings.offlineFallback else { throw cloudError }
+                do {
+                    return Redactor.redact(try await offline.transcribe(audioData: pcm))
+                } catch {
+                    throw AudioFileImporter.ImportError.transcriptionFailed(
+                        primary: cloudError.localizedDescription,
+                        fallback: error.localizedDescription)
+                }
             }
         }
-        return Redactor.redact(text)
+
+        // Undecodable container → the original bytes are the only cloud option.
+        return Redactor.redact(try await groq.transcribe(fileURL: url, mimeType: mime, audioSeconds: seconds))
+    }
+
+    /// Transcribe decoded 16 kHz PCM via Groq: compress to the smallest accepted
+    /// format and, if the whole clip would exceed Groq's per-request limit, split
+    /// it on silence and stitch the pieces. Throws if every attempt fails.
+    private func cloudTranscribe(pcm16k: Data) async throws -> String {
+        let totalSeconds = Double(pcm16k.count) / Double(AudioTranscoder.bytesPerSecond)
+
+        // 1) Whole clip — upload the first candidate that fits and Groq accepts.
+        let whole = AudioTranscoder.uploadCandidates(pcm16k: pcm16k)
+        defer { AudioTranscoder.cleanUp(whole) }
+        if let text = try await uploadFirstAccepted(whole, seconds: totalSeconds, source: "Audio import") {
+            return text
+        }
+
+        // 2) Too large — size the chunk length from the smallest encoding's
+        //    bitrate so each piece fits, split on silence, and transcribe each.
+        let smallest = whole.map(\.bytes).min() ?? pcm16k.count
+        let pieces = max(2, Int((Double(smallest) / Double(GroqService.uploadLimitBytes)).rounded(.up)) + 1)
+        let chunkSeconds = max(30, totalSeconds / Double(pieces))
+        let chunks = AudioTranscoder.splitOnSilence(pcm16k: pcm16k, maxSeconds: chunkSeconds)
+        guard chunks.count > 1 else { throw AudioFileImporter.ImportError.emptyTranscript }
+
+        var parts: [String] = []
+        for (i, chunk) in chunks.enumerated() {
+            let candidates = AudioTranscoder.uploadCandidates(pcm16k: chunk)
+            defer { AudioTranscoder.cleanUp(candidates) }
+            let secs = Double(chunk.count) / Double(AudioTranscoder.bytesPerSecond)
+            guard let text = try await uploadFirstAccepted(
+                candidates, seconds: secs,
+                source: "Audio import (chunk \(i + 1)/\(chunks.count))") else {
+                throw AudioFileImporter.ImportError.emptyTranscript
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { parts.append(trimmed) }
+        }
+        return parts.joined(separator: " ")
+    }
+
+    /// Upload candidates in order (smallest first), skipping any over Groq's
+    /// size limit, and return the first transcript Groq accepts. Returns nil
+    /// when nothing fits (the caller then chunks); throws when something fit but
+    /// every fitting upload failed.
+    private func uploadFirstAccepted(_ candidates: [AudioTranscoder.Encoded],
+                                     seconds: Double, source: String) async throws -> String? {
+        var lastError: Error?
+        var anyFit = false
+        for c in candidates where c.bytes <= GroqService.uploadLimitBytes {
+            anyFit = true
+            do {
+                return try await groq.transcribe(fileURL: c.url, mimeType: c.mime,
+                                                 audioSeconds: seconds, source: source)
+            } catch {
+                lastError = error
+                Log.api.warning("⚠️ Groq rejected \(c.mime) upload (\(error.localizedDescription)) — trying next candidate")
+            }
+        }
+        if anyFit, let lastError { throw lastError }
+        return nil
     }
 }

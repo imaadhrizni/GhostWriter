@@ -156,6 +156,10 @@ final class AppSettings: ObservableObject {
         static let packetIncludeActions   = "packet.includeActions"   // legacy — migrated into packetSections
         static let packetConfirmBeforeRun = "packet.confirmBeforeRun"
         static let packetSections         = "packet.sections"
+        static let autoBackupEnabled      = "backup.autoEnabled"
+        static let autoBackupRetentionDays = "backup.retentionDays"
+        static let autoBackupFolderPath   = "backup.folderPath"
+        static let lastAutoBackupAt       = "backup.lastAt"       // epoch seconds of last auto-backup (0 = never)
 
         static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
                           pttActivation,
@@ -191,7 +195,8 @@ final class AppSettings: ObservableObject {
                           monthlyBudgetUSD,
                           webhookEnabled, webhookURL, scriptHookEnabled, scriptHookPath,
                           packetIncludeEmail, packetIncludePOC, packetIncludeActions,
-                          packetConfirmBeforeRun, packetSections]
+                          packetConfirmBeforeRun, packetSections,
+                          autoBackupEnabled, autoBackupRetentionDays, autoBackupFolderPath, lastAutoBackupAt]
     }
 
     // MARK: - Defaults (previous hard-coded values)
@@ -240,7 +245,7 @@ final class AppSettings: ObservableObject {
         static let retryIntervalSeconds: Double    = 20.0
         static let notesOrganization               = NotesOrganization.byDay
         static let dictationOrganization           = NotesOrganization.byMonth
-        static let audioImportMaxMB: Int           = 50
+        static let audioImportMaxMB: Int           = 200   // long recordings are chunked to fit Groq's per-request limit; this only guards the in-memory decode
         static let meetingDetectInterval: Double   = 3.0    // auto-detect poll seconds
         static let liveBriefMinGrowth: Int         = 350    // chars of new transcript before a brief refresh
         static let transcriptionTimeout: Int       = 30     // seconds for a Groq STT request (live chunk)
@@ -299,6 +304,8 @@ final class AppSettings: ObservableObject {
         static let packetIncludePOC                = true
         static let packetIncludeActions            = true
         static let packetConfirmBeforeRun          = true
+        static let autoBackupEnabled               = true   // data-safety feature — on by default (writes to Application Support)
+        static let autoBackupRetentionDays         = 3      // keep this many most-recent daily archives
 
         static var notesFolder: URL {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -1479,6 +1486,54 @@ final class AppSettings: ObservableObject {
     var lastDigestDay: String {
         get { string(Key.lastDigestDay, "") }
         set { set(newValue, Key.lastDigestDay) }
+    }
+
+    // MARK: - Automatic Backups
+
+    /// Write a dated `.zip` snapshot of all GhostWriter data once per day,
+    /// keeping only the most recent few (see `autoBackupRetentionDays`). The
+    /// backup is opportunistic — it runs the first time the app is awake on a
+    /// new day, not at a fixed clock time — so a Mac that was asleep at midnight
+    /// still gets backed up.
+    var autoBackupEnabled: Bool {
+        get { bool(Key.autoBackupEnabled, Default.autoBackupEnabled) }
+        set { set(newValue, Key.autoBackupEnabled) }
+    }
+
+    /// How many most-recent daily auto-backup archives to keep; older ones are
+    /// pruned after each successful backup. Clamped to at least 1.
+    var autoBackupRetentionDays: Int {
+        get { max(1, int(Key.autoBackupRetentionDays, Default.autoBackupRetentionDays)) }
+        set { set(max(1, newValue), Key.autoBackupRetentionDays) }
+    }
+
+    /// Folder the automatic daily archives are written into. Defaults to a
+    /// `Backups` folder in Application Support, which the OS never purges.
+    var autoBackupFolder: URL {
+        get {
+            if let path = defaults.string(forKey: Key.autoBackupFolderPath), !path.isEmpty {
+                return URL(fileURLWithPath: path, isDirectory: true)
+            }
+            return AppPaths.support().appendingPathComponent("Backups", isDirectory: true)
+        }
+        set { set(newValue.path, Key.autoBackupFolderPath) }
+    }
+
+    /// When the last automatic backup completed (nil = never). The "backed up
+    /// or not today" marker surfaced in Settings is derived from this.
+    var lastAutomaticBackupAt: Date? {
+        get {
+            let t = double(Key.lastAutoBackupAt, 0)
+            return t > 0 ? Date(timeIntervalSince1970: t) : nil
+        }
+        set { set(newValue?.timeIntervalSince1970 ?? 0, Key.lastAutoBackupAt) }
+    }
+
+    /// Whether an automatic backup has already been written today — the
+    /// scheduler's due-check and the Settings marker both read this.
+    var hasBackedUpToday: Bool {
+        guard let last = lastAutomaticBackupAt else { return false }
+        return Calendar.current.isDateInToday(last)
     }
 
     /// Have the summarizer extract topic tags into the notes front-matter.

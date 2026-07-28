@@ -93,6 +93,12 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
              fileURL: nil, sound: nil)
     }
 
+    /// An automatic daily backup couldn't be written (disk full, folder gone).
+    /// A silently-failing backup is worse than none, so surface it.
+    func notifyBackupFailed(_ message: String) {
+        post(title: "Automatic backup failed", body: message, fileURL: nil, sound: nil)
+    }
+
     /// "Something went wrong" — no click payload; also surfaced in the menu.
     func notifyError(_ message: String) {
         let clipped = message.count > 160 ? String(message.prefix(160)) + "…" : message

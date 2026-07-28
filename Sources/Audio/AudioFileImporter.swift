@@ -124,6 +124,7 @@ enum AudioFileImporter {
         case unsupported(ext: String)
         case decodeFailed
         case emptyTranscript
+        case transcriptionFailed(primary: String, fallback: String)
 
         var errorDescription: String? {
             switch self {
@@ -135,6 +136,11 @@ enum AudioFileImporter {
                 return "Couldn't decode that audio file for on-device transcription."
             case .emptyTranscript:
                 return "No speech was found in that audio."
+            case .transcriptionFailed(let primary, let fallback):
+                // Groq is the primary path; on-device is a best-effort rescue.
+                // Lead with the primary failure (the actionable one) and note
+                // that the fallback was tried too.
+                return "Transcription failed: \(primary) (on-device fallback also failed: \(fallback))"
             }
         }
     }

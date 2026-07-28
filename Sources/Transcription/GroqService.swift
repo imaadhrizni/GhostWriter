@@ -17,6 +17,11 @@ final class GroqService {
     private let baseURL = "https://api.groq.com/openai/v1"
     private let session = URLSession.shared
 
+    /// Groq's Whisper per-request upload ceiling, in bytes. Held just under the
+    /// documented 19.5 MB so a slightly-high local size estimate still fits.
+    /// Uploads larger than this are split into silence-aligned chunks upstream.
+    static let uploadLimitBytes = 19_000_000
+
     /// Proper nouns for the meeting in progress — the linked org / project
     /// and its people — set when a
     /// meeting starts and cleared when it ends. Merged into the Whisper prompt
@@ -60,11 +65,22 @@ final class GroqService {
         // Whole files are larger than live chunks — use the dedicated (longer),
         // user-configurable import timeout.
         let text = try await postTranscription(
-            fileData: fileData, filename: fileURL.lastPathComponent, mimeType: mimeType,
+            fileData: fileData, filename: Self.uploadFilename(for: fileURL), mimeType: mimeType,
             timeout: TimeInterval(AppSettings.shared.importTranscriptionTimeout), context: context)
         if audioSeconds > 0 { UsageStats.shared.recordTranscription(audioSeconds: audioSeconds) }
         logTranscription(source: source, audioSeconds: audioSeconds)
         return text
+    }
+
+    /// A clean, ASCII multipart filename for a Groq upload. Groq derives the
+    /// audio format from the multipart *filename* extension, and its server-side
+    /// parser mishandles spaces/commas/non-ASCII in the name — a real file like
+    /// "Jul 26, 10.32 PM_.m4a" is then rejected as an unknown type even though
+    /// it's valid `.m4a`. The original name is only for our own display, so we
+    /// send Groq a normalized "audio.<ext>" that preserves just the extension.
+    static func uploadFilename(for url: URL) -> String {
+        let ext = url.pathExtension.lowercased()
+        return ext.isEmpty ? "audio" : "audio.\(ext)"
     }
 
     /// Record a successful transcription call in the per-call API usage log,

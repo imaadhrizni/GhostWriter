@@ -77,6 +77,17 @@ enum DateDisplay {
         return out.string(from: date)
     }
 
+    /// A friendly date+time for readouts, e.g. "Today at 9:14 AM" or
+    /// "27 Jul at 9:14 AM". Localized; main-thread/UI use.
+    static func relativeDateTime(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = .current
+        f.doesRelativeDateFormatting = true   // "Today"/"Yesterday" where the OS supports it
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f.string(from: date)
+    }
+
     /// Preview of today's date in a given format (for the Settings picker).
     static func preview(_ format: String) -> String {
         guard !format.isEmpty else { return "" }

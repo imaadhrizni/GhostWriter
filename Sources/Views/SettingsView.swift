@@ -686,6 +686,10 @@ private struct GeneralPane: View {
                 BackupRow()
             }
 
+            SettingsGroup("Automatic Backups") {
+                AutomaticBackupRow()
+            }
+
             SettingsGroup("Maintenance") {
                 ResetToDefaultsRow()
             }
@@ -766,6 +770,74 @@ private struct BackupRow: View {
         } catch {
             status = error.localizedDescription
         }
+    }
+}
+
+/// Unattended daily snapshots: a dated `.zip` written once per day, keeping only
+/// the most recent few. Opportunistic (runs the first awake hour on a new day),
+/// so a Mac asleep at midnight still gets backed up.
+private struct AutomaticBackupRow: View {
+    @ObservedObject private var settings = AppSettings.shared
+
+    /// Bumped when a backup completes so the marker line re-reads the store.
+    @State private var completionTick = 0
+    @State private var isBackingUp = false
+
+    private var lastBackupText: String {
+        _ = completionTick
+        guard let last = settings.lastAutomaticBackupAt else { return "No automatic backup yet" }
+        let kept = BackupService.automaticArchives(in: settings.autoBackupFolder).count
+        return "Last backup: \(DateDisplay.relativeDateTime(last)) · \(kept) kept"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Back up automatically every day", isOn: $settings.autoBackupEnabled)
+            Text("Once a day, GhostWriter saves a dated `.zip` of everything it stores into a private folder, keeping only the most recent copies. It runs the first time the app is awake on a new day, so a Mac that slept overnight isn't skipped, and never during a live meeting.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if settings.autoBackupEnabled {
+                Stepper(value: $settings.autoBackupRetentionDays, in: 1...30) {
+                    Text("Keep the last \(settings.autoBackupRetentionDays) day\(settings.autoBackupRetentionDays == 1 ? "" : "s")")
+                }
+                .frame(maxWidth: 320, alignment: .leading)
+
+                HStack(spacing: 6) {
+                    Text("Folder:").foregroundColor(.secondary)
+                    Text(settings.autoBackupFolder.path)
+                        .lineLimit(1).truncationMode(.middle)
+                        .help(settings.autoBackupFolder.path)
+                    Button("Change…") { changeFolder() }
+                    Button("Reveal") {
+                        NSWorkspace.shared.activateFileViewerSelecting([settings.autoBackupFolder])
+                    }
+                }
+                .font(.caption)
+
+                HStack {
+                    Button {
+                        isBackingUp = true
+                        BackupService.runAutomaticBackup()
+                    } label: {
+                        Label("Back Up Now", systemImage: "clock.arrow.circlepath")
+                    }
+                    .disabled(isBackingUp)
+                    Spacer()
+                    Text(lastBackupText).font(.caption).foregroundColor(.secondary)
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: BackupService.automaticBackupDidComplete)) { _ in
+            isBackingUp = false
+            completionTick += 1
+        }
+    }
+
+    private func changeFolder() {
+        guard let url = FilePanels.openFolder(directory: settings.autoBackupFolder,
+                                              prompt: "Choose Backup Folder") else { return }
+        settings.autoBackupFolder = url
     }
 }
 
@@ -1054,10 +1126,10 @@ private struct DictationPane: View {
             }
 
             SettingsGroup("Audio Import") {
-                Stepper(value: $settings.audioImportMaxMB, in: 5...200, step: 5) {
+                Stepper(value: $settings.audioImportMaxMB, in: 5...500, step: 5) {
                     Text("Max import size: \(settings.audioImportMaxMB) MB")
                 }
-                Text("“Transcribe Audio File…” (menu bar) and dropping an audio file onto the Catalog transcribe it into a meeting note, filed under the file's own date. Larger files are rejected before upload. Formats: wav, mp3, m4a, ogg/opus, flac, webm.")
+                Text("“Transcribe Audio File…” (menu bar) and dropping an audio file onto the Catalog transcribe it into a meeting note, filed under the file's own date. Files are normalized to a compact 16 kHz-mono upload (Opus, falling back to FLAC) and long recordings are automatically split on silence to fit Groq's request limit, so this cap only guards the initial decode — raise it for very long recordings. Formats: wav, mp3, m4a, ogg/opus, flac, webm.")
                     .font(.caption).foregroundColor(.secondary)
             }
 

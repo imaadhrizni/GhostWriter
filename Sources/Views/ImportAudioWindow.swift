@@ -82,9 +82,15 @@ struct ImportAudioView: View {
                         } label: { Image(systemName: "arrow.up.forward.square") }
                         .buttonStyle(.borderless).help("Reveal note in Finder")
                     }
-                    if item.status == .queued {
+                    if item.status == .failed {
+                        Button { service.retry(item.id) } label: { Image(systemName: "arrow.clockwise") }
+                            .buttonStyle(.borderless).help("Retry")
+                            .disabled(service.isRunning)
+                    }
+                    if item.status == .queued || item.status == .failed {
                         Button { service.remove(item.id) } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.borderless).foregroundStyle(.secondary).help("Remove")
+                            .disabled(service.isRunning)
                     }
                 }
                 .padding(.vertical, 2)
@@ -120,6 +126,9 @@ struct ImportAudioView: View {
         HStack {
             if service.items.contains(where: { $0.status == .done }) {
                 Button("Clear finished") { service.clearFinished() }.disabled(service.isRunning)
+            }
+            if service.failedCount > 0 {
+                Button("Retry failed") { service.retryFailed() }.disabled(service.isRunning)
             }
             Spacer()
             if service.isRunning { ProgressView().controlSize(.small).padding(.trailing, 4) }

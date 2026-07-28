@@ -90,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var retryQueue: [PendingSegment] = []
     private var retryTimer: Timer?
     private var digestTimer: Timer?
+    private var backupTimer: Timer?
     private var maxRetryAttempts: Int { max(1, settings.retryMaxAttempts) }
 
     // In-flight transcription counter: meeting shutdown waits for these so the
@@ -174,6 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         meetingDetector.start()
         startDigestScheduler()
+        startBackupScheduler()
 
         Log.app.info("🎤 GhostWriter launched")
     }
@@ -218,6 +220,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.lastDigestDay = today
         DigestService.generate(period: period, notify: true)
         Log.app.info("🗞 Generated \(period.rawValue) digest")
+    }
+
+    // MARK: - Backup scheduler
+
+    /// Check hourly (and shortly after launch) whether today's automatic backup
+    /// is due. Opportunistic rather than clock-scheduled: the first awake hour
+    /// on a new day triggers it, so a Mac asleep at midnight isn't skipped.
+    private func startBackupScheduler() {
+        backupTimer?.invalidate()
+        backupTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkBackupDue() }   // timer fires on the main run loop
+        }
+        // A short delay so first-launch UI/permission prompts settle first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            MainActor.assumeIsolated { self?.checkBackupDue() }
+        }
+    }
+
+    /// Run today's automatic backup if enabled, not already done today, and the
+    /// app is idle — never snapshot mid-meeting, which could capture a torn
+    /// `Catalog.json`; it simply retries on the next hourly tick.
+    @MainActor
+    private func checkBackupDue() {
+        guard settings.autoBackupEnabled else { return }
+        guard !settings.hasBackedUpToday else { return }
+        guard !appState.isMeetingMode else { return }
+        BackupService.runAutomaticBackup()
     }
 
     /// Menu action: open the Ask-your-notes chat window.

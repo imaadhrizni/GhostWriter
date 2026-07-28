@@ -2060,6 +2060,8 @@ private struct MeetingPane: View {
 
 private struct MeetingNotesPane: View {
     @ObservedObject private var settings = AppSettings.shared
+    /// Files held in the semantic search index, shown next to Rebuild.
+    @State private var indexedCount = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -2156,7 +2158,11 @@ private struct MeetingNotesPane: View {
                     .font(.caption).foregroundColor(.secondary)
                 Divider()
                 HStack {
-                    Text("Search index cache")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Search index cache")
+                        Text("The on-device semantic search index (Apple NLEmbedding vectors, cached in ~/Library/Caches). Rebuilds automatically as notes change. Private, never uploaded. \(indexedCount) note\(indexedCount == 1 ? "" : "s") indexed.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
                     Spacer()
                     Button("Reveal in Finder") {
                         let url = SemanticIndex.cacheFileURL
@@ -2166,9 +2172,14 @@ private struct MeetingNotesPane: View {
                             NSWorkspace.shared.activateFileViewerSelecting([url.deletingLastPathComponent()])
                         }
                     }
+                    Button("Rebuild Index") {
+                        Task {
+                            await SemanticIndex.shared.clear()
+                            indexedCount = await SemanticIndex.shared.indexedFileCount
+                        }
+                    }
+                    .disabled(indexedCount == 0)
                 }
-                Text("The on-device semantic search index (Apple NLEmbedding vectors, cached in ~/Library/Caches). Rebuilt automatically as notes change; delete the file to force a full re-index. Private, never uploaded.")
-                    .font(.caption).foregroundColor(.secondary)
                 Divider()
                 HStack {
                     Text("Search depth (recent meetings)")
@@ -2186,6 +2197,7 @@ private struct MeetingNotesPane: View {
                     .font(.caption).foregroundColor(.secondary)
             }
         }
+        .task { indexedCount = await SemanticIndex.shared.indexedFileCount }
     }
 
     private func pickNotesFolder() {

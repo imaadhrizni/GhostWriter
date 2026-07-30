@@ -3481,6 +3481,15 @@ extension Notification.Name {
     static let renameSpeakersForFile = Notification.Name("RenameSpeakersForFile")
     static let openDigest = Notification.Name("OpenDigest")
     static let openNoteFile = Notification.Name("OpenNoteFile")
+    /// Reveal a note *inside* the Catalog (select + scroll to it), as opposed to
+    /// `.openNoteFile` which opens it in the standalone viewer. `object` is the
+    /// `CatalogNote.id` (String). The app observes it, fronts the Catalog window,
+    /// then re-broadcasts `.selectCatalogNote` once the window is live.
+    static let revealNoteInCatalog = Notification.Name("RevealNoteInCatalog")
+    /// App → CatalogView hand-off for `.revealNoteInCatalog`. Posted only after
+    /// the Catalog window exists so the view's observer can't miss it. `object`
+    /// is the `CatalogNote.id` (String).
+    static let selectCatalogNote = Notification.Name("SelectCatalogNote")
 }
 
 // MARK: - About

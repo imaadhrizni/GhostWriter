@@ -19,13 +19,26 @@ final class AudioImportService: ObservableObject {
         let id = UUID()
         let url: URL
         var status: Status = .queued
-        var noteURL: URL?
         var error: String?
+        /// This file was already transcribed before (matched an existing import
+        /// note by name + size). Excluded from the run by default — so a re-select
+        /// after relaunch doesn't silently re-bill — until "Transcribe anyway".
+        var duplicate = false
+        /// The matching prior import note, and whether it still shows in History
+        /// (vs. was cleared) — drives the row's "Add to History" / "Show in
+        /// History" affordance. Set alongside `duplicate`.
+        var duplicateNoteID: String?
+        var duplicateInHistory = false
         var name: String { url.deletingPathExtension().lastPathComponent }
     }
 
+    /// The outcome of the most recent `run()`, for the window's completion
+    /// banner. Reset when a new run starts; cleared by the UI when dismissed.
+    struct RunSummary: Equatable { let done: Int; let failed: Int }
+
     @Published var items: [Item] = []
     @Published var isRunning = false
+    @Published var lastRun: RunSummary?
     /// Batch assignment applied to every note created this run.
     @Published var targetKind = ""   // "", "org", or "project"
     @Published var targetID = ""
@@ -45,12 +58,31 @@ final class AudioImportService: ObservableObject {
     func add(_ urls: [URL]) {
         let existing = Set(items.map { $0.url })
         for u in urls where AudioFileImporter.isAccepted(u) && !existing.contains(u) {
-            items.append(Item(url: u))
+            var item = Item(url: u)
+            // Flag files already transcribed in a prior session so we don't
+            // silently re-transcribe (and re-bill) them; the user can still
+            // override per-row with "Transcribe anyway" — or, when the prior note
+            // was cleared from History, cheaply "Add to History" instead.
+            let bytes = (try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            if let match = CatalogStore.shared.existingImport(filename: u.lastPathComponent, bytes: bytes) {
+                item.duplicate = true
+                item.duplicateNoteID = match.note.id
+                item.duplicateInHistory = match.inHistory
+            }
+            items.append(item)
         }
     }
     func remove(_ id: UUID) { items.removeAll { $0.id == id && $0.status != .working } }
-    func clearFinished() { items.removeAll { $0.status == .done } }
-    var queuedCount: Int { items.filter { $0.status == .queued }.count }
+
+    /// Clear the duplicate flag so a knowingly re-imported file transcribes.
+    func transcribeAnyway(_ id: UUID) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        items[i].duplicate = false
+    }
+
+    /// Queued files that will actually run — duplicates are held back until the
+    /// user opts in, so they don't inflate the count or the Transcribe button.
+    var queuedCount: Int { items.filter { $0.status == .queued && !$0.duplicate }.count }
     var failedCount: Int { items.filter { $0.status == .failed }.count }
 
     /// Reset a failed item back to the queue so the next run retries it.
@@ -58,7 +90,6 @@ final class AudioImportService: ObservableObject {
         guard let i = items.firstIndex(where: { $0.id == id }), items[i].status == .failed else { return }
         items[i].status = .queued
         items[i].error = nil
-        items[i].noteURL = nil
     }
 
     /// Requeue every failed item for a one-click retry-all.
@@ -66,7 +97,6 @@ final class AudioImportService: ObservableObject {
         for i in items.indices where items[i].status == .failed {
             items[i].status = .queued
             items[i].error = nil
-            items[i].noteURL = nil
         }
     }
 
@@ -95,13 +125,15 @@ final class AudioImportService: ObservableObject {
     func run() async {
         guard !isRunning else { return }
         isRunning = true
+        lastRun = nil            // a fresh batch supersedes the previous summary
         defer { isRunning = false }
 
         let maxBytes = settings.audioImportMaxMB * 1_000_000
         var firstNote: URL?
         var done = 0
+        var failed = 0
 
-        for idx in items.indices where items[idx].status == .queued {
+        for idx in items.indices where items[idx].status == .queued && !items[idx].duplicate {
             items[idx].status = .working
             let url = items[idx].url
             do {
@@ -110,16 +142,17 @@ final class AudioImportService: ObservableObject {
                     throw AudioFileImporter.ImportError.tooLarge(mb: size / 1_000_000, limit: settings.audioImportMaxMB)
                 }
                 let note = try await importOne(url)
-                items[idx].noteURL = note
                 items[idx].status = .done
                 if firstNote == nil { firstNote = note }
                 done += 1
             } catch {
                 items[idx].error = error.localizedDescription
                 items[idx].status = .failed
+                failed += 1
             }
         }
 
+        lastRun = RunSummary(done: done, failed: failed)
         if done > 0, let firstNote {
             NotificationManager.shared.notifyAudioImported(count: done, fileURL: firstNote)
         }
@@ -144,9 +177,10 @@ final class AudioImportService: ObservableObject {
             title = t.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
+        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize)
         guard let fileURL = MeetingNotesWriter.importAudioNote(
-            transcript: trimmed, recordedAt: meta.date, sourceFilename: fallback,
-            duration: meta.duration, title: title) else {
+            transcript: trimmed, recordedAt: meta.date, sourceFilename: url.lastPathComponent,
+            duration: meta.duration, sourceBytes: bytes, title: title) else {
             throw AudioFileImporter.ImportError.decodeFailed
         }
 

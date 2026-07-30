@@ -128,6 +128,9 @@ struct CatalogView: View {
     @State private var mapID: String?
     @StateObject private var radarModel = RadarModel()
     // Notes search + filters (in the window toolbar).
+    /// A note id awaiting reveal (select + scroll) in NotesList, set by the
+    /// `.selectCatalogNote` handler and cleared by NotesList once handled.
+    @State private var revealID: String?
     @State private var query = ""
     // Account/project scope uses the shared OrgProjectTreePicker (one control,
     // same as the dashboard & Open Questions). fOrg/fProject are derived from it.
@@ -246,6 +249,17 @@ struct CatalogView: View {
             }
         }
         .onChange(of: section) { _, _ in selID = nil; mapSection = nil; mapID = nil }
+        .onReceive(NotificationCenter.default.publisher(for: .selectCatalogNote)) { note in
+            guard let id = note.object as? String, store.note(id: id) != nil else { return }
+            // Switch to Notes and clear any active search/filters so the target
+            // row is present in `filtered`, then hand the id to NotesList via
+            // `revealID`. NotesList performs the actual select + expand + scroll
+            // on appear/change, which is race-free regardless of whether the list
+            // was already mounted when the reveal arrived.
+            resetNotes()
+            section = .notes
+            revealID = id
+        }
         .frame(minWidth: 900, minHeight: 520)
         .sheet(isPresented: $showQuickAdd) { QuickAddSheet(store: store) }
         .confirmationDialog("Purge the entire catalog?", isPresented: $showPurge, titleVisibility: .visible) {
@@ -290,7 +304,8 @@ struct CatalogView: View {
                         NoteAskView(store: store, question: query, nonce: askNonce,
                                     files: askFiles, filterSummary: filterSummary) { selID = $0 }
                     } else {
-                        NotesList(store: store, selID: $selID, query: query, scope: scope,
+                        NotesList(store: store, selID: $selID, reveal: $revealID,
+                                  query: query, scope: scope,
                                   fOrg: fOrg, fProject: fProject, fTag: fTag, fPerson: fPerson,
                                   unassignedOnly: fUnassigned, missingOnly: fMissing, range: fRange)
                     }

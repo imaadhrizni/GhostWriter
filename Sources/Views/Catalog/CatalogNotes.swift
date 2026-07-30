@@ -7,6 +7,10 @@ import UniformTypeIdentifiers
 struct NotesList: View {
     @ObservedObject var store: CatalogStore
     @Binding var selID: String?
+    /// A note id to reveal (select + expand its date group + scroll into view),
+    /// set by the Catalog when handling `.selectCatalogNote`. Cleared here once
+    /// handled. `nil` in every caller that doesn't drive reveal.
+    @Binding var reveal: String?
     let query: String
     let scope: NoteSearchScope
     let fOrg: String, fProject: String, fTag: String, fPerson: String
@@ -62,6 +66,29 @@ struct NotesList: View {
         DateGrouping.tree(filtered) { $0.date }
     }
 
+    /// Select, expand, and scroll a revealed note into view, then clear the
+    /// `reveal` binding so the same id can be revealed again later. No-op when
+    /// `id` is nil or names a note that isn't in the store.
+    private func performReveal(_ id: String?, proxy: ScrollViewProxy) {
+        guard let id, let target = store.note(id: id) else { return }
+        selID = id
+        expanded.formUnion(Self.dateGroupKeys(for: target.date))
+        DispatchQueue.main.async {
+            withAnimation { proxy.scrollTo(id, anchor: .center) }
+            reveal = nil
+        }
+    }
+
+    /// The year / month / day expansion keys for a note's date, matching the
+    /// local-calendar keys `DateGrouping.tree` assigns, so revealing a note can
+    /// open exactly the groups that contain it. `nil` dates live under "0000".
+    private static func dateGroupKeys(for date: Date?) -> Set<String> {
+        guard let date else { return ["0000"] }
+        let c = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        let day = String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+        return [String(day.prefix(4)), String(day.prefix(7)), day]
+    }
+
     var body: some View {
         Group {
             if store.doc.notes.isEmpty {
@@ -87,12 +114,22 @@ struct NotesList: View {
                         }
                     }
                     .padding(.horizontal, 10).padding(.vertical, 4)
-                    Group {
-                        if selecting {
-                            List(selection: $multiSel) { noteListContent }
-                        } else {
-                            List(selection: $selID) { noteListContent }
+                    ScrollViewReader { proxy in
+                        Group {
+                            if selecting {
+                                List(selection: $multiSel) { noteListContent }
+                            } else {
+                                List(selection: $selID) { noteListContent }
+                            }
                         }
+                        // "Reveal in Catalog": select the note, expand the date
+                        // group holding it (so a browse-mode row isn't hidden in a
+                        // collapsed group), and scroll it into view. Driven by the
+                        // `reveal` binding — handled both when the list is already
+                        // mounted (onChange) and when it mounts with a pending
+                        // reveal (onAppear) — then cleared.
+                        .onChange(of: reveal) { _, id in performReveal(id, proxy: proxy) }
+                        .onAppear { performReveal(reveal, proxy: proxy) }
                     }
                     if selecting { bulkBar }
                 }

@@ -1234,6 +1234,57 @@ final class CatalogStore: ObservableObject {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// Notes created by the Transcribe Audio window, newest first — identified
+    /// by their `gw_source: import` front-matter. This is the durable, single
+    /// source of truth behind that window's history section (no parallel store
+    /// to drift out of sync). Reads each note file's front-matter, so callers
+    /// should cache the result rather than recomputing it per render.
+    func importedAudioNotes() -> [CatalogNote] {
+        notesMatchingFrontMatter { FrontMatter.field("gw_source", in: $0) == "import" }
+    }
+
+    /// Every note that originated from an audio transcription — identified by the
+    /// **permanent** `gw_source_file` marker, which survives a History clear
+    /// (unlike `gw_source: import`). Lets History be fully rebuilt after a clear,
+    /// recovering rows plain Reload can't (Reload only re-reads the live marker).
+    func importOriginNotes() -> [CatalogNote] {
+        notesMatchingFrontMatter { FrontMatter.field("gw_source_file", in: $0) != nil }
+    }
+
+    /// Notes whose front-matter text satisfies `match`, newest-first. Shared
+    /// read+sort for the front-matter-derived note queries; reads each note file,
+    /// so callers should cache rather than recompute per render.
+    private func notesMatchingFrontMatter(_ match: (String) -> Bool) -> [CatalogNote] {
+        doc.notes
+            .filter { match(url(of: $0).readText() ?? "") }
+            .sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+    }
+
+    /// A note produced by a prior transcription of the same audio file, matched
+    /// on original filename **and** byte size, or nil.
+    struct ImportMatch { let note: CatalogNote; let inHistory: Bool }
+
+    /// Find an existing import note for an audio file, matched on original
+    /// filename **and** byte size (`gw_source_file` + `gw_source_bytes`) so two
+    /// different clips that share a name aren't conflated. `inHistory` reports
+    /// whether that note still carries the `gw_source: import` marker (i.e. shows
+    /// in Transcribe History) or was cleared from it. Only matches notes written
+    /// with the size marker (imports made after that field was added).
+    func existingImport(filename: String, bytes: Int) -> ImportMatch? {
+        guard bytes > 0 else { return nil }
+        let quotes = CharacterSet(charactersIn: "\"' ")
+        for note in doc.notes {
+            guard let text = url(of: note).readText(),
+                  let storedName = FrontMatter.field("gw_source_file", in: text)?
+                      .trimmingCharacters(in: quotes),
+                  storedName == filename,
+                  let stored = FrontMatter.field("gw_source_bytes", in: text),
+                  Int(stored) == bytes else { continue }
+            return ImportMatch(note: note, inHistory: FrontMatter.field("gw_source", in: text) == "import")
+        }
+        return nil
+    }
+
     /// Move a note's Markdown file to the Trash, then drop its catalog row.
     /// Recoverable (the file lands in Trash, not a hard delete). Returns whether
     /// the file was trashed; the row is removed regardless so the Catalog never

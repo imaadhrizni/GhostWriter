@@ -255,7 +255,7 @@ final class MeetingNotesWriter {
     /// the file URL (nil on write failure). The caller links it into the Catalog.
     static func importAudioNote(transcript: String, recordedAt: Date,
                                 sourceFilename: String, duration: TimeInterval?,
-                                title: String? = nil) -> URL? {
+                                sourceBytes: Int? = nil, title: String? = nil) -> URL? {
         let noteTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? sourceFilename
         let folder = AppSettings.shared.meetingDestinationFolder(for: recordedAt)
         do {
@@ -265,8 +265,17 @@ final class MeetingNotesWriter {
             return nil
         }
 
+        // Filenames key off the file's own recording time, so re-importing the
+        // same clip (or two clips recorded in the same second) would otherwise
+        // collide and silently overwrite the earlier note. Suffix -2, -3, … to
+        // keep every import a distinct file.
         let stamp = fileNameFormatter.string(from: recordedAt)
-        let fileURL = folder.appendingPathComponent("Meeting_\(stamp).md")
+        var fileURL = folder.appendingPathComponent("Meeting_\(stamp).md")
+        var n = 2
+        while FileManager.default.fileExists(atPath: fileURL.path) {
+            fileURL = folder.appendingPathComponent("Meeting_\(stamp)-\(n).md")
+            n += 1
+        }
 
         let displayDate = Self.displayDateTimeFormatter.string(from: recordedAt)
 
@@ -284,6 +293,7 @@ final class MeetingNotesWriter {
                       "gw_meeting_type: general",
                       "gw_source: import",
                       "gw_source_file: \(yaml(sourceFilename))"]
+            if let sourceBytes { fm.append("gw_source_bytes: \(sourceBytes)") }
             if let secs { fm.append("gw_duration: \(secs)") }
             fm.append("tags: [meeting, ghostwriter, imported]")
             fm.append("---")

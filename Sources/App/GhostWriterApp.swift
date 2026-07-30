@@ -159,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(renameSpeakersForFile(_:)), name: .renameSpeakersForFile, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(showDigestWindow), name: .openDigest, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(openNoteFromNotification(_:)), name: .openNoteFile, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(revealNoteInCatalog(_:)), name: .revealNoteInCatalog, object: nil)
 
         if KeychainService.groqAPIKey() == nil {
             Log.app.info("🔑 API Key missing — showing setup window")
@@ -991,6 +992,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.async {
             NSApp.activate(ignoringOtherApps: true)
             NotesViewerWindowController.present(fileURL: url)
+        }
+    }
+
+    /// Front the Catalog window and select the given note inside it. The catalog
+    /// window (and its `CatalogView` observer) may not exist yet, so we create it
+    /// via `showCatalog()` first, then re-broadcast on the next runloop tick — by
+    /// which point the view has subscribed — carrying the note id through.
+    @objc private func revealNoteInCatalog(_ note: Notification) {
+        guard let id = note.object as? String else { return }
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            self.showCatalog()
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .selectCatalogNote, object: id)
+            }
         }
     }
 

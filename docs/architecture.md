@@ -105,7 +105,9 @@
 | `Sources/Views/GlowOverlayView.swift` | Floating recording indicator / live-caption overlay |
 | `Sources/Views/MeetingPrepWindow.swift` | Non-modal meeting-prep panel — recent notes for the linked org/opp |
 | `Sources/Utils/DateDisplay.swift` | Date formatting for the menu, Catalog, and note lists |
-| `Sources/App/GhostWriterApp.swift` | Menu-bar app, meeting mode, permission flow |
+| `Sources/App/GhostWriterApp.swift` | `AppDelegate` — recording & meeting lifecycle, permission flow |
+| `Sources/App/AppDelegate+Menus.swift` | Menu-bar construction, recent-notes submenu, speaker identify, error surface |
+| `Sources/App/AppState.swift` | `AppState` (observable UI state) + `RecordingState` enum |
 | `Sources/App/main.swift` | Executable entry point |
 | `ship.sh` | Build, bundle, sign, and install to `/Applications` |
 | `make_icon.swift` | Generates the app icon (`GhostWriter.icns`) |

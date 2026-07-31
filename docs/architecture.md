@@ -39,7 +39,7 @@
 | `Sources/Models/GroqPricing.swift` | Single source of the Groq cost estimate — `chatCost(inputTokens:outputTokens:)` and `audioCost(seconds:)` over the editable Settings rates; shared by UsageStats (aggregate) and APIUsageLog (per-call) so they can't diverge |
 | `Sources/Meetings/AppleIntelligence.swift` | On-device LLM wrapper (Apple Foundation Models, macOS 26+) — availability-gated summaries/briefs/follow-ups |
 | `Sources/Transcription/OnDeviceNLP.swift` | On-device entity/topic tagging via Apple `NaturalLanguage` NER (universal — every Mac) |
-| `Sources/Services/TextInjector.swift` | Text injection — Accessibility (`AXSelectedText`) with a clipboard-paste fallback; browsers are routed straight to paste, since web `contenteditable` fields (Gmail compose/chat, Google Docs) accept an AX set but often don't insert |
+| `Sources/Services/TextInjector.swift` | Text injection — Accessibility (`AXSelectedText`) with a clipboard-paste fallback; browsers **and Electron/Chromium desktop apps** (Claude, Slack, VS Code, Discord, Cursor, …) are routed straight to paste, since their web `contenteditable` fields (Gmail compose/chat, Google Docs) report a successful AX set but often insert nothing. The built-in list is joined by the user's own `pasteOnlyApps` (Settings › Writing Styles › Text Insertion) for any app not covered |
 | `Sources/Services/BrowserURL.swift` | Reads the active browser tab's address for per-site styling |
 | `Sources/Services/KeychainService.swift` | Groq API-key storage in the macOS Keychain |
 | `Sources/Meetings/MeetingNotesWriter.swift` | Markdown transcript writer (front-matter, summaries, dated subfolders) |

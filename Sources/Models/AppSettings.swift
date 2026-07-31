@@ -97,6 +97,7 @@ final class AppSettings: ObservableObject {
         static let vocabulary             = "transcription.vocabulary"
         static let replacements           = "transcription.replacements"
         static let appProfiles            = "polishing.appProfiles"
+        static let pasteOnlyApps          = "dictation.pasteOnlyApps"
         static let dictationHistoryOn     = "dictation.historyEnabled"
         static let dictationHistoryLimit  = "dictation.historyLimit"
         static let captionLingerSeconds   = "meeting.captionLingerSeconds"
@@ -176,7 +177,7 @@ final class AppSettings: ObservableObject {
                           notifyOnMeetingEnd, retainMeetingAudio, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, preferOnDeviceAI, transcriptionLanguage,
                           digestEnabled, digestFrequency, digestHour, digestWeekday, staleRelationshipDays, lastDigestDay,
-                          vocabulary, replacements, appProfiles,
+                          vocabulary, replacements, appProfiles, pasteOnlyApps,
                           dictationHistoryOn, dictationHistoryLimit,
                           captionLingerSeconds, retryMaxAttempts, retryIntervalSeconds,
                           notesOrganization, meetingAutoDetect,
@@ -1270,8 +1271,8 @@ final class AppSettings: ObservableObject {
            let style = domainStyle(forHost: host) {
             return style
         }
-        if let category = appProfileOverrides[context.bundleID.lowercased()] {
-            return .builtIn(category)
+        if let style = appProfileStyle(forBundleID: context.bundleID) {
+            return style
         }
         if context.category != .general {
             return .builtIn(context.category)
@@ -1625,7 +1626,8 @@ final class AppSettings: ObservableObject {
     }
 
     /// Per-app polishing style overrides, one per line: `bundle.id: style`
-    /// where style ∈ messaging|email|code|browser|notes|general.
+    /// where style is a built-in category (messaging|email|code|browser|notes|
+    /// general) or a custom style's name.
     var appProfiles: String {
         get { string(Key.appProfiles, "") }
         set { set(newValue, Key.appProfiles) }
@@ -1641,11 +1643,21 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    /// Style keys valid for a per-app override — the built-in categories only.
-    /// (Per-app overrides resolve to an `AppCategory`; custom styles apply via
-    /// the global default, not here.)
-    var builtInStyleKeys: [(key: String, label: String)] {
-        AppCategory.allCases.map { ($0.rawValue, $0.displayName) }
+    /// Extra apps (bundle ids, one per line) where dictated text must be pasted
+    /// via ⌘V rather than set through the Accessibility API. Chromium-based and
+    /// Electron apps report a successful AX set but insert nothing, so text
+    /// silently drops; forcing the clipboard path fixes them. Ships empty — the
+    /// common offenders are covered by `TextInjector`'s built-in list.
+    var pasteOnlyApps: String {
+        get { string(Key.pasteOnlyApps, "") }
+        set { set(newValue, Key.pasteOnlyApps) }
+    }
+
+    /// Parsed, lowercased set of user-declared paste-only bundle ids.
+    var pasteOnlyBundleIDs: Set<String> {
+        Set(pasteOnlyApps.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty })
     }
 
     // MARK: - Derived helpers
@@ -1690,19 +1702,15 @@ final class AppSettings: ObservableObject {
         return String(("Glossary: " + terms.joined(separator: ", ")).prefix(400))
     }
 
-    /// Parsed per-app style overrides: bundleID → category.
-    var appProfileOverrides: [String: AppCategory] {
-        var result: [String: AppCategory] = [:]
-        for line in appProfiles.split(whereSeparator: \.isNewline) {
-            let parts = line.components(separatedBy: ":")
-            guard parts.count == 2,
-                  let category = AppCategory(rawValue: parts[1].trimmingCharacters(in: .whitespaces).lowercased())
-            else { continue }
-            let bundleID = parts[0].trimmingCharacters(in: .whitespaces).lowercased()
-            guard !bundleID.isEmpty else { continue }
-            result[bundleID] = category
+    /// The style for a bundle id from the per-app overrides, resolving both
+    /// built-in categories and custom user styles (matched by name), or nil if
+    /// no rule matches. First matching rule wins.
+    func appProfileStyle(forBundleID bundleID: String) -> DictationStyle? {
+        let lower = bundleID.lowercased()
+        for rule in appProfileList where rule.bundleID.lowercased() == lower {
+            if let style = dictationStyle(forKey: rule.style) { return style }
         }
-        return result
+        return nil
     }
 
     // MARK: - Reset

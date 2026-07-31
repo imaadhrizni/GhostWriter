@@ -175,7 +175,8 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Skip silent recordings", section: .dictation, keywords: ["silence", "silent", "vad", "voice activity", "threshold", "dbfs", "noise gate", "skip", "save api", "hallucination"]),
         .init(label: "Audio import (max size)", section: .dictation, keywords: ["import", "transcribe file", "audio file", "wav", "mp3", "ogg", "opus", "m4a", "drag drop", "voice note", "chat"]),
         .init(label: "Voice commands", section: .styles, keywords: ["dictation commands", "new paragraph", "scratch that", "phrase", "effect", "rules"]),
-        .init(label: "Per-app style overrides", section: .styles, keywords: ["app", "bundle id", "override", "force style", "slack", "vscode", "per app"]),
+        .init(label: "Per-app style overrides", section: .styles, keywords: ["app", "bundle id", "override", "force style", "slack", "vscode", "per app", "custom style"]),
+        .init(label: "Text insertion (paste-only apps)", section: .styles, keywords: ["paste", "clipboard", "inject", "not working", "electron", "chromium", "claude", "slack", "vscode", "discord", "cursor", "no text", "missing text", "cmd v"]),
         // Writing styles
         .init(label: "Writing styles", section: .styles, keywords: ["tone", "prompt", "rewrite", "voice", "custom style"]),
         .init(label: "Add or delete a writing style", section: .styles, keywords: ["new", "remove", "delete", "create", "edit"]),
@@ -1235,7 +1236,7 @@ private struct WritingStylesPane: View {
             }
 
             SettingsGroup("Per-App Style Overrides") {
-                Text("Force a built-in style for a specific app. Use “Add current app” to grab the frontmost app's ID. Custom styles apply via the default above.")
+                Text("Force a style — built-in or custom — for a specific app. Use “Add app…” to grab a running app's ID without hunting for it.")
                     .font(.caption).foregroundColor(.secondary)
                 AppProfileEditor()
             }
@@ -1249,6 +1250,15 @@ private struct WritingStylesPane: View {
                         .font(.caption).foregroundColor(.secondary)
                     DomainStyleEditor()
                 }
+            }
+
+            SettingsGroup("Text Insertion") {
+                Text("Some apps (browsers, Slack, VS Code, Claude, and other Chromium/Electron apps) don't accept text through the normal insertion path, so GhostWriter pastes into them instead. The common ones are handled automatically; add any others here — one bundle ID per line.")
+                    .font(.caption).foregroundColor(.secondary)
+                MultilineField(text: $settings.pasteOnlyApps,
+                               placeholder: "com.example.someElectronApp\ncom.example.another",
+                               minHeight: 60,
+                               font: .system(.caption, design: .monospaced))
             }
         }
     }
@@ -1368,7 +1378,7 @@ private struct AppProfileEditor: View {
         var style: String
     }
 
-    private var defaultStyle: String { settings.builtInStyleKeys.first?.key ?? "general" }
+    private var defaultStyle: String { settings.dictationStyleKeys.first?.key ?? "general" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1455,7 +1465,7 @@ private struct AppProfileEditor: View {
     }
 
     private func styleOptions(including current: String) -> [(key: String, label: String)] {
-        var opts = settings.builtInStyleKeys
+        var opts = settings.dictationStyleKeys
         if !current.isEmpty && !opts.contains(where: { $0.key == current }) {
             opts.append((current, "\(current) (missing)"))
         }

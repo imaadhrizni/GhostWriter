@@ -5,20 +5,31 @@ import Foundation
 /// Injects text at the cursor using AXUIElement. Falls back to clipboard paste.
 final class TextInjector {
 
-    /// Browsers where the AX text path is unreliable — their web `contenteditable`
-    /// fields (Gmail compose & chat, Google Docs, etc.) report a successful
-    /// `AXSelectedText` set but often insert nothing, so dictation silently
-    /// drops. Paste (⌘V) lands reliably, so we route these straight to it.
-    private static let browserBundleIDs: Set<String> = [
+    /// Apps where the AX text path is unreliable — their web `contenteditable`
+    /// fields report a successful `AXSelectedText` set but often insert nothing,
+    /// so dictation silently drops. Paste (⌘V) lands reliably, so we route these
+    /// straight to it. Covers browsers (Gmail compose & chat, Google Docs, …)
+    /// and Electron/Chromium desktop apps (Claude, Slack, VS Code, Discord, …),
+    /// which share the same Chromium text-input behaviour.
+    private static let pasteOnlyBundleIDs: Set<String> = [
+        // Browsers
         "com.apple.safari", "com.apple.safaritechnologypreview",
         "com.google.chrome", "com.google.chrome.canary",
         "com.brave.browser", "com.microsoft.edgemac",
         "company.thebrowser.browser", "org.mozilla.firefox",
         "com.operasoftware.opera", "com.vivaldi.vivaldi",
+        // Electron / Chromium desktop apps
+        "com.anthropic.claudefordesktop", "com.openai.chat",
+        "com.tinyspeck.slackmacgap", "com.microsoft.vscode",
+        "com.microsoft.vscodeinsiders", "com.todesktop.230313mzl4w4u92", // Cursor
+        "com.hnc.discord", "notion.id", "md.obsidian",
+        "com.microsoft.teams2", "com.microsoft.teams",
+        "com.figma.desktop", "com.linear", "com.spotify.client",
+        "com.electron.postman", "com.github.atom",
     ]
 
     func inject(text: String) {
-        if isFrontmostBrowser() {
+        if shouldPaste() {
             injectViaClipboard(text: text)
             return
         }
@@ -27,10 +38,13 @@ final class TextInjector {
         }
     }
 
-    private func isFrontmostBrowser() -> Bool {
+    /// True when the frontmost app is a known paste-only app (built-in list or
+    /// the user's own `pasteOnlyApps`), so we skip AX and go straight to ⌘V.
+    private func shouldPaste() -> Bool {
         guard let id = NSWorkspace.shared.frontmostApplication?
             .bundleIdentifier?.lowercased() else { return false }
-        return Self.browserBundleIDs.contains(id)
+        return Self.pasteOnlyBundleIDs.contains(id)
+            || AppSettings.shared.pasteOnlyBundleIDs.contains(id)
     }
 
     private func injectViaAccessibility(text: String) -> Bool {

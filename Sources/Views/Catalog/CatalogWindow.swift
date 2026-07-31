@@ -260,6 +260,10 @@ struct CatalogView: View {
             section = .notes
             revealID = id
         }
+        .onReceive(NotificationCenter.default.publisher(for: .showCatalogNotes)) { _ in
+            resetNotes()
+            section = .notes
+        }
         .frame(minWidth: 900, minHeight: 520)
         .sheet(isPresented: $showQuickAdd) { QuickAddSheet(store: store) }
         .confirmationDialog("Purge the entire catalog?", isPresented: $showPurge, titleVisibility: .visible) {

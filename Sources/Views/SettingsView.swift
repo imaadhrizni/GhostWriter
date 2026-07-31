@@ -166,7 +166,8 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Transcription model", section: .ai, keywords: ["whisper", "speech to text", "stt", "default", "reset"]),
         .init(label: "Polishing model", section: .ai, keywords: ["llama", "qwen", "summaries", "llm", "chat", "default", "reset"]),
         .init(label: "Lightweight-tasks model", section: .ai, keywords: ["fast", "cheap", "background", "live brief", "default", "reset"]),
-        .init(label: "Transcription language", section: .ai, keywords: ["iso", "locale", "tamil", "sinhala", "german", "default", "reset"]),
+        .init(label: "Transcription language", section: .ai, keywords: ["iso", "locale", "tamil", "sinhala", "german", "spanish", "auto-detect", "auto detect", "picker", "default", "reset"]),
+        .init(label: "API endpoint (advanced)", section: .ai, keywords: ["base url", "endpoint", "proxy", "gateway", "self-hosted", "openai-compatible", "groq", "provider"]),
         .init(label: "Offline fallback", section: .ai, keywords: ["on-device", "apple", "no network", "private"]),
         .init(label: "Prefer on-device AI", section: .ai, keywords: ["apple intelligence", "private", "local llm"]),
         // Dictation
@@ -196,6 +197,7 @@ fileprivate enum SettingsSearchIndex {
         .init(label: "Live-brief refresh threshold", section: .meeting, keywords: ["advanced", "growth", "chars", "brief", "refresh", "how much"]),
         .init(label: "Summary context budget", section: .meeting, keywords: ["advanced", "summary", "context", "tokens", "chars", "budget", "length", "ai"]),
         .init(label: "Push-to-talk tap threshold", section: .dictation, keywords: ["tap", "hold", "lock", "threshold", "latch", "hands-free", "ptt", "timing"]),
+        .init(label: "Remap global shortcuts", section: .shortcuts, keywords: ["hotkey", "shortcut", "rebind", "remap", "keybinding", "customize keys", "control option", "⌃⌥", "meeting", "quick note", "bookmark", "conflict"]),
         // Notes & summaries
         .init(label: "Auto-title notes", section: .notes, keywords: ["heading", "name", "smart title"]),
         .init(label: "Summary generation", section: .notes, keywords: ["recap", "overview", "abstract"]),
@@ -536,6 +538,30 @@ private struct AIPane: View {
         "openai/gpt-oss-20b",
     ]
 
+    /// Common Whisper-supported languages for the picker. Empty code = auto-detect
+    /// (no `language` param sent, so Whisper identifies it per recording).
+    private static let transcriptionLanguages: [(code: String, name: String)] = [
+        ("",   "Auto-detect"),
+        ("en", "English"),   ("es", "Spanish"),    ("fr", "French"),
+        ("de", "German"),    ("it", "Italian"),    ("pt", "Portuguese"),
+        ("nl", "Dutch"),     ("ru", "Russian"),    ("zh", "Chinese"),
+        ("ja", "Japanese"),  ("ko", "Korean"),     ("hi", "Hindi"),
+        ("ar", "Arabic"),    ("ta", "Tamil"),      ("si", "Sinhala"),
+        ("bn", "Bengali"),   ("tr", "Turkish"),    ("pl", "Polish"),
+        ("uk", "Ukrainian"), ("id", "Indonesian"), ("vi", "Vietnamese"),
+    ]
+
+    /// The language options, ensuring the currently-stored code is always present
+    /// (an unrecognized custom ISO code shows as "<code> (custom)").
+    private static func transcriptionLanguageOptions(including current: String)
+        -> [(code: String, name: String)] {
+        var opts = transcriptionLanguages
+        if !current.isEmpty && !opts.contains(where: { $0.code == current }) {
+            opts.append((current, "\(current) (custom)"))
+        }
+        return opts
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Groq Account") {
@@ -547,6 +573,19 @@ private struct AIPane: View {
                     Button("Change…") {
                         NotificationCenter.default.post(name: .showAPIKeyWindow, object: nil)
                     }
+                }
+
+                DisclosureGroup("Advanced — API endpoint") {
+                    HStack {
+                        TextField(AppSettings.Default.apiBaseURL, text: $settings.apiBaseURL)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.caption, design: .monospaced))
+                        DefaultResetButton(isDefault: settings.apiBaseURL == AppSettings.Default.apiBaseURL) {
+                            settings.apiBaseURL = AppSettings.Default.apiBaseURL
+                        }
+                    }
+                    Text("OpenAI-compatible base URL used for transcription, chat, and the model catalog. Change only to route through a proxy, an enterprise gateway, or a self-hosted OpenAI-compatible server. Blank resets to Groq.")
+                        .font(.caption).foregroundColor(.secondary)
                 }
             }
 
@@ -563,15 +602,18 @@ private struct AIPane: View {
                 HStack {
                     Text("Language")
                     Spacer()
-                    TextField("en", text: $settings.transcriptionLanguage)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
+                    Picker("", selection: $settings.transcriptionLanguage) {
+                        ForEach(Self.transcriptionLanguageOptions(including: settings.transcriptionLanguage), id: \.code) { opt in
+                            Text(opt.name).tag(opt.code)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 200)
                     DefaultResetButton(isDefault: settings.transcriptionLanguage == AppSettings.Default.transcriptionLanguage) {
                         settings.transcriptionLanguage = AppSettings.Default.transcriptionLanguage
                     }
                 }
-                Text("ISO 639-1 code hint for Whisper (en, de, ta, si, …) — applies to both dictation and meetings. Leave as en unless you speak another language.")
+                Text("Spoken-language hint for Whisper — applies to both dictation and meetings. Auto-detect lets Whisper identify the language per recording; pick a specific language for best accuracy if you always speak one.")
                     .font(.caption).foregroundColor(.secondary)
 
                 Divider()
@@ -1769,25 +1811,63 @@ private struct ShortcutsPane: View {
         }
     }
 
+    private var allShortcutsDefault: Bool {
+        GlobalShortcut.allCases.allSatisfy { settings.shortcutKeyCode(for: $0) == $0.defaultKeyCode }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Dictation") {
                 ShortcutRow(keys: pttRow.keys, detail: pttRow.detail)
                 ShortcutRow(keys: "Esc", detail: "Cancel an in-progress dictation (types nothing)")
-                ShortcutRow(keys: "⌃⌥V", detail: "Type the most recent dictation again")
-                ShortcutRow(keys: "⌃⌥J", detail: "Quick note — dictate into today's notes file (press again to save, Esc to cancel)")
+                Text("The push-to-talk key and its activation mode are set in the Dictation pane.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
-            SettingsGroup("Meeting Mode") {
-                ShortcutRow(keys: "⌃⌥M", detail: "Start / stop Meeting Mode")
-                ShortcutRow(keys: "⌃⌥P", detail: "Pause / resume meeting transcription")
-                ShortcutRow(keys: "⌃⌥B", detail: "Bookmark the current moment in a running meeting")
-                ShortcutRow(keys: "⌃⌥N", detail: "Open meeting notes (live file, or the notes folder)")
+            SettingsGroup("Global Shortcuts") {
+                Text("All ⌃⌥-modified and system-wide, from any app. Pick a different letter for any action; the ⌃⌥ modifier is fixed so these never clash with an app's own ⌘-shortcuts.")
+                    .font(.caption).foregroundColor(.secondary)
+                ForEach(GlobalShortcut.allCases) { shortcut in
+                    ShortcutBindingRow(shortcut: shortcut)
+                }
+                HStack {
+                    Spacer()
+                    DefaultResetButton(isDefault: allShortcutsDefault) {
+                        settings.resetShortcutOverrides()
+                    }
+                }
             }
+        }
+    }
+}
 
-            Text("All shortcuts work system-wide, from any app. The push-to-talk key can be changed in the Dictation pane.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+/// One editable ⌃⌥ global-shortcut binding: the action, a fixed ⌃⌥ badge, and a
+/// letter picker. Flags a duplicate binding (first match wins at dispatch time).
+private struct ShortcutBindingRow: View {
+    @ObservedObject private var settings = AppSettings.shared
+    let shortcut: GlobalShortcut
+
+    var body: some View {
+        let code = settings.shortcutKeyCode(for: shortcut)
+        HStack(spacing: 8) {
+            Text(shortcut.title)
+            Spacer()
+            if settings.conflictingShortcutKeys.contains(code) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.orange)
+                    .help("⌃⌥\(ShortcutKeys.label(for: code)) is used by more than one action — the first one wins. Pick another letter.")
+            }
+            Text("⌃⌥").font(.system(.body, design: .monospaced)).foregroundColor(.secondary)
+            Picker("", selection: Binding(
+                get: { settings.shortcutKeyCode(for: shortcut) },
+                set: { settings.setShortcutKeyCode($0, for: shortcut) }
+            )) {
+                ForEach(ShortcutKeys.assignable, id: \.code) { key in
+                    Text(key.label).tag(key.code)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 70)
         }
     }
 }
@@ -3500,6 +3580,9 @@ extension Notification.Name {
     /// the Catalog window exists so the view's observer can't miss it. `object`
     /// is the `CatalogNote.id` (String).
     static let selectCatalogNote = Notification.Name("SelectCatalogNote")
+    /// App → CatalogView: switch to the Notes section (the single full browser),
+    /// clearing any active search/filter. Posted after the window is live.
+    static let showCatalogNotes = Notification.Name("ShowCatalogNotes")
 }
 
 // MARK: - About

@@ -14,7 +14,8 @@ final class GroqService {
     /// Groq API key — read from Keychain (set once at launch, never stored in source).
     private var apiKey: String { KeychainService.groqAPIKey() ?? "" }
 
-    private let baseURL = "https://api.groq.com/openai/v1"
+    /// OpenAI-compatible API base URL (Groq by default; user-configurable).
+    private var baseURL: String { AppSettings.shared.apiBaseURL }
     private let session = URLSession.shared
 
     /// Groq's Whisper per-request upload ceiling, in bytes. Held just under the

@@ -284,7 +284,8 @@ final class TextPolisher {
     /// Groq API key — read from Keychain (never stored in source).
     private var apiKey: String { KeychainService.groqAPIKey() ?? "" }
 
-    private let baseURL = "https://api.groq.com/openai/v1"
+    /// OpenAI-compatible API base URL (Groq by default; user-configurable).
+    private var baseURL: String { AppSettings.shared.apiBaseURL }
     private let session = URLSession.shared
     // Model ids resolve the user's choice against Groq's live catalog (see
     // ModelResolver): an unavailable pick routes to the best available fallback
@@ -740,7 +741,8 @@ final class TextPolisher {
 
     /// Answer a question from excerpts drawn across many meetings.
     /// Excerpts are labeled "=== Meeting <name> ===" so answers can cite them.
-    func answerAcrossMeetings(question: String, excerpts: String) async throws -> String {
+    func answerAcrossMeetings(question: String, excerpts: String,
+                              onDelta: (@Sendable (String) -> Void)? = nil) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
 
         let clipped = String(excerpts.suffix(AppSettings.shared.summaryContextChars))
@@ -759,6 +761,9 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 1024
         )
+        if let onDelta {
+            return try await sendStreaming(requestBody, timeout: 30, source: "Ask (across meetings)", onDelta: onDelta)
+        }
         return try await send(requestBody, timeout: 30, source: "Ask (across meetings)")
     }
 
@@ -804,7 +809,8 @@ final class TextPolisher {
     /// (accounts, opportunities, POC health, people). The model may draw on
     /// either source and is told to cite meetings by their header and to name
     /// the account/POC when the answer comes from the catalog snapshot.
-    func answerAcrossKnowledge(question: String, excerpts: String, catalog: String) async throws -> String {
+    func answerAcrossKnowledge(question: String, excerpts: String, catalog: String,
+                               onDelta: (@Sendable (String) -> Void)? = nil) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
 
         let clippedExcerpts = String(excerpts.suffix(AppSettings.shared.summaryContextChars))
@@ -829,6 +835,9 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 1024
         )
+        if let onDelta {
+            return try await sendStreaming(requestBody, timeout: 40, source: "Ask (knowledge base)", onDelta: onDelta)
+        }
         return try await send(requestBody, timeout: 40, source: "Ask (knowledge base)")
     }
 
@@ -1228,6 +1237,86 @@ final class TextPolisher {
         }
     }
 
+    // MARK: - Streaming
+
+    /// Streaming counterpart of `send`: emits partial text through `onDelta` as
+    /// tokens arrive and returns the full answer. A model-availability fault is
+    /// retried once (safe — nothing has been emitted yet at that point).
+    private func sendStreaming(_ body: ChatRequest, timeout: TimeInterval,
+                               role: ModelResolver.Role = .summary, source: String = "Chat",
+                               onDelta: @escaping @Sendable (String) -> Void) async throws -> String {
+        do {
+            return try await performStreaming(body, timeout: timeout, source: source, onDelta: onDelta)
+        } catch {
+            guard ModelResolver.shared.classify(error) != nil else { throw error }
+            await ModelResolver.shared.refresh(force: true)
+            var retry = body
+            let resolved = ModelResolver.shared.resolve(role, configured: body.model)
+            guard resolved != body.model else { throw error }
+            retry.model = resolved
+            return try await performStreaming(retry, timeout: timeout, source: source, onDelta: onDelta)
+        }
+    }
+
+    private func performStreaming(_ body: ChatRequest, timeout: TimeInterval, source: String,
+                                  onDelta: @escaping @Sendable (String) -> Void) async throws -> String {
+        var body = body
+        body.stream = true
+        body.stream_options = .init(include_usage: true)
+        if body.model.contains("gpt-oss"), body.reasoning_effort == nil { body.reasoning_effort = "low" }
+        let payload = try JSONEncoder().encode(body)
+        let url = URL(string: "\(baseURL)/chat/completions")!
+        let key = apiKey
+        let modelID = body.model
+
+        return try await AIGate.shared.run(.chat) { [session] in
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            request.timeoutInterval = timeout
+            request.httpBody = payload
+
+            let (bytes, response) = try await session.bytes(for: request)
+            guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+            guard http.statusCode == 200 else {
+                var errText = ""
+                for try await line in bytes.lines { errText += line; if errText.count > 2000 { break } }
+                APIUsageLog.shared.recordChat(source: source, model: modelID,
+                                              inputTokens: 0, outputTokens: 0, ok: false)
+                throw GroqError.apiError(statusCode: http.statusCode, message: String(errText.prefix(200)))
+            }
+
+            var full = ""
+            var reasoning = ""
+            var usage: ChatResponse.Usage?
+            for try await line in bytes.lines {
+                guard line.hasPrefix("data:") else { continue }
+                let json = line.dropFirst("data:".count).trimmingCharacters(in: .whitespaces)
+                if json == "[DONE]" { break }
+                guard let data = json.data(using: .utf8),
+                      let chunk = try? JSONDecoder().decode(ChatStreamChunk.self, from: data) else { continue }
+                if let u = chunk.usage { usage = u }
+                guard let delta = chunk.choices.first?.delta else { continue }
+                // Stream the visible answer; hidden reasoning (gpt-oss) is kept
+                // as a fallback but not surfaced token-by-token.
+                if let c = delta.content, !c.isEmpty { full += c; onDelta(c) }
+                else if let r = delta.reasoning, !r.isEmpty { reasoning += r }
+            }
+
+            if let usage {
+                UsageStats.shared.recordChat(inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens)
+            }
+            APIUsageLog.shared.recordChat(source: source, model: modelID,
+                                          inputTokens: usage?.prompt_tokens ?? 0,
+                                          outputTokens: usage?.completion_tokens ?? 0)
+            let answer = (full.isEmpty ? reasoning : full).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !answer.isEmpty else { throw GroqError.invalidResponse }
+            return answer
+        }
+    }
+
     // MARK: - Context-Aware Prompts
 
     /// Build a system prompt tailored to the active application.
@@ -1270,6 +1359,23 @@ private struct ChatRequest: Codable {
     /// Only sent for reasoning models (gpt-oss) — keeps their hidden reasoning
     /// cheap so it doesn't consume the whole token budget before the answer.
     var reasoning_effort: String? = nil
+    /// Set for the streaming (SSE) path; nil = normal buffered request.
+    var stream: Bool? = nil
+    /// Asks Groq to append a final usage chunk when streaming, so token cost is
+    /// still recorded (the streamed choices carry no usage of their own).
+    var stream_options: StreamOptions? = nil
+
+    struct StreamOptions: Codable { let include_usage: Bool }
+}
+
+/// One Server-Sent-Events chunk from a streaming chat completion. `choices` is
+/// empty on the trailing usage-only chunk.
+private struct ChatStreamChunk: Codable {
+    let choices: [Choice]
+    let usage: ChatResponse.Usage?
+
+    struct Choice: Codable { let delta: Delta? }
+    struct Delta: Codable { let content: String?; let reasoning: String? }
 }
 
 private struct ChatMessage: Codable {

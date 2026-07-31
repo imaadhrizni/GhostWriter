@@ -82,12 +82,19 @@ private struct AskView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 14) {
                             ForEach(messages) { MessageRow(message: $0) }
-                            if asking { thinkingRow }
+                            // Only while retrieving/planning — hidden once the
+                            // assistant turn starts streaming visible tokens.
+                            if asking, (messages.last?.role != .assistant || (messages.last?.text.isEmpty ?? true)) {
+                                thinkingRow
+                            }
                         }
                         .padding(14)
                     }
                     .onChange(of: messages.count) { _, _ in
                         if let last = messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                    }
+                    .onChange(of: messages.last?.text) { _, _ in
+                        if let last = messages.last { proxy.scrollTo(last.id, anchor: .bottom) }
                     }
                 }
             }
@@ -230,10 +237,22 @@ private struct AskView: View {
 
         Task { @MainActor in
             defer { asking = false }
+            // Insert an empty assistant turn we stream tokens into.
+            messages.append(AskMessage(role: .assistant, text: ""))
+            let idx = messages.count - 1
             let result = await Self.answer(question: q, history: history,
-                                           files: files, scope: currentScope)
-            messages.append(AskMessage(role: .assistant, text: result.text,
-                                       citations: result.citations, source: result.engine))
+                                           files: files, scope: currentScope) { delta in
+                Task { @MainActor in
+                    guard messages.indices.contains(idx) else { return }
+                    messages[idx].text += delta
+                }
+            }
+            guard messages.indices.contains(idx) else { return }
+            // The returned text is authoritative (covers the non-streaming
+            // fallbacks and trims/repairs); commit it plus citations & engine.
+            messages[idx].text = result.text
+            messages[idx].citations = result.citations
+            messages[idx].source = result.engine
         }
     }
 
@@ -248,7 +267,8 @@ private struct AskView: View {
     /// model.
     @MainActor
     private static func answer(question: String, history: String,
-                               files: [NotesLibrary.MeetingFile]?, scope: AskScope) async -> Answer {
+                               files: [NotesLibrary.MeetingFile]?, scope: AskScope,
+                               onDelta: @escaping @Sendable (String) -> Void = { _ in }) async -> Answer {
         if let files, files.isEmpty {
             return Answer(text: "That scope has no meetings to search. Pick a different scope.", citations: [], engine: nil)
         }
@@ -291,8 +311,8 @@ private struct AskView: View {
         if !localFirst {
             do {
                 let text = agentic || !catalog.isEmpty
-                    ? try await tp.answerAcrossKnowledge(question: framed, excerpts: retrieved.text, catalog: catalog)
-                    : try await tp.answerAcrossMeetings(question: framed, excerpts: retrieved.text)
+                    ? try await tp.answerAcrossKnowledge(question: framed, excerpts: retrieved.text, catalog: catalog, onDelta: onDelta)
+                    : try await tp.answerAcrossMeetings(question: framed, excerpts: retrieved.text, onDelta: onDelta)
                 return Answer(text: text, citations: retrieved.citations, engine: "Groq")
             } catch {
                 // fall through to on-device

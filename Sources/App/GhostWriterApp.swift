@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var overlayPanel: NSPanel?
     private var overlayHostingView: NSHostingView<GlowOverlayView>?
     private var apiKeyWindowController: APIKeyWindowController?
+    private var onboardingWindowController: OnboardingWindowController?
     private var settingsWindowController: SettingsWindowController?
     private var meetingModeMenuItem: NSMenuItem?
 
@@ -266,6 +267,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // CGEventTap which itself triggers the system Accessibility prompt. We let
         // checkPermissions() own the single, ordered prompt flow to avoid duplicates.
         Task { @MainActor in await checkPermissions() }
+
+        // First-run welcome tour — once permission prompts have settled.
+        if !AppSettings.shared.onboardingCompleted {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.showOnboarding()
+            }
+        }
+    }
+
+    /// Open the welcome tour (auto-shown once on first run; re-openable from the menu).
+    @objc private func showOnboarding() {
+        if onboardingWindowController == nil {
+            onboardingWindowController = OnboardingWindowController()
+        }
+        onboardingWindowController?.showAndActivate()
     }
 
     @objc private func onAPIKeySaved() {
@@ -310,6 +326,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             catalogWindowController = CatalogWindowController()
         }
         catalogWindowController?.bringToFront()
+    }
+
+    /// Open the Catalog and switch it to the Notes section — the single, full,
+    /// searchable notes browser (the menu's Recent Notes is only quick jumps).
+    @objc private func showCatalogNotes() {
+        showCatalog()
+        // Post after the window/observer exists so the section switch isn't missed.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .showCatalogNotes, object: nil)
+        }
     }
 
     @objc private func showSettingsWindow() {
@@ -395,6 +421,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.mainMenu = mainMenu
     }
 
+    /// Lowercased letter to display next to a menu item for a remappable ⌃⌥
+    /// shortcut (display-only — the real hotkey is handled by the CGEventTap).
+    private func shortcutLetter(_ shortcut: GlobalShortcut) -> String {
+        ShortcutKeys.label(for: AppSettings.shared.shortcutKeyCode(for: shortcut)).lowercased()
+    }
+
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem?.button {
@@ -429,14 +461,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // ── Meeting ─────────────────────────────────────────────
         // ⌃⌥M / ⌃⌥P are true global hotkeys (handled by the CGEventTap); the
         // keys shown here are display-only so users can discover them.
-        let meetingItem = NSMenuItem(title: "Start Meeting", action: #selector(toggleMeetingMode), keyEquivalent: "m")
+        let meetingItem = NSMenuItem(title: "Start Meeting", action: #selector(toggleMeetingMode), keyEquivalent: shortcutLetter(.meetingMode))
         meetingItem.keyEquivalentModifierMask = [.control, .option]
         meetingItem.image = NSImage(systemSymbolName: "person.2.wave.2", accessibilityDescription: nil)
         meetingItem.target = self
         menu.addItem(meetingItem)
         self.meetingModeMenuItem = meetingItem
 
-        let pauseItem = NSMenuItem(title: "Pause Meeting", action: #selector(togglePauseTranscription), keyEquivalent: "p")
+        let pauseItem = NSMenuItem(title: "Pause Meeting", action: #selector(togglePauseTranscription), keyEquivalent: shortcutLetter(.pauseMeeting))
         pauseItem.keyEquivalentModifierMask = [.control, .option]
         pauseItem.image = NSImage(systemSymbolName: "pause.circle", accessibilityDescription: nil)
         pauseItem.target = self
@@ -446,7 +478,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Quick Note sits with the capture actions — Start Meeting, Pause, and
         // Quick Note are all "record something now" verbs sharing the ⌃⌥ hotkey
         // family, so they stay contiguous.
-        let quickNoteItem = NSMenuItem(title: "Quick Note", action: #selector(toggleQuickNote), keyEquivalent: "j")
+        let quickNoteItem = NSMenuItem(title: "Quick Note", action: #selector(toggleQuickNote), keyEquivalent: shortcutLetter(.quickNote))
         quickNoteItem.keyEquivalentModifierMask = [.control, .option]
         quickNoteItem.image = NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: nil)
         quickNoteItem.target = self
@@ -531,6 +563,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         settingsItem.target = self
         menu.addItem(settingsItem)
+
+        let welcomeItem = NSMenuItem(title: "Welcome to GhostWriter…", action: #selector(showOnboarding), keyEquivalent: "")
+        welcomeItem.image = NSImage(systemSymbolName: "hand.wave", accessibilityDescription: nil)
+        welcomeItem.target = self
+        menu.addItem(welcomeItem)
 
         // Settings + Quit form one trailing utility group (HIG) — no separator
         // between them. Permissions/API key live inside Settings, not here.
@@ -2094,7 +2131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty,
                       !self.whisperHallucinations.contains(trimmed.lowercased()) else { return }
-                Log.meeting.debug("🎤 You: \(trimmed)")
+                Log.meeting.debug("🎤 You: \(trimmed, privacy: .private)")
                 self.meetingNotes.append(segment: trimmed, speaker: "You", at: capturedAt)
             } catch {
                 Log.meeting.error("❌ Mic transcription error: \(error.localizedDescription)")
@@ -2279,11 +2316,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
                 // Discard known Whisper hallucinations
                 guard !self.whisperHallucinations.contains(trimmed.lowercased()) else {
-                    Log.meeting.debug("⏭ Filtered hallucination: '\(trimmed)'")
+                    Log.meeting.debug("⏭ Filtered hallucination: '\(trimmed, privacy: .private)'")
                     return
                 }
 
-                Log.meeting.debug("📡 Meeting transcript: \(trimmed)")
+                Log.meeting.debug("📡 Meeting transcript: \(trimmed, privacy: .private)")
                 self.meetingNotes.append(segment: trimmed, speaker: speakerLabel, at: capturedAt)
                 if self.settings.overlayMode == .captions {
                     await MainActor.run { [weak self] in
@@ -2390,7 +2427,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Current (or latest) meeting notes — same action as ⌃⌥N —
             // and today's quick notes, the two "get me to my notes" verbs.
             let openItem = NSMenuItem(title: appState.isMeetingMode ? "Open Current Meeting Notes" : "Open Latest Meeting Notes",
-                                      action: #selector(openNotes), keyEquivalent: "n")
+                                      action: #selector(openNotes), keyEquivalent: shortcutLetter(.openNotes))
             openItem.keyEquivalentModifierMask = [.control, .option]
             openItem.target = self
             menu.addItem(openItem)
@@ -2436,7 +2473,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 item.representedObject = file
                 menu.addItem(item)
             }
-            // (Catalog has its own top-level menu entry — no duplicate here.)
+            // The Catalog is the single, full, searchable notes browser — this
+            // submenu is just quick jumps, so link out to it explicitly.
+            if !files.isEmpty {
+                let browseItem = NSMenuItem(title: "Browse All Notes in Catalog…", action: #selector(showCatalogNotes), keyEquivalent: "")
+                browseItem.indentationLevel = 0
+                browseItem.target = self
+                menu.addItem(browseItem)
+            }
             menu.addItem(NSMenuItem.separator())
             let renameItem = NSMenuItem(title: "Identify Speakers…", action: #selector(showRenameSpeakers), keyEquivalent: "")
             renameItem.target = self

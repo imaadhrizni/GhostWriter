@@ -177,7 +177,9 @@ struct APIKeyView: View {
     /// Cheap live check: list models with the key. 200 = valid, 401/403 = bad key.
     /// Network failures pass the key through — no false negatives when offline.
     private static func verify(key: String) async -> Bool {
-        var request = URLRequest(url: URL(string: "https://api.groq.com/openai/v1/models")!)
+        let endpoint = URL(string: AppSettings.shared.apiBaseURL + "/models")
+            ?? URL(string: "https://api.groq.com/openai/v1/models")!
+        var request = URLRequest(url: endpoint)
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 10
         do {

@@ -1,6 +1,55 @@
 import Cocoa
 import CoreGraphics
 
+// MARK: - Remappable global shortcuts
+
+/// A user-remappable global action. All six are ⌃⌥-modified; only the letter
+/// key is configurable (the modifier stays fixed so these never clash with an
+/// app's own ⌘-shortcuts). The default letters spell the original bindings.
+enum GlobalShortcut: String, CaseIterable, Identifiable {
+    case meetingMode, openNotes, pauseMeeting, reinject, quickNote, bookmark
+
+    var id: String { rawValue }
+
+    /// Short label for the Settings row and menus.
+    var title: String {
+        switch self {
+        case .meetingMode:  return "Start / stop meeting"
+        case .openNotes:    return "Open meeting notes"
+        case .pauseMeeting: return "Pause / resume meeting"
+        case .reinject:     return "Re-type last dictation"
+        case .quickNote:    return "Quick note"
+        case .bookmark:     return "Bookmark meeting moment"
+        }
+    }
+
+    /// The original (default) virtual key code — the letter it used to be fixed to.
+    var defaultKeyCode: Int {
+        switch self {
+        case .meetingMode:  return 46   // M
+        case .openNotes:    return 45   // N
+        case .pauseMeeting: return 35   // P
+        case .reinject:     return 9    // V
+        case .quickNote:    return 38   // J
+        case .bookmark:     return 11   // B
+        }
+    }
+}
+
+/// The letter keys assignable to a `GlobalShortcut`, as (virtual keyCode, label).
+enum ShortcutKeys {
+    static let assignable: [(code: Int, label: String)] = [
+        (0,"A"),(11,"B"),(8,"C"),(2,"D"),(14,"E"),(3,"F"),(5,"G"),(4,"H"),
+        (34,"I"),(38,"J"),(40,"K"),(37,"L"),(46,"M"),(45,"N"),(31,"O"),(35,"P"),
+        (12,"Q"),(15,"R"),(1,"S"),(17,"T"),(32,"U"),(9,"V"),(13,"W"),(7,"X"),
+        (16,"Y"),(6,"Z"),
+    ]
+    /// The letter for a key code, or a fallback label for anything unusual.
+    static func label(for code: Int) -> String {
+        assignable.first { $0.code == code }?.label ?? "key \(code)"
+    }
+}
+
 /// Manages the global hotkey (Right Option) using a CoreGraphics Event Tap.
 /// This allows us to listen to keys even when the app is in the background or has no focus.
 final class HotkeyManager {
@@ -45,12 +94,6 @@ final class HotkeyManager {
     private var tapThreshold: TimeInterval { AppSettings.shared.pttTapThreshold }
 
     private enum KeyCode {
-        static let m: Int64      = 46
-        static let n: Int64      = 45
-        static let p: Int64      = 35
-        static let v: Int64      = 9
-        static let j: Int64      = 38
-        static let b: Int64      = 11
         static let escape: Int64 = 53
     }
 
@@ -116,15 +159,21 @@ final class HotkeyManager {
             let isControlOption = flags.contains(.maskControl) && flags.contains(.maskAlternate)
                 && !flags.contains(.maskCommand)
             if isControlOption {
+                // Resolve the pressed key against the user's (remappable)
+                // bindings; first match wins if two actions share a key.
+                let code = Int(keyCode)
+                let shortcut = GlobalShortcut.allCases.first {
+                    AppSettings.shared.shortcutKeyCode(for: $0) == code
+                }
                 let handler: (() -> Void)?
-                switch keyCode {
-                case KeyCode.m: handler = onMeetingModeHotkey
-                case KeyCode.n: handler = onOpenNotesHotkey
-                case KeyCode.p: handler = onPauseMeetingHotkey
-                case KeyCode.v: handler = onReinjectHotkey
-                case KeyCode.j: handler = onQuickNoteHotkey
-                case KeyCode.b: handler = onBookmarkHotkey
-                default:        handler = nil
+                switch shortcut {
+                case .meetingMode:  handler = onMeetingModeHotkey
+                case .openNotes:    handler = onOpenNotesHotkey
+                case .pauseMeeting: handler = onPauseMeetingHotkey
+                case .reinject:     handler = onReinjectHotkey
+                case .quickNote:    handler = onQuickNoteHotkey
+                case .bookmark:     handler = onBookmarkHotkey
+                case .none:         handler = nil
                 }
                 if let handler {
                     DispatchQueue.main.async { handler() }

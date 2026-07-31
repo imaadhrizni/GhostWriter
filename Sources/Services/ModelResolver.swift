@@ -52,7 +52,8 @@ final class ModelResolver {
     private var cache: Cache?
     private let url: URL
     private let ttl: TimeInterval = 12 * 3600
-    private let baseURL = "https://api.groq.com/openai/v1"
+    /// OpenAI-compatible API base URL (Groq by default; user-configurable).
+    private var baseURL: String { AppSettings.shared.apiBaseURL }
     private var refreshing = false
     private var warned = Set<String>()   // configured ids already toasted
 

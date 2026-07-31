@@ -50,6 +50,9 @@ final class AppSettings: ObservableObject {
     // MARK: - Keys
 
     private enum Key {
+        static let onboardingCompleted    = "onboarding.completed"
+        static let shortcutOverrides      = "shortcuts.overrides"
+        static let apiBaseURL             = "api.baseURL"
         static let transcriptionModel     = "api.transcriptionModel"
         static let polishingModel         = "api.polishingModel"
         static let fastModel              = "api.fastModel"
@@ -165,7 +168,7 @@ final class AppSettings: ObservableObject {
         static let autoBackupFolderPath   = "backup.folderPath"
         static let lastAutoBackupAt       = "backup.lastAt"       // epoch seconds of last auto-backup (0 = never)
 
-        static let all = [transcriptionModel, polishingModel, fastModel, pttKeyCode,
+        static let all = [onboardingCompleted, shortcutOverrides, apiBaseURL, transcriptionModel, polishingModel, fastModel, pttKeyCode,
                           pttActivation,
                           preferBuiltInMic,
                           meetingMicThreshold, systemAudioThreshold,
@@ -206,6 +209,7 @@ final class AppSettings: ObservableObject {
     // MARK: - Defaults (previous hard-coded values)
 
     enum Default {
+        static let apiBaseURL                      = "https://api.groq.com/openai/v1"
         static let transcriptionModel              = "whisper-large-v3"
         static let polishingModel                  = "llama-3.3-70b-versatile"  // non-reasoning chat model — plain Markdown output the summarizer can use
         static let fastModel                       = "llama-3.1-8b-instant"
@@ -320,6 +324,22 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    // MARK: - API Endpoint
+
+    /// Base URL of the OpenAI-compatible API (Groq by default). Point this at a
+    /// proxy, an enterprise gateway, or a self-hosted OpenAI-compatible server.
+    /// A trailing slash is trimmed; blank resets to the Groq default. All API
+    /// clients (transcription, chat, model catalog, key check) read through here.
+    var apiBaseURL: String {
+        get {
+            let raw = string(Key.apiBaseURL, Default.apiBaseURL)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+            return trimmed.isEmpty ? Default.apiBaseURL : trimmed
+        }
+        set { set(newValue, Key.apiBaseURL) }
+    }
+
     // MARK: - API Models
 
     /// Groq speech-to-text model used for dictation and meetings.
@@ -339,6 +359,55 @@ final class AppSettings: ObservableObject {
     var fastModel: String {
         get { string(Key.fastModel, Default.fastModel) }
         set { set(newValue, Key.fastModel) }
+    }
+
+    /// Whether the first-run welcome tour has been seen. Set when the tour is
+    /// completed or skipped; drives the one-time auto-present on launch.
+    var onboardingCompleted: Bool {
+        get { bool(Key.onboardingCompleted, false) }
+        set { set(newValue, Key.onboardingCompleted) }
+    }
+
+    // MARK: - Global shortcuts
+
+    /// User overrides for the six ⌃⌥ global shortcuts, keyed by
+    /// `GlobalShortcut.rawValue` → virtual key code. Only non-default bindings
+    /// are stored; the modifier (⌃⌥) is fixed.
+    private var shortcutOverrides: [String: Int] {
+        get {
+            guard let data = defaults.data(forKey: Key.shortcutOverrides),
+                  let dict = try? JSONDecoder().decode([String: Int].self, from: data)
+            else { return [:] }
+            return dict
+        }
+        set {
+            let data = try? JSONEncoder().encode(newValue)
+            set(data as Any, Key.shortcutOverrides)
+        }
+    }
+
+    /// The configured virtual key code for a global shortcut (its default if unset).
+    func shortcutKeyCode(for shortcut: GlobalShortcut) -> Int {
+        shortcutOverrides[shortcut.rawValue] ?? shortcut.defaultKeyCode
+    }
+
+    /// Rebind a global shortcut. Passing its default clears the override.
+    func setShortcutKeyCode(_ code: Int, for shortcut: GlobalShortcut) {
+        var dict = shortcutOverrides
+        if code == shortcut.defaultKeyCode { dict[shortcut.rawValue] = nil }
+        else { dict[shortcut.rawValue] = code }
+        shortcutOverrides = dict
+    }
+
+    /// Reset every global shortcut to its default letter.
+    func resetShortcutOverrides() { shortcutOverrides = [:] }
+
+    /// Shortcuts whose key currently collides with another action (duplicate
+    /// bindings), so the UI can warn — first match wins at dispatch time.
+    var conflictingShortcutKeys: Set<Int> {
+        var seen: [Int: Int] = [:]
+        for s in GlobalShortcut.allCases { seen[shortcutKeyCode(for: s), default: 0] += 1 }
+        return Set(seen.filter { $0.value > 1 }.keys)
     }
 
     // MARK: - Dictation

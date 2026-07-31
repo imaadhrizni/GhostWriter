@@ -94,6 +94,8 @@
 | `Sources/Models/AppSettings.swift` | UserDefaults-backed settings store with defaults |
 | `Sources/Utils/Log.swift` | os.Logger categories (visible in Console.app) |
 | `Sources/Views/SettingsView.swift` | Sidebar-style settings window (SwiftUI) with a curated global **search** across panes. Sidebar groups: Essentials/General/AI on top, then Capture · Meetings · Automation (Digest + Integrations) · Privacy & Security · System · Account (Usage & Cost + About). Recording → Advanced exposes the detection/timing constants (poll interval, STT timeout, live-brief growth) |
+| `Sources/Views/SettingsControls.swift` | Shared leaf controls used across every Settings pane — `SettingsGroup`, `MultilineField`, `ThresholdSlider`, `DurationSlider`, `DefaultResetButton`, `ResetToDefaultsRow` (kept `internal` so split-out panes can reach them). Extracted from `SettingsView.swift` as the first step of decomposing that file |
+| `Sources/Views/SettingsPanes+System.swift` | The System/Account settings panes split out of `SettingsView.swift` — `StatsPane` (usage, estimated cost, monthly budget, cache maintenance), `PrivacyPane` (Local-only + redaction), `DiagnosticsPane` (error log), and `PermissionsPane` |
 | `Sources/Views/APIKeyView.swift` | API-key onboarding UI (SwiftUI) |
 | `Sources/Views/OnboardingWindow.swift` | First-run welcome tour — a paged SwiftUI walkthrough (dictation, meetings, Catalog, Ask, privacy) shown once after the API-key + permission flow (`AppSettings.onboardingCompleted`), and re-openable from the menu's *Welcome to GhostWriter…* |
 | `Sources/Views/GlowOverlayView.swift` | Floating recording indicator / live-caption overlay |

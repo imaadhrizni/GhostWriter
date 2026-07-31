@@ -91,7 +91,10 @@
 | `Sources/Utils/Diagnostics.swift` | In-memory recent-errors log for the Diagnostics pane |
 | `Sources/Models/UsageStats.swift` | Local usage counters + Groq cost estimate |
 | `Sources/Services/PermissionGuard.swift` | Mic / Accessibility / System-audio permission handling |
-| `Sources/Models/AppSettings.swift` | UserDefaults-backed settings store with defaults |
+| `Sources/Models/AppSettings.swift` | UserDefaults-backed settings store (`ObservableObject`); scalar keys use the `@Setting` wrapper, complex/derived keys keep bespoke accessors |
+| `Sources/Models/Setting.swift` | `@Setting` property wrapper — collapses scalar `get/set` boilerplate, fires `objectWillChange` via the enclosing-instance subscript |
+| `Sources/Models/AppSettings+Keys.swift` | `AppSettings.Key` / `Default` constant enums + `Key.all` (reset list) |
+| `Sources/Models/SettingTypes.swift` | Supporting value types: meeting/summary/draft templates, dictation styles, PTT & overlay option enums |
 | `Sources/Utils/Log.swift` | os.Logger categories (visible in Console.app) |
 | `Sources/Views/SettingsView.swift` | Sidebar-style settings window (SwiftUI) with a curated global **search** across panes. Sidebar groups: Essentials/General/AI on top, then Capture · Meetings · Automation (Digest + Integrations) · Privacy & Security · System · Account (Usage & Cost + About). Recording → Advanced exposes the detection/timing constants (poll interval, STT timeout, live-brief growth) |
 | `Sources/Views/SettingsControls.swift` | Shared leaf controls used across every Settings pane — `SettingsGroup`, `MultilineField`, `ThresholdSlider`, `DurationSlider`, `DefaultResetButton`, `ResetToDefaultsRow` (kept `internal` so split-out panes can reach them). Extracted from `SettingsView.swift` as the first step of decomposing that file |

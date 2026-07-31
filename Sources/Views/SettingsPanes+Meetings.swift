@@ -100,6 +100,12 @@ struct MeetingNotesPane: View {
                 Toggle("Agentic Ask across everything", isOn: $settings.agenticAsk)
                 Text("When on, Ask plans several searches per question and folds in Catalog facts — accounts, opportunities, POC health, and people — so it can answer structured questions (\u{201C}which POCs are at risk?\u{201D}) as well as \u{201C}what did we decide with Acme?\u{201D}. When off, Ask does a single keyword/meaning search over meeting notes only. Planning uses a cloud call, so it's skipped in Local-only mode.")
                     .font(.caption).foregroundColor(.secondary)
+                if settings.agenticAsk {
+                    Stepper("Search depth: \(settings.agenticAskMaxHops) hop\(settings.agenticAskMaxHops == 1 ? "" : "s")",
+                            value: $settings.agenticAskMaxHops, in: 1...5)
+                    Text("How many retrieve\u{2192}reason\u{2192}retrieve rounds Ask may run. After each round the model names what's still missing and searches for it. 1 = a single round (no follow-up searches); higher digs deeper but makes more fast-model calls.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
                 Divider()
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {

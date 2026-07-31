@@ -41,6 +41,7 @@ extension AppSettings {
         static let talkTimeAnalytics      = "meeting.talkTimeAnalytics"
         static let objectionIntel         = "meeting.objectionIntel"
         static let agenticAsk             = "meeting.agenticAsk"
+        static let agenticAskMaxHops      = "meeting.agenticAskMaxHops"
         static let liveAssistantEnabled   = "meeting.liveAssistantEnabled"
         static let meetingPrepCard        = "meeting.prepCard"
         static let notifyOnMeetingEnd     = "meeting.notifyOnMeetingEnd"
@@ -135,7 +136,7 @@ extension AppSettings {
                           echoSuppressionEnabled, speakerLabelYou, speakerLabelThem,
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
-                          structuredExtraction, extractKeyFields, extractUnanswered, watchlistKeywords, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, talkTimeAnalytics, objectionIntel, agenticAsk, liveAssistantEnabled, meetingPrepCard,
+                          structuredExtraction, extractKeyFields, extractUnanswered, watchlistKeywords, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, talkTimeAnalytics, objectionIntel, agenticAsk, agenticAskMaxHops, liveAssistantEnabled, meetingPrepCard,
                           notifyOnMeetingEnd, retainMeetingAudio, frontMatterEnabled,
                           diarizationEnabled, offlineFallback, preferOnDeviceAI, transcriptionLanguage,
                           digestEnabled, digestFrequency, digestHour, digestWeekday, staleRelationshipDays, lastDigestDay,
@@ -194,6 +195,7 @@ extension AppSettings {
         static let talkTimeAnalytics               = true
         static let objectionIntel                  = true
         static let agenticAsk                      = true
+        static let agenticAskMaxHops               = 3
         static let liveAssistantEnabled            = true
         static let meetingPrepCard                 = true
         static let notifyOnMeetingEnd              = true

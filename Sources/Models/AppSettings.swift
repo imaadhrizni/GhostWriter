@@ -279,6 +279,10 @@ final class AppSettings: ObservableObject {
     /// not just one keyword search over meeting notes.
     @Setting(Key.agenticAsk, Default.agenticAsk) var agenticAsk: Bool
 
+    /// Max retrieve→reason→retrieve hops for agentic Ask (1 = single round, no
+    /// follow-up searches). Higher digs deeper but costs more fast-model calls.
+    @Setting(Key.agenticAskMaxHops, Default.agenticAskMaxHops) var agenticAskMaxHops: Int
+
     /// Show a live rolling brief (TL;DR + open action items) during a meeting.
     /// Off by default — it makes periodic LLM calls while the meeting runs.
     @Setting(Key.liveAssistantEnabled, Default.liveAssistantEnabled) var liveAssistantEnabled: Bool

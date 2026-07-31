@@ -751,8 +751,9 @@ final class TextPolisher {
             messages: [
                 .init(role: "system", content: """
                 You answer questions using ONLY the provided meeting-transcript excerpts.
-                Excerpts are grouped under "=== Meeting <date · time> ===" headers.
-                Always cite which meeting(s) an answer comes from, e.g. "(2026-07-03 · 14:30)".
+                Excerpts are grouped under "[n] === Meeting <date · time> ===" headers, where n is a source number.
+                Cite the source inline with its bracket number immediately after each claim it supports, e.g. "Pricing was agreed at $40k [2]." Cite every claim; use multiple markers when several sources agree, e.g. "[1][3]".
+                Use only the numbers shown in the headers — never invent a number.
                 Be concise. If the excerpts do not contain the answer, say so plainly — never guess.
                 Different meetings are different conversations — do not blend them together.
                 """),
@@ -804,6 +805,43 @@ final class TextPolisher {
         return queries.isEmpty ? fallback : Array(queries.prefix(4))
     }
 
+    /// Agentic multi-hop step: given the evidence gathered so far, decide whether
+    /// more retrieval is needed and, if so, emit up to 3 follow-up search queries
+    /// for the *missing* pieces — a retrieve→reason→retrieve loop that lets a
+    /// second round chase down what the first surfaced (e.g. round 1 shows a
+    /// concern was raised → round 2 searches whether it was resolved). Returns
+    /// `[]` when the evidence already suffices (or on any failure), ending the
+    /// loop. Uses the cheap fast model.
+    func followUpQueries(question: String, history: String = "", evidence: String) async -> [String] {
+        guard !apiKey.isEmpty, !evidence.isEmpty else { return [] }
+        let clipped = String(evidence.suffix(8_000))
+        let framed = history.isEmpty ? question
+            : "Conversation so far:\n\(history)\n\nQuestion: \(question)"
+        let requestBody = ChatRequest(
+            model: fastModel,
+            messages: [
+                .init(role: "system", content: """
+                You are gathering evidence to answer a question from a knowledge base of meeting notes.
+                Given the question and the excerpts retrieved so far, decide if anything needed to answer is still missing.
+                If the excerpts are sufficient, output the single word NONE.
+                Otherwise output up to 3 short, keyword-style search queries for the MISSING pieces only — new angles or \
+                entities not already covered by the excerpts. One per line, no numbering, no quotes, no commentary.
+                """),
+                .init(role: "user", content: "Question: \(framed)\n\nExcerpts so far:\n\(clipped)")
+            ],
+            temperature: 0.1,
+            max_tokens: 120
+        )
+        guard let raw = try? await send(requestBody, timeout: 15, role: .lightweight, source: "Ask (follow-up)") else {
+            return []
+        }
+        if raw.uppercased().contains("NONE") { return [] }
+        let queries = raw.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "-*•0123456789. \t\"")) }
+            .filter { !$0.isEmpty }
+        return Array(queries.prefix(3))
+    }
+
     /// Answer step for agentic Ask: like `answerAcrossMeetings`, but the context
     /// also carries a `=== Knowledge Base … ===` snapshot of the Catalog
     /// (accounts, opportunities, POC health, people). The model may draw on
@@ -823,11 +861,13 @@ final class TextPolisher {
                 .init(role: "system", content: """
                 You answer questions about the user's sales/work knowledge base using ONLY the context provided.
                 The context has two parts: a "=== Knowledge Base … ===" snapshot of accounts, opportunities, \
-                POC health and people; and meeting-transcript excerpts grouped under "=== Meeting <date · time> ===" headers.
+                POC health and people; and meeting-transcript excerpts grouped under "[n] === Meeting <date · time> ===" \
+                headers, where n is a source number.
                 Use whichever part answers the question — structured facts (pipeline value, POC status, who someone is) \
                 from the snapshot, specifics and quotes from the excerpts.
-                Always cite your source: name the account/opportunity/POC for snapshot facts, and cite the meeting \
-                (e.g. "(2026-07-03 · 14:30)") for excerpt facts. Different meetings are different conversations — don't blend them.
+                Cite your source inline after each claim: for an excerpt fact, the meeting's bracket number, e.g. "…agreed on Tuesday [2]."; \
+                for a snapshot fact, name the account/opportunity/POC. Use only the numbers shown in the headers — never invent one. \
+                Different meetings are different conversations — don't blend them.
                 Be concise. If the context doesn't contain the answer, say so plainly — never guess.
                 """),
                 .init(role: "user", content: "\(context)\n\nQuestion: \(question)")

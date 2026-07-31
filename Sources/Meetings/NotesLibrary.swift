@@ -156,6 +156,27 @@ enum NotesLibrary {
             let file: MeetingFile
             let snippet: String
             let terms: [String]
+            /// 1-based number the answer cites this source as (`[n]`); 0 until numbered.
+            var index: Int = 0
+        }
+
+        /// Number the sources `[1]…[n]` in citation order, tagging both the
+        /// prompt text (each `=== Meeting … ===` header gains a leading `[n]`)
+        /// and the citations, so the model can anchor claims to a clickable
+        /// source and the UI can label each card. Idempotent-safe to call once
+        /// after retrieval, covering both the single- and multi-query paths.
+        func numbered() -> ExcerptResult {
+            var t = text
+            var numbered: [Citation] = []
+            for (i, c) in citations.enumerated() {
+                let n = i + 1
+                let header = "=== Meeting \(c.file.displayName) ==="
+                if let r = t.range(of: header) {
+                    t.replaceSubrange(r, with: "[\(n)] " + header)
+                }
+                numbered.append(Citation(file: c.file, snippet: c.snippet, terms: c.terms, index: n))
+            }
+            return ExcerptResult(text: t, sources: sources, citations: numbered)
         }
     }
 

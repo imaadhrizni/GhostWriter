@@ -279,13 +279,37 @@ private struct AskView: View {
         let agentic = settings.agenticAsk && !localFirst
         let tp = TextPolisher()
 
-        // Plan → retrieve. One query in the simple path, several when agentic.
-        let queries = agentic ? await tp.planQueries(question: question, history: history) : [question]
-        let retrieved = queries.count > 1
-            ? await NotesLibrary.semanticExcerpts(forQueries: queries, files: files)
-            : (files == nil
+        // Plan → retrieve. Simple path: one keyword search. Agentic path:
+        // decompose into several searches, then run a retrieve→reason→retrieve
+        // loop — after each round the model names what's still missing and we
+        // search for it, up to the configured hop budget.
+        let retrievedRaw: NotesLibrary.ExcerptResult
+        if agentic {
+            var queries = await tp.planQueries(question: question, history: history)
+            var evidence = await NotesLibrary.semanticExcerpts(forQueries: queries, files: files)
+            let maxHops = max(1, settings.agenticAskMaxHops)
+            var hop = 1
+            while hop < maxHops {
+                let more = await tp.followUpQueries(question: question, history: history, evidence: evidence.text)
+                let fresh = more.filter { q in
+                    !queries.contains { $0.caseInsensitiveCompare(q) == .orderedSame }
+                }
+                if fresh.isEmpty { break }   // model is satisfied, or nothing new to chase
+                queries += fresh
+                // Re-retrieve the accumulated query set (dedupes by meeting) so
+                // the answer sees one merged, renumberable evidence set.
+                evidence = await NotesLibrary.semanticExcerpts(forQueries: queries, files: files)
+                hop += 1
+            }
+            retrievedRaw = evidence
+        } else {
+            retrievedRaw = files == nil
                 ? await NotesLibrary.semanticExcerpts(for: question)
-                : await NotesLibrary.semanticExcerpts(for: question, files: files!))
+                : await NotesLibrary.semanticExcerpts(for: question, files: files!)
+        }
+        // Number the sources [1…n] so the model can anchor each claim to a
+        // clickable citation card and the UI can label them to match.
+        let retrieved = retrievedRaw.numbered()
 
         // Catalog snapshot — the structured half of "everything". Included when
         // agentic and the scope isn't an explicit hand-picked set of meetings.
@@ -322,8 +346,9 @@ private struct AskView: View {
         if let local = await AppleIntelligence.generate(
             instructions: """
             You answer questions using ONLY the provided context — a "=== Knowledge Base … ===" snapshot of \
-            accounts, opportunities, POC health and people, plus meeting excerpts grouped under "=== Meeting … ===" headers. \
-            Cite the account/POC for snapshot facts and the meeting for excerpt facts. Be concise. \
+            accounts, opportunities, POC health and people, plus meeting excerpts grouped under "[n] === Meeting … ===" headers. \
+            Cite the account/POC for snapshot facts, and for an excerpt fact append the meeting's bracket number, e.g. "[2]". \
+            Use only the numbers shown — never invent one. Be concise. \
             If the context doesn't contain the answer, say so — never guess.
             """,
             prompt: "\(catalogBlock)Meeting excerpts:\n\(retrieved.text)\n\n\(framed)") {
@@ -390,8 +415,15 @@ private struct MessageRow: View {
                                 NotesViewerWindowController.present(fileURL: cite.file.url)
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Label(cite.file.displayName, systemImage: "doc.text")
-                                        .font(.caption)
+                                    HStack(spacing: 5) {
+                                        if cite.index > 0 {
+                                            Text("[\(cite.index)]")
+                                                .font(.caption.monospacedDigit().weight(.semibold))
+                                                .foregroundStyle(.tertiary)
+                                        }
+                                        Label(cite.file.displayName, systemImage: "doc.text")
+                                            .font(.caption)
+                                    }
                                     if !cite.snippet.isEmpty {
                                         Text(MessageRow.highlighted(cite.snippet, terms: cite.terms))
                                             .font(.caption2)

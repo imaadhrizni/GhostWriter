@@ -9,14 +9,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Properties
 
-    private var statusItem: NSStatusItem?
-    private var overlayPanel: NSPanel?
+    var statusItem: NSStatusItem?
+    var overlayPanel: NSPanel?
     private var overlayHostingView: NSHostingView<GlowOverlayView>?
     private var apiKeyWindowController: APIKeyWindowController?
     private var onboardingWindowController: OnboardingWindowController?
     private var settingsWindowController: SettingsWindowController?
     var renameSpeakersWindowController: RenameSpeakersWindowController?
-    private var meetingModeMenuItem: NSMenuItem?
+    var meetingModeMenuItem: NSMenuItem?
 
     // Settings (UserDefaults-backed, live)
     let settings = AppSettings.shared
@@ -25,11 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let permissionGuard = PermissionGuard()
     private let hotkeyManager = HotkeyManager()
     private let audioCapture = AudioCapture()
-    private let systemAudioCapture = SystemAudioCapture()
-    private let meetingDetector = MeetingDetector()
+    let systemAudioCapture = SystemAudioCapture()
+    let meetingDetector = MeetingDetector()
     private let voiceActivityDetector = VoiceActivityDetector()
     private let groqService = GroqService()
-    private let textPolisher = TextPolisher()
+    let textPolisher = TextPolisher()
     private let appDetector = AppDetector()
     private let textInjector = TextInjector()
     private let offlineTranscriber = OfflineTranscriber()
@@ -49,63 +49,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var quickNoteTimer: Timer?
 
     // Meeting mode state — system audio (others), accessed on meetingQueue
-    private let meetingQueue = DispatchQueue(label: "com.ghostwriter.meeting", qos: .userInteractive)
-    private var meetingSpeechBuffer = Data()
-    private var meetingLastVoiceTime: Date?
-    private var meetingSegmentStart: Date?
-    private var meetingSilenceDebounce: TimeInterval { settings.silenceDebounce }
-    private var meetingMaxSegmentSeconds: TimeInterval { settings.maxSegmentSeconds }
+    let meetingQueue = DispatchQueue(label: "com.ghostwriter.meeting", qos: .userInteractive)
+    var meetingSpeechBuffer = Data()
+    var meetingLastVoiceTime: Date?
+    var meetingSegmentStart: Date?
+    var meetingSilenceDebounce: TimeInterval { settings.silenceDebounce }
+    var meetingMaxSegmentSeconds: TimeInterval { settings.maxSegmentSeconds }
 
     // Meeting mode state — microphone (self), accessed on micMeetingQueue
-    private let micMeetingQueue = DispatchQueue(label: "com.ghostwriter.meeting.mic", qos: .userInteractive)
-    private var micMeetingSpeechBuffer = Data()
-    private var micMeetingLastVoiceTime: Date?
-    private var micMeetingSegmentStart: Date?
-    private let micCapture = AudioCapture()
+    let micMeetingQueue = DispatchQueue(label: "com.ghostwriter.meeting.mic", qos: .userInteractive)
+    var micMeetingSpeechBuffer = Data()
+    var micMeetingLastVoiceTime: Date?
+    var micMeetingSegmentStart: Date?
+    let micCapture = AudioCapture()
 
     // Echo suppression (half-duplex): when using the built-in speaker instead of
     // headphones, the mic picks up the remote party's voice as acoustic echo and
     // mislabels it "You". We gate the mic while the speaker is (recently) active.
-    private let echoGateLock = NSLock()
-    private var speakerLastActiveTime: Date?
-    private var echoGateWindow: TimeInterval { settings.echoGateWindow }  // mute mic for this long after speaker audio
+    let echoGateLock = NSLock()
+    var speakerLastActiveTime: Date?
+    var echoGateWindow: TimeInterval { settings.echoGateWindow }  // mute mic for this long after speaker audio
 
     // Meeting notes
     let meetingNotes = MeetingNotesWriter()
     /// Optional per-meeting audio recorder (retention safety net).
-    private var audioRetainer: AudioRetainer?
-    private var meetingStartTime: Date?
-    private var meetingTimer: Timer?
+    var audioRetainer: AudioRetainer?
+    var meetingStartTime: Date?
+    var meetingTimer: Timer?
+    /// Re-entrancy guard for the async end-of-meeting coverage check.
+    var endCoverageChecking = false
+    /// One prompt is enough: while a start dialog is up, hotkeys and the detector
+    /// keep running — this flag stops a second dialog from stacking.
+    var meetingStartPromptActive = false
+    /// Agenda items entered at meeting start (may be empty) — drives the live
+    /// coverage checklist and the end-of-meeting "did we cover it?" check.
+    var meetingAgenda: [String] = []
+    /// Per-meeting live-brief choice from the start dialog (nil → global setting).
+    var meetingLiveBrief: Bool?
+    /// The catalog entity to link the resulting note to (kind "project" or "org").
+    var meetingCatalogTarget: (kind: String, id: String)?
 
     // Experimental diarization (accessed on meetingQueue): voice-fingerprint
     // clustering (pitch + timbre) assigns remote segments to Them / Them 2 / …
-    private let speakerProfiler = SpeakerProfiler()
+    let speakerProfiler = SpeakerProfiler()
 
     // Retry queue (main thread): meeting segments whose transcription failed —
     // a network blip should not silently drop a piece of the meeting.
-    private struct PendingSegment {
+    struct PendingSegment {
         let audio: Data
         let speaker: String
         let capturedAt: Date
         var attempts: Int
     }
-    private var retryQueue: [PendingSegment] = []
-    private var retryTimer: Timer?
+    var retryQueue: [PendingSegment] = []
+    var retryTimer: Timer?
     private var digestTimer: Timer?
     private var backupTimer: Timer?
-    private var maxRetryAttempts: Int { max(1, settings.retryMaxAttempts) }
+    var maxRetryAttempts: Int { max(1, settings.retryMaxAttempts) }
+
+    // Whisper hallucinates these phrases on short/quiet audio — discard them.
+    let whisperHallucinations: Set<String> = [
+        "thank you.", "thanks for watching.", "thanks for watching", "thank you",
+        "you", ".", " ", "of the", "the", "a", "i", "bye.", "bye",
+        "[music]", "[applause]", "[silence]", "♪", "..."
+    ]
 
     // In-flight transcription counter: meeting shutdown waits for these so the
     // last spoken words land in the notes before the file is finalized.
     private let pendingLock = NSLock()
     private var pendingTranscriptionCount = 0
-    private func beginPendingTranscription() {
+    func beginPendingTranscription() {
         pendingLock.lock(); pendingTranscriptionCount += 1; pendingLock.unlock()
     }
-    private func endPendingTranscription() {
+    func endPendingTranscription() {
         pendingLock.lock(); pendingTranscriptionCount -= 1; pendingLock.unlock()
     }
-    private var pendingTranscriptions: Int {
+    var pendingTranscriptions: Int {
         pendingLock.lock(); defer { pendingLock.unlock() }
         return pendingTranscriptionCount
     }
@@ -119,11 +138,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Read from the audio queues, written on main — guarded by a lock.
     private let pauseLock = NSLock()
     private var meetingTranscriptionPaused = false
-    private var isTranscriptionPaused: Bool {
+    var isTranscriptionPaused: Bool {
         pauseLock.lock(); defer { pauseLock.unlock() }
         return meetingTranscriptionPaused
     }
-    private func setTranscriptionPaused(_ value: Bool) {
+    func setTranscriptionPaused(_ value: Bool) {
         pauseLock.lock(); meetingTranscriptionPaused = value; pauseLock.unlock()
     }
     var pauseMenuItem: NSMenuItem?
@@ -352,7 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // anything that caches a value at setup time.
     }
 
-    @objc private func showAPIKeyWindow() {
+    @objc func showAPIKeyWindow() {
         if apiKeyWindowController == nil {
             apiKeyWindowController = APIKeyWindowController()
         }
@@ -634,7 +653,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.overlayHostingView = hostingView
     }
 
-    private func positionOverlayPanel(_ panel: NSPanel) {
+    func positionOverlayPanel(_ panel: NSPanel) {
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
         let panelSize = panel.frame.size
@@ -860,7 +879,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// meetings. Local-only mode goes straight to on-device recognition; other-
     /// wise Groq first, falling back on-device when the network is down. The
     /// result is passed through optional redaction before anyone sees it.
-    private func transcribeWithFallback(_ audioData: Data, context: String = "") async throws -> String {
+    func transcribeWithFallback(_ audioData: Data, context: String = "") async throws -> String {
         let text: String
         if settings.localOnlyMode {
             text = try await offlineTranscriber.transcribe(audioData: audioData, context: context)
@@ -890,7 +909,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// After a meeting ends: append the AI summary (if enabled), then notify (if enabled).
-    private func finalizeMeetingNotes(startedAt start: Date, agenda: [String] = [],
+    func finalizeMeetingNotes(startedAt start: Date, agenda: [String] = [],
                                       catalogTarget: (kind: String, id: String)? = nil) {
         guard let fileURL = meetingNotes.lastCompletedFilePath else { return }
 
@@ -1312,1026 +1331,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 await MainActor.run {
                     appState.recordingState = .idle
                     if !appState.isMeetingMode { overlayPanel?.orderOut(nil) }
-                }
-            }
-        }
-    }
-
-    // MARK: - Meeting Detection
-
-    /// A conferencing app started using the mic — offer to transcribe.
-    private func offerToStartMeeting(for appName: String) {
-        guard !appState.isMeetingMode else { return }
-
-        let browser = appName.hasPrefix("browser call")
-        confirmMeetingStart(
-            title: browser ? "Browser call detected" : "\(appName) call detected",
-            message: browser
-                ? "\(appName.replacingOccurrences(of: "browser call ", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "()"))) is using your microphone — likely Google Meet or another web call. Start Meeting Mode to transcribe it?"
-                : "Looks like a meeting is starting. Start Meeting Mode to transcribe it?",
-            confirmTitle: "Start Meeting Mode",
-            declineTitle: "Not Now",
-            onDecline: { [weak self] in self?.meetingDetector.snooze() })
-    }
-
-    /// One prompt is enough: while a start dialog is up, hotkeys and the
-    /// detector keep running (runModal services the main queue) — this flag
-    /// stops a second dialog from stacking and double-starting the meeting.
-    private var meetingStartPromptActive = false
-
-    /// Agenda items entered at meeting start (may be empty) — drives the
-    /// live coverage checklist and the end-of-meeting "did we cover it?" check.
-    private var meetingAgenda: [String] = []
-
-    /// Whether to show the live brief for the current meeting. Set from the
-    /// start dialog's checkbox (defaults to the global setting); auto-started
-    /// meetings with no dialog fall back to `nil` → the global setting.
-    private var meetingLiveBrief: Bool?
-
-    /// The single start-meeting dialog: template picker + confirm/decline.
-    /// Both the manual (⌃⌥M / menu) and auto-detect paths run through here so
-    /// they can't drift apart.
-    private func confirmMeetingStart(title: String, message: String,
-                                     confirmTitle: String, declineTitle: String,
-                                     onDecline: (() -> Void)? = nil) {
-        guard !meetingStartPromptActive, !appState.isMeetingMode else { return }
-        meetingStartPromptActive = true
-
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: confirmTitle)
-        alert.addButton(withTitle: declineTitle)
-        alert.alertStyle = .informational
-
-        // Inline controls: a catalog link (project/org to file the note
-        // under), the template (shapes the summary), an optional agenda, and the
-        // per-meeting live-brief switch.
-        let accessory = Self.makeStartAccessory(selectedID: settings.selectedTemplateID,
-                                                catalogOptions: Self.catalogLinkOptions())
-        alert.accessoryView = accessory
-
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            applyTemplateSelection(from: accessory.picker)
-            meetingAgenda = Self.parseAgenda(accessory.agendaField.stringValue)
-            meetingLiveBrief = accessory.liveBrief.isEnabled ? (accessory.liveBrief.state == .on) : false
-            meetingCatalogTarget = resolveCatalogTarget(accessory.catalog.selectedItem?.representedObject as? String)
-            // Prep card: surface recent context for the chosen org/opp before
-            // recording starts — unless switched off for this meeting.
-            if let target = meetingCatalogTarget, accessory.prepCard.state == .on {
-                showMeetingPrepCard(for: target)
-            }
-            // Hold the prompt flag through the async start so a queued ⌃⌥M
-            // can't open a spurious second dialog before isMeetingMode flips.
-            Task { @MainActor in
-                await startMeetingMode()
-                meetingStartPromptActive = false
-            }
-        } else {
-            meetingStartPromptActive = false
-            onDecline?()
-        }
-    }
-
-    /// Build the start-dialog catalog picker options: projects, orgs, and two
-    /// quick-add entries. Runs on the main actor (CatalogStore is isolated).
-    private static func catalogLinkOptions() -> [(title: String, repr: String)] {
-        MainActor.assumeIsolated {
-            let store = CatalogStore.shared
-            var opts: [(String, String)] = [("No link", "")]
-            // One consistent org→project tree, indented by depth (same shape the
-            // SwiftUI OrgProjectTreePicker renders elsewhere).
-            let rows = store.orgProjectRows()
-            if !rows.isEmpty { opts.append(("__sep__", "__sep__")) }
-            for r in rows {
-                let indent = String(repeating: "    ", count: r.depth)
-                let icon = r.kind == "org" ? "🏢" : "◆"
-                opts.append(("\(indent)\(icon) \(r.name)", "\(r.kind):\(r.id)"))
-            }
-            opts.append(("__sep__", "__sep__"))
-            opts.append(("➕ New Project…", "new:project"))
-            opts.append(("➕ New Organisation…", "new:org"))
-            return opts.map { (title: $0.0, repr: $0.1) }
-        }
-    }
-
-    /// Turn the picker's selection into a catalog target, handling the two
-    /// quick-add entries by prompting for a name and creating the entity.
-    private func resolveCatalogTarget(_ repr: String?) -> (kind: String, id: String)? {
-        guard let repr, !repr.isEmpty else { return nil }
-        // A new project gets the full Quick Add (org → project → …).
-        if repr == "new:project" {
-            return runQuickAddForProject().map { ("project", $0) }
-        }
-        if repr == "new:org" {
-            guard let name = promptNewCatalogName("New Organisation") else { return nil }
-            return MainActor.assumeIsolated { ("org", CatalogStore.shared.addOrg(name: name).id) }
-        }
-        let parts = repr.split(separator: ":", maxSplits: 1).map(String.init)
-        guard parts.count == 2 else { return nil }
-        return (parts[0], parts[1])
-    }
-
-    /// Proper-noun glossary for the meeting in progress — the linked entity
-    /// (project / org), the people on its recent notes, and the
-    /// voice identities taught so far — capped and formatted for the Whisper
-    /// prompt. CatalogStore is main-actor isolated, so this is too.
-    @MainActor
-    private func buildSessionGlossary(for target: (kind: String, id: String)?) -> String {
-        let store = CatalogStore.shared
-        var terms: [String] = []
-        var scope: [CatalogNote] = []
-
-        if let target {
-            if target.kind == "project", let proj = store.project(target.id) {
-                terms.append(proj.name)
-                if let org = store.org(forProject: proj.id) { terms.append(org.name) }
-                scope = store.notes(forProject: proj.id)
-            } else if target.kind == "org", let org = store.org(target.id) {
-                terms.append(org.name)
-                scope = store.notes(forOrg: org.id, includingDescendants: true)
-            }
-        }
-
-        // People who appear on the linked entity's notes.
-        let personIDs = Set(scope.flatMap { $0.personIDs })
-        terms.append(contentsOf: store.doc.people.filter { personIDs.contains($0.id) }.map(\.name))
-
-        // Dedupe (case-insensitive), drop empties, cap length for Whisper's
-        // short prompt window.
-        var seen = Set<String>(), unique: [String] = []
-        for t in terms {
-            let name = t.trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty, seen.insert(name.lowercased()).inserted else { continue }
-            unique.append(name)
-        }
-        guard !unique.isEmpty else { return "" }
-        return String(("Names: " + unique.joined(separator: ", ")).prefix(400))
-    }
-
-    /// Meeting prep card: a quick, non-editable recap of recent context for the
-    /// org/project chosen in the Start dialog, shown just before recording.
-    /// Reuses the catalog's relationship timeline (recent notes). Skipped when
-    /// there's no prior history to show.
-    private func showMeetingPrepCard(for target: (kind: String, id: String)) {
-        let prep: (name: String, notes: [CatalogNote])? = MainActor.assumeIsolated {
-            let store = CatalogStore.shared
-            let name: String
-            let notes: [CatalogNote]
-            if target.kind == "project", let o = store.project(target.id) {
-                name = o.name; notes = store.notes(forProject: o.id)
-            } else if target.kind == "org", let o = store.org(target.id) {
-                name = store.orgPath(of: o.id); notes = store.notes(forOrg: o.id, includingDescendants: true)
-            } else { return nil }
-            let recent = Array(notes.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }.prefix(3))
-            return recent.isEmpty ? nil : (name, recent)
-        }
-        guard let prep else { return }   // nothing to prep from — don't interrupt
-        // Non-modal so you can open and read a note while the meeting records.
-        MeetingPrepWindowController.present(entityName: prep.name, notes: prep.notes)
-    }
-
-    /// Present the Quick Add sheet modally and return the created project's id
-    /// (nil if cancelled or no project was named).
-    private func runQuickAddForProject() -> String? {
-        MainActor.assumeIsolated {
-            var result: String?
-            let controller = NSHostingController(rootView: QuickAddSheet(store: CatalogStore.shared) { projID in
-                result = projID
-                NSApp.stopModal()
-            })
-            let window = NSWindow(contentViewController: controller)
-            window.title = "Quick Add"
-            window.styleMask = [.titled]
-            NSApp.runModal(for: window)
-            window.orderOut(nil)
-            return result
-        }
-    }
-
-    /// Simple name prompt for the quick-add catalog entries.
-    private func promptNewCatalogName(_ title: String) -> String? {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.placeholderString = "Name"
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? nil : name
-    }
-
-    /// Accessory view for the start dialog: a catalog-link popup, a template
-    /// popup (shapes the summary), an optional agenda field, and a live-brief switch.
-    private final class StartAccessory: NSView {
-        let catalog = NSPopUpButton(frame: .zero, pullsDown: false)
-        let search = NSSearchField(frame: .zero)
-        let picker = NSPopUpButton(frame: .zero, pullsDown: false)
-        let agendaField = NSTextField(frame: .zero)
-        let liveBrief = NSSwitch(frame: .zero)
-        let prepCard = NSSwitch(frame: .zero)
-        let prepLabel = NSTextField(labelWithString: "Show prep card")
-
-        /// Full link options (No link, org/opp rows, quick-add). The popup is
-        /// rebuilt from this, filtered by the search field, so the list stays
-        /// usable as the Catalog grows.
-        var allOptions: [(title: String, repr: String)] = []
-
-        /// Repopulate the link popup, keeping "No link" and the quick-add rows
-        /// while narrowing the org/project rows to those matching `filter`.
-        func rebuildCatalogMenu(filter: String) {
-            let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
-            let prevRepr = catalog.selectedItem?.representedObject as? String
-
-            // Keep an entity row only when it matches; leave fixed rows alone.
-            var shown = allOptions.filter { opt in
-                let isEntity = opt.repr.hasPrefix("project:") || opt.repr.hasPrefix("org:")
-                return !isEntity || q.isEmpty || opt.title.lowercased().contains(q)
-            }
-            // Collapse separators left dangling by filtering.
-            var cleaned: [(title: String, repr: String)] = []
-            for opt in shown where !(opt.repr == "__sep__" && (cleaned.isEmpty || cleaned.last?.repr == "__sep__")) {
-                cleaned.append(opt)
-            }
-            if cleaned.last?.repr == "__sep__" { cleaned.removeLast() }
-            shown = cleaned
-
-            catalog.removeAllItems()
-            catalog.menu?.autoenablesItems = false
-            for opt in shown {
-                if opt.repr == "__sep__" { catalog.menu?.addItem(.separator()); continue }
-                let item = NSMenuItem(title: opt.title, action: nil, keyEquivalent: "")
-                item.representedObject = opt.repr
-                catalog.menu?.addItem(item)
-            }
-            if let prevRepr, let item = catalog.menu?.items.first(where: { ($0.representedObject as? String) == prevRepr }) {
-                catalog.select(item)
-            }
-            catalogChanged()
-        }
-
-        @objc func searchChanged() { rebuildCatalogMenu(filter: search.stringValue) }
-
-        /// The prep card only makes sense with a catalog link — enable the
-        /// switch (and un-dim its label) only when an org/project is chosen.
-        @objc func catalogChanged() {
-            let repr = catalog.selectedItem?.representedObject as? String ?? ""
-            let linked = !repr.isEmpty && repr != "__sep__"
-            prepCard.isEnabled = linked
-            prepLabel.textColor = linked ? .labelColor : .tertiaryLabelColor
-        }
-    }
-
-    /// The catalog entity to link the resulting note to (chosen at start).
-    /// kind is "project" or "org".
-    private var meetingCatalogTarget: (kind: String, id: String)?
-
-    /// Build the start-dialog accessory. An accessory view without explicit
-    /// frames renders but doesn't receive clicks in NSAlert, so everything is
-    /// laid out with explicit frames.
-    private static func makeStartAccessory(selectedID: String, catalogOptions: [(title: String, repr: String)]) -> StartAccessory {
-        let width: CGFloat = 300
-        // Consistent vertical rhythm: a caption sits `capGap` above its control,
-        // and groups are separated by `groupGap`. Everything is laid out top-down
-        // with a cursor so the spacing stays even and easy to retune.
-        let capH: CGFloat = 15, popH: CGFloat = 26, fieldH: CGFloat = 44, rowH: CGFloat = 22
-        let capGap: CGFloat = 3, groupGap: CGFloat = 14, rowGap: CGFloat = 6
-        let height = capH + capGap + popH + rowGap + popH + groupGap   // link: caption + search + popup
-                   + capH + capGap + popH + groupGap
-                   + capH + capGap + fieldH + groupGap
-                   + rowH + rowGap + rowH
-        let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: height))
-
-        // Distance consumed from the top edge; `place` reserves the next element
-        // and returns its bottom-left-origin y.
-        var top: CGFloat = 0
-        func place(_ h: CGFloat) -> CGFloat {
-            let y = height - top - h
-            top += h
-            return y
-        }
-        func caption(_ text: String) {
-            let field = NSTextField(labelWithString: text)
-            field.frame = NSRect(x: 0, y: place(capH), width: width, height: capH)
-            field.font = .boldSystemFont(ofSize: 11)
-            field.textColor = .secondaryLabelColor
-            container.addSubview(field)
-            top += capGap
-        }
-
-        // Catalog link (top) — file this meeting's note under a project or
-        // org. A search field narrows the list as the Catalog grows.
-        caption("Link to (optional)")
-        let search = container.search
-        search.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
-        search.placeholderString = "Search organisations & projects…"
-        search.sendsWholeSearchString = false
-        search.target = container
-        search.action = #selector(StartAccessory.searchChanged)
-        container.addSubview(search)
-        top += rowGap
-
-        let catalog = container.catalog
-        catalog.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
-        catalog.target = container
-        catalog.action = #selector(StartAccessory.catalogChanged)
-        container.allOptions = catalogOptions
-        container.rebuildCatalogMenu(filter: "")
-        container.addSubview(catalog)
-        top += groupGap
-
-        // Meeting type (middle) — shapes the summary.
-        caption("Meeting type")
-        let picker = container.picker
-        picker.frame = NSRect(x: 0, y: place(popH), width: width, height: popH)
-        // Grouped: a disabled section header per category, then its templates.
-        // autoenablesItems must be off or the menu re-enables the headers,
-        // making them look pickable (and one can show as the selection).
-        picker.menu?.autoenablesItems = false
-        for group in AppSettings.shared.groupedTemplates {
-            let header = NSMenuItem(title: group.title, action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            picker.menu?.addItem(header)
-            for template in group.templates {
-                let item = NSMenuItem(title: template.displayName, action: nil, keyEquivalent: "")
-                item.indentationLevel = 1
-                item.representedObject = template.id
-                picker.menu?.addItem(item)
-            }
-        }
-        // Select the stored template, else fall back to the first real item so
-        // the popup never rests on a header.
-        let match = picker.menu?.items.first { ($0.representedObject as? String) == selectedID }
-            ?? picker.menu?.items.first { $0.representedObject != nil }
-        if let match { picker.select(match) }
-        container.addSubview(picker)
-        top += groupGap
-
-        // Agenda (optional) — drives the end-of-meeting coverage check.
-        caption("Agenda")
-        let field = container.agendaField
-        field.frame = NSRect(x: 0, y: place(fieldH), width: width, height: fieldH)
-        field.placeholderString = "Optional — separate items with commas"
-        field.usesSingleLineMode = false
-        field.cell?.wraps = true
-        field.cell?.isScrollable = false
-        field.lineBreakMode = .byWordWrapping
-        field.font = .systemFont(ofSize: 12)
-        container.addSubview(field)
-        top += groupGap
-
-        // Live brief (bottom) — per-meeting choice, defaulting to the global
-        // setting, as a Settings-style row: label left, switch right. Hard-
-        // disabled when it couldn't run anyway (local-only / no key) so the
-        // dialog never offers something that silently does nothing.
-        let settings = AppSettings.shared
-        let canRun = !settings.localOnlyMode && KeychainService.groqAPIKey() != nil
-        let rowY = place(rowH)
-        let live = container.liveBrief
-        live.controlSize = .mini
-        live.sizeToFit()
-        live.frame = NSRect(x: width - live.frame.width,
-                            y: rowY + (rowH - live.frame.height) / 2,
-                            width: live.frame.width, height: live.frame.height)
-        live.state = (canRun && settings.liveAssistantEnabled) ? .on : .off
-        live.isEnabled = canRun
-
-        let liveLabel = NSTextField(labelWithString: "Show live brief")
-        liveLabel.frame = NSRect(x: 0, y: rowY + (rowH - 16) / 2,
-                                 width: width - live.frame.width - 8, height: 16)
-        liveLabel.font = .systemFont(ofSize: 12)
-        liveLabel.textColor = canRun ? .labelColor : .tertiaryLabelColor
-        let tip = canRun
-            ? "Floating in-meeting brief (TL;DR, actions, agenda coverage). Defaults to your global setting; applies to this meeting only."
-            : settings.localOnlyMode
-                ? "Unavailable in local-only mode — the live brief needs the cloud."
-                : "Add a Groq API key to use the live brief."
-        live.toolTip = tip
-        liveLabel.toolTip = tip
-        container.addSubview(liveLabel)
-        container.addSubview(live)
-
-        // Prep card (below live brief) — show recent notes for the linked
-        // org/opp when this meeting starts. On by default; only ever appears
-        // when a link is chosen and it has prior notes.
-        top += rowGap
-        let prepRowY = place(rowH)
-        let prep = container.prepCard
-        prep.controlSize = .mini
-        prep.sizeToFit()
-        prep.frame = NSRect(x: width - prep.frame.width,
-                            y: prepRowY + (rowH - prep.frame.height) / 2,
-                            width: prep.frame.width, height: prep.frame.height)
-        prep.state = AppSettings.shared.meetingPrepCard ? .on : .off
-        let prepLabel = container.prepLabel
-        prepLabel.frame = NSRect(x: 0, y: prepRowY + (rowH - 16) / 2,
-                                 width: width - prep.frame.width - 8, height: 16)
-        prepLabel.font = .systemFont(ofSize: 12)
-        let prepTip = "When linked to an org/project, pops a panel of its recent notes as the meeting starts. Applies to this meeting only."
-        prep.toolTip = prepTip
-        prepLabel.toolTip = prepTip
-        container.addSubview(prepLabel)
-        container.addSubview(prep)
-
-        // Set the prep switch's initial enabled state from the default link.
-        container.catalogChanged()
-
-        return container
-    }
-
-    /// Fill a popup with "Unfiled", top-level projects (children indented), and
-    /// "➕ New Project…". Type-to-jump gives quick search.
-    /// Split a comma / newline / semicolon-separated agenda string into items.
-    private static func parseAgenda(_ raw: String) -> [String] {
-        raw.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }
-
-    private func applyTemplateSelection(from picker: NSPopUpButton) {
-        guard let id = picker.selectedItem?.representedObject as? String else { return }
-        settings.selectedTemplateID = id
-    }
-
-    /// The tracked call released the mic while Meeting Mode is still running —
-    /// offer to stop instead of transcribing an empty room. Routes through the
-    /// same coverage check as a manual end so the open-items list is folded into
-    /// this one prompt rather than shown as a second dialog afterwards.
-    private func offerToStopMeeting() {
-        guard appState.isMeetingMode else { return }
-        Task { @MainActor in await confirmEndAndStopMeeting(callEnded: true) }
-    }
-
-    // MARK: - Meeting Mode
-
-    @objc private func toggleMeetingMode() {
-        if appState.isMeetingMode {
-            Task { @MainActor in await confirmEndAndStopMeeting() }
-        } else {
-            promptTemplateAndStartMeeting()
-        }
-    }
-
-    /// "Ask before it ends": when a meeting ends, warn about anything still
-    /// open — the user's uncovered agenda items AND any dynamically-discovered
-    /// topics raised but left unresolved — and offer to keep recording.
-    ///
-    /// `callEnded` marks the auto-detect path (a tracked call released the mic):
-    /// there we always confirm (detection can misfire), and the open-items list,
-    /// if any, is folded into that single "Call ended" prompt. A manual end
-    /// (menu / ⌃⌥M) stops straight away when nothing is outstanding.
-    @MainActor
-    private func confirmEndAndStopMeeting(callEnded: Bool = false) async {
-        guard !endCoverageChecking else { return }
-
-        let assistant = LiveMeetingAssistant.shared
-        var uncovered: [String]
-        if assistant.isActive {
-            // Reuse the live panel's accumulated coverage (user ticks + the
-            // discovered topics and their resolved state) — no extra model call.
-            uncovered = assistant.coverageSnapshot.filter { !$0.covered }
-                .map { $0.dynamic ? "\($0.text) (raised, unresolved)" : $0.text }
-            Log.meeting.info("🔎 End-coverage (live): flagged=\(uncovered.count)")
-        } else {
-            // No live panel — do a one-shot read, if there's a cloud path and content.
-            let settings = AppSettings.shared
-            let transcript = meetingNotes.currentFilePath.flatMap { meetingNotes.transcriptText(of: $0) } ?? ""
-            let spoken = MeetingRefinery.dialogueLength(of: transcript)
-            if !settings.localOnlyMode, KeychainService.groqAPIKey() != nil, spoken > 200 {
-                endCoverageChecking = true
-                meetingModeMenuItem?.title = "Checking coverage…"
-                let status = await textPolisher.agendaStatus(
-                    userAgenda: meetingAgenda,
-                    transcript: transcript.trimmingCharacters(in: .whitespacesAndNewlines),
-                    preferFast: false)
-                endCoverageChecking = false
-                meetingModeMenuItem?.title = appState.isMeetingMode ? "End Meeting" : "Start Meeting"
-                let userUncovered = zip(meetingAgenda, status.userCovered).filter { !$0.1 }.map { $0.0 }
-                let openTopics = status.newTopics.map { "\($0) (raised, unresolved)" }
-                uncovered = userUncovered + openTopics
-                Log.meeting.info("🔎 End-coverage (model): flagged=\(uncovered.count)")
-            } else {
-                Log.meeting.info("⏭ End-coverage skipped (local=\(settings.localOnlyMode), spoken=\(spoken))")
-                uncovered = []
-            }
-        }
-
-        // The meeting may have been stopped another way while we were checking.
-        guard appState.isMeetingMode else { return }
-
-        // Manual end with nothing outstanding: stop, no dialog. (An auto-detected
-        // call always confirms — detection can be wrong.)
-        if !callEnded && uncovered.isEmpty { stopMeetingMode(); return }
-
-        let bullets = uncovered.map { "•  \($0)" }.joined(separator: "\n")
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        if callEnded {
-            alert.messageText = "Call ended"
-            alert.informativeText = uncovered.isEmpty
-                ? "The call seems to be over, but Meeting Mode is still recording. Stop and finalize the notes?"
-                : "The call seems to be over. These points still look open:\n\n\(bullets)\n\nStop and finalize the notes?"
-            alert.addButton(withTitle: "Stop & Save Notes")   // default: the call really is over
-            alert.addButton(withTitle: "Keep Recording")
-            NSApp.activate(ignoringOtherApps: true)
-            if alert.runModal() == .alertFirstButtonReturn { stopMeetingMode() }
-        } else {
-            alert.messageText = "Before you end this meeting"
-            alert.informativeText = "These points still look open:\n\n\(bullets)"
-            alert.addButton(withTitle: "Keep Recording")      // default: guard against an accidental end
-            alert.addButton(withTitle: "End Anyway")
-            NSApp.activate(ignoringOtherApps: true)
-            if alert.runModal() != .alertFirstButtonReturn { stopMeetingMode() }
-        }
-    }
-
-    private var endCoverageChecking = false
-
-    /// Manual start (menu or ⌃⌥M): confirm the meeting template first so the
-    /// summary matches the kind of meeting.
-    private func promptTemplateAndStartMeeting() {
-        confirmMeetingStart(
-            title: "Start Meeting Mode",
-            message: "What kind of meeting is this? The template shapes what the summary extracts.",
-            confirmTitle: "Start",
-            declineTitle: "Cancel")
-    }
-
-    @MainActor
-    private func startMeetingMode() async {
-        // Re-entrancy guard: two confirm dialogs (or a dialog + hotkey) must
-        // never double-start the capture chain and leak timers.
-        guard !appState.isMeetingMode else { return }
-        // Transcription needs the Groq key — fail fast with guidance instead of
-        // silently producing an empty notes file.
-        guard KeychainService.groqAPIKey() != nil else {
-            showAPIKeyWindow()
-            return
-        }
-
-        // Starting the capture chain surfaces the System Audio Recording TCC
-        // prompt on first use; a failure here usually means it was denied.
-        do {
-            try await systemAudioCapture.start()
-        } catch {
-            Log.meeting.error("❌ Could not start system audio capture: \(error.localizedDescription)")
-            showError("System Audio Recording permission is required for Meeting Mode. Enable GhostWriter in System Settings → Privacy & Security → Screen & System Audio Recording.")
-            return
-        }
-
-        appState.isMeetingMode = true
-        appState.meetingCaption = "Listening to meeting…"
-        appState.isSpeakerActive = false
-        setTranscriptionPaused(false)
-        pauseMenuItem?.title = "Pause Meeting"
-        meetingModeMenuItem?.title = "End Meeting"
-        meetingStartTime = Date()
-        meetingDetector.suppressed = true
-        meetingNotes.beginSession()
-
-        // Retain the raw audio (opt-out) so a failed transcription can be
-        // regenerated from the recording. Keyed to this meeting's note file.
-        if settings.retainMeetingAudio, let noteURL = meetingNotes.currentFilePath {
-            // Mirror the note's dated organization under <notes>/Audio/.
-            let retainer = AudioRetainer(
-                baseName: noteURL.deletingPathExtension().lastPathComponent,
-                audioDir: settings.audioDestinationFolder(for: meetingStartTime ?? Date()))
-            retainer.start()
-            audioRetainer = retainer
-        } else {
-            audioRetainer = nil
-        }
-
-        // Prime Whisper with the proper nouns for this meeting (linked entity
-        // and its people) so names transcribe right from the start.
-        GroqService.sessionGlossary = buildSessionGlossary(for: meetingCatalogTarget)
-
-        // Reset the speaker profiles for the new session (safe to touch
-        // directly — the capture callbacks haven't started yet)
-        speakerProfiler.reset()
-
-        // Live in-meeting brief (opt-in; reads the growing notes file).
-        LiveMeetingAssistant.shared.start(
-            transcriptProvider: { [weak self] in
-                guard let url = self?.meetingNotes.currentFilePath else { return nil }
-                return self?.meetingNotes.transcriptText(of: url)
-            },
-            template: settings.selectedTemplate,
-            agenda: meetingAgenda,
-            enabled: meetingLiveBrief)
-
-        // Menu-bar elapsed timer — doubles as a "still recording" indicator
-        startMeetingTimer()
-
-        // Update status bar icon
-        statusItem?.button?.image = NSImage(systemSymbolName: "headphones.circle.fill", accessibilityDescription: "Meeting Mode")
-
-        // Overlay behavior per settings: captions / minimal pill / hidden
-        if let panel = overlayPanel {
-            switch settings.overlayMode {
-            case .captions, .minimal:
-                // Wider panel so the caption line has room (minimal just leaves it blank)
-                panel.setContentSize(NSSize(width: 380, height: 120))
-                positionOverlayPanel(panel)
-                panel.ignoresMouseEvents = false  // allow dragging the pill
-                panel.orderFront(nil)
-            case .hidden:
-                panel.orderOut(nil)
-            }
-        }
-        Log.meeting.info("📡 Meeting Mode ON")
-
-        setupMeetingAudioCallback()
-        setupMicMeetingCallback()
-    }
-
-    private func startMeetingTimer() {
-        meetingTimer?.invalidate()
-        meetingTimer = Timer.scheduledTimer(
-            timeInterval: 1, target: self, selector: #selector(updateMeetingTimer),
-            userInfo: nil, repeats: true)
-    }
-
-    @objc private func updateMeetingTimer() {
-        guard let start = meetingStartTime else { return }
-        let elapsed = Int(Date().timeIntervalSince(start))
-        statusItem?.button?.title = String(format: " %d:%02d", elapsed / 60, elapsed % 60)
-    }
-
-    private func stopMeetingMode() {
-        meetingTimer?.invalidate()
-        meetingTimer = nil
-        statusItem?.button?.title = ""
-        // Hand the agenda to the finalizer (for the notes' Agenda section)
-        // before clearing it for the next meeting.
-        let agendaForNotes = meetingAgenda
-        meetingAgenda = []
-        // Snapshot the catalog target NOW, before the async finalize below.
-        // It's a shared field; a meeting started during the ~20s finalize wait
-        // would otherwise overwrite it, mislinking this note (or dropping the
-        // link entirely). Clearing it here also prevents leaking into the next.
-        let catalogTargetForNotes = meetingCatalogTarget
-        meetingCatalogTarget = nil
-
-        // Session glossary is per-meeting — clear it so it can't bias the next
-        // meeting's transcription (or dictation) with stale names.
-        GroqService.sessionGlossary = ""
-
-        micCapture.stop()
-        systemAudioCapture.stop()
-
-        // Don't immediately re-prompt "start Meeting Mode?" for the very call
-        // the user just chose to stop transcribing.
-        meetingDetector.suppressed = false
-        meetingDetector.snooze()
-
-        // Flush the tail speech still sitting in the buffers — the last words of
-        // a meeting must be transcribed, not discarded. (flush* resets the state.)
-        micMeetingQueue.sync { flushMicMeetingSegment() }
-        meetingQueue.sync { flushMeetingSegment() }
-
-        echoGateLock.lock()
-        speakerLastActiveTime = nil
-        echoGateLock.unlock()
-
-        setTranscriptionPaused(false)
-        DispatchQueue.main.async { [weak self] in
-            self?.pauseMenuItem?.title = "Pause Meeting"
-        }
-
-        if let start = meetingStartTime {
-            meetingStartTime = nil
-            UsageStats.shared.recordMeeting(seconds: Date().timeIntervalSince(start))
-
-            // Finalize asynchronously: wait for in-flight transcriptions (incl.
-            // the tail we just flushed) so they land in the file, give queued
-            // failures one last retry, then write the footer + summary.
-            let retainer = audioRetainer
-            audioRetainer = nil
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                await self.waitForPendingTranscriptions(timeout: 20)
-                await self.finalRetryPass()
-                self.meetingNotes.endSession(startedAt: start)
-                // Finish the recording and record its path on the note before the
-                // refinement pass writes the rest of the front-matter.
-                if let retainer, let audioURL = await retainer.finish(),
-                   let noteURL = self.meetingNotes.lastCompletedFilePath {
-                    // Path relative to the notes folder (includes the dated subfolders).
-                    MeetingNotesWriter.setAudioPath(self.settings.relativePath(of: audioURL), to: noteURL)
-                }
-                self.finalizeMeetingNotes(startedAt: start, agenda: agendaForNotes,
-                                          catalogTarget: catalogTargetForNotes)
-            }
-        }
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.appState.isMeetingMode = false
-            self.appState.meetingCaption = ""
-            self.appState.isSpeakerActive = false
-            LiveMeetingAssistant.shared.stop()
-            self.meetingModeMenuItem?.title = "Start Meeting"
-            self.statusItem?.button?.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: "GhostWriter")
-
-            if let panel = self.overlayPanel {
-                panel.ignoresMouseEvents = true  // restore pass-through
-                panel.setContentSize(NSSize(width: 180, height: 180))  // back to PTT size
-                self.positionOverlayPanel(panel)
-                if self.appState.recordingState == .idle {
-                    panel.orderOut(nil)
-                }
-            }
-            Log.meeting.info("📡 Meeting Mode OFF")
-        }
-    }
-
-    private func setupMeetingAudioCallback() {
-        let vad = VoiceActivityDetector()
-        systemAudioCapture.onAudioBuffer = { [weak self] buffer in
-            guard let self, !self.isTranscriptionPaused else { return }
-            self.audioRetainer?.appendSystem(buffer)
-            let rms = vad.calculateRMS(from: buffer)
-            let dbfs = vad.rmsToDBFS(rms)
-            let isVoice = dbfs >= self.settings.systemAudioThreshold
-            self.meetingQueue.async { [weak self] in
-                self?.processMeetingBuffer(buffer, isVoice: isVoice, rms: rms)
-            }
-        }
-    }
-
-    // MARK: - Mic Capture (self) in Meeting Mode
-
-    private func setupMicMeetingCallback() {
-        let vad = VoiceActivityDetector()
-        micCapture.onAudioBuffer = { [weak self] buffer in
-            guard let self, !self.isTranscriptionPaused else { return }
-            self.audioRetainer?.appendMic(buffer)
-            let rms = vad.calculateRMS(from: buffer)
-            let isVoice = vad.rmsToDBFS(rms) >= self.settings.meetingMicThreshold  // mic threshold — louder than system audio
-            self.micMeetingQueue.async { [weak self] in
-                self?.processMicMeetingBuffer(buffer, isVoice: isVoice)
-            }
-        }
-        micCapture.start()
-    }
-
-    private func processMicMeetingBuffer(_ buffer: Data, isVoice: Bool) {
-        let now = Date()
-
-        // Echo suppression: if the speaker was active within the gate window, the
-        // mic is almost certainly hearing the remote party through the speaker, not
-        // the local user. Drop it so it isn't mislabeled as "You".
-        var speakerActive = false
-        if settings.echoSuppressionEnabled {
-            echoGateLock.lock()
-            if let last = speakerLastActiveTime, now.timeIntervalSince(last) < echoGateWindow {
-                speakerActive = true
-            }
-            echoGateLock.unlock()
-        }
-
-        let isVoice = isVoice && !speakerActive
-
-        if isVoice {
-            if micMeetingSpeechBuffer.isEmpty { micMeetingSegmentStart = now }
-            micMeetingSpeechBuffer.append(buffer)
-            micMeetingLastVoiceTime = now
-            if let start = micMeetingSegmentStart,
-               now.timeIntervalSince(start) >= meetingMaxSegmentSeconds {
-                flushMicMeetingSegment()
-            }
-        } else if let lastVoice = micMeetingLastVoiceTime,
-                  now.timeIntervalSince(lastVoice) >= meetingSilenceDebounce,
-                  !micMeetingSpeechBuffer.isEmpty {
-            flushMicMeetingSegment()
-        }
-    }
-
-    private func flushMicMeetingSegment() {
-        let captured = micMeetingSpeechBuffer
-        // Stamp lines with when the speech was captured, not when the API
-        // returns — keeps interleaved You/Them lines in true order.
-        let capturedAt = micMeetingSegmentStart ?? Date()
-        micMeetingSpeechBuffer = Data()
-        micMeetingLastVoiceTime = nil
-        micMeetingSegmentStart = nil
-
-        let minBytes = 16000 * 2 / 2
-        guard captured.count >= minBytes else { return }
-
-        beginPendingTranscription()
-        Task {
-            defer { self.endPendingTranscription() }
-            do {
-                let text = try await transcribeWithFallback(captured, context: self.meetingNotes.promptContext)
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty,
-                      !self.whisperHallucinations.contains(trimmed.lowercased()) else { return }
-                Log.meeting.debug("🎤 You: \(trimmed, privacy: .private)")
-                self.meetingNotes.append(segment: trimmed, speaker: "You", at: capturedAt)
-            } catch {
-                Log.meeting.error("❌ Mic transcription error: \(error.localizedDescription)")
-                await MainActor.run { [weak self] in
-                    self?.enqueueFailedSegment(audio: captured, speaker: "You", capturedAt: capturedAt)
-                }
-            }
-        }
-    }
-
-    private func processMeetingBuffer(_ buffer: Data, isVoice: Bool, rms: Float) {
-        // Must be called on meetingQueue
-        let now = Date()
-
-        if isVoice {
-            // Mark the speaker as active so the mic path can suppress echo.
-            echoGateLock.lock()
-            speakerLastActiveTime = now
-            echoGateLock.unlock()
-
-            if meetingSpeechBuffer.isEmpty {
-                meetingSegmentStart = now
-                DispatchQueue.main.async { [weak self] in
-                    self?.appState.isSpeakerActive = true
-                    self?.appState.audioLevel = rms
-                }
-            }
-            meetingSpeechBuffer.append(buffer)
-            meetingLastVoiceTime = now
-
-            // Flush if segment is too long (Whisper's 25s limit)
-            if let start = meetingSegmentStart,
-               now.timeIntervalSince(start) >= meetingMaxSegmentSeconds {
-                flushMeetingSegment()
-            }
-        } else {
-            // Update UI level
-            DispatchQueue.main.async { [weak self] in
-                self?.appState.audioLevel = rms
-            }
-
-            // Check if we've been silent long enough after speech
-            if let lastVoice = meetingLastVoiceTime,
-               now.timeIntervalSince(lastVoice) >= meetingSilenceDebounce,
-               !meetingSpeechBuffer.isEmpty {
-                flushMeetingSegment()
-                DispatchQueue.main.async { [weak self] in
-                    self?.appState.isSpeakerActive = false
-                }
-            }
-        }
-    }
-
-    // MARK: - Failed-Segment Retry Queue
-
-    /// Queue a failed segment for retry (main thread).
-    private func enqueueFailedSegment(audio: Data, speaker: String, capturedAt: Date) {
-        retryQueue.append(PendingSegment(audio: audio, speaker: speaker, capturedAt: capturedAt, attempts: 1))
-        Log.meeting.warning("⚠️ Segment transcription failed — queued for retry (\(self.retryQueue.count) pending)")
-        if retryTimer == nil {
-            retryTimer = Timer.scheduledTimer(
-                timeInterval: max(5, settings.retryIntervalSeconds), target: self,
-                selector: #selector(drainRetryQueue), userInfo: nil, repeats: true)
-        }
-    }
-
-    @objc private func drainRetryQueue() {
-        guard !retryQueue.isEmpty else {
-            retryTimer?.invalidate(); retryTimer = nil
-            return
-        }
-        let pending = retryQueue
-        retryQueue.removeAll()
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            for var segment in pending {
-                do {
-                    let text = try await self.transcribeWithFallback(segment.audio, context: self.meetingNotes.promptContext)
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty, !self.whisperHallucinations.contains(trimmed.lowercased()) {
-                        self.meetingNotes.append(segment: trimmed, speaker: segment.speaker, at: segment.capturedAt)
-                        Log.meeting.info("✅ Recovered segment from \(segment.capturedAt)")
-                    }
-                } catch {
-                    segment.attempts += 1
-                    if segment.attempts >= self.maxRetryAttempts {
-                        self.writeFailureMarker(for: segment)
-                    } else {
-                        self.retryQueue.append(segment)
-                    }
-                }
-            }
-            if self.retryQueue.isEmpty {
-                self.retryTimer?.invalidate(); self.retryTimer = nil
-            }
-        }
-    }
-
-    /// A gap should be visible in the notes, not silent.
-    private func writeFailureMarker(for segment: PendingSegment) {
-        let seconds = segment.audio.count / (16000 * 2)
-        meetingNotes.appendMarker("⚠️ Transcription failed for a \(seconds)s segment captured around this time")
-        Log.meeting.error("❌ Gave up on segment from \(segment.capturedAt) after \(self.maxRetryAttempts) attempts")
-    }
-
-    /// Wait for in-flight segment transcriptions to finish (bounded).
-    private func waitForPendingTranscriptions(timeout: TimeInterval) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while pendingTranscriptions > 0 && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 300_000_000)
-        }
-        if pendingTranscriptions > 0 {
-            Log.meeting.warning("⚠️ \(self.pendingTranscriptions) transcription(s) still pending at meeting end — proceeding")
-        }
-    }
-
-    /// At meeting end: one final retry for queued failures, then whatever is
-    /// still failing becomes a visible marker before the file is finalized.
-    @MainActor
-    private func finalRetryPass() async {
-        retryTimer?.invalidate(); retryTimer = nil
-        let pending = retryQueue
-        retryQueue.removeAll()
-
-        for segment in pending {
-            do {
-                let text = try await transcribeWithFallback(segment.audio, context: meetingNotes.promptContext)
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty, !whisperHallucinations.contains(trimmed.lowercased()) {
-                    meetingNotes.append(segment: trimmed, speaker: segment.speaker, at: segment.capturedAt)
-                }
-            } catch {
-                writeFailureMarker(for: segment)
-            }
-        }
-    }
-
-    /// Experimental voice-based diarization for remote audio: each segment's
-    /// voice fingerprint (pitch, timbre) is clustered into speaker profiles,
-    /// so distinct voices get distinct labels (Them / Them 2 / …).
-    /// Must be called on meetingQueue.
-    private func diarizedSpeakerLabel(for audio: Data) -> String {
-        guard settings.diarizationEnabled else { return "Them" }
-        return speakerProfiler.label(for: audio)
-    }
-
-    // Whisper hallucinates these phrases on short/quiet audio — discard them
-    private let whisperHallucinations: Set<String> = [
-        "thank you.", "thanks for watching.", "thanks for watching", "thank you",
-        "you", ".", " ", "of the", "the", "a", "i", "bye.", "bye",
-        "[music]", "[applause]", "[silence]", "♪", "..."
-    ]
-
-    private func flushMeetingSegment() {
-        // Must be called on meetingQueue
-        let capturedAudio = meetingSpeechBuffer
-        let capturedAt = meetingSegmentStart ?? Date()
-        meetingSpeechBuffer = Data()
-        meetingLastVoiceTime = nil
-        meetingSegmentStart = nil
-
-        guard !capturedAudio.isEmpty else { return }
-
-        // Require at least 0.5s of audio (16kHz × 2 bytes × 0.5s = 16000 bytes)
-        // Whisper hallucinates on very short clips
-        let minBytes = 16000 * 2 / 2  // 0.5s at 16kHz Int16
-        guard capturedAudio.count >= minBytes else {
-            Log.meeting.debug("⏭ Segment too short (\(capturedAudio.count) bytes), skipping")
-            return
-        }
-
-        let speakerLabel = diarizedSpeakerLabel(for: capturedAudio)
-
-        beginPendingTranscription()
-        Task {
-            defer { self.endPendingTranscription() }
-            do {
-                let text = try await transcribeWithFallback(capturedAudio, context: self.meetingNotes.promptContext)
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
-
-                // Discard known Whisper hallucinations
-                guard !self.whisperHallucinations.contains(trimmed.lowercased()) else {
-                    Log.meeting.debug("⏭ Filtered hallucination: '\(trimmed, privacy: .private)'")
-                    return
-                }
-
-                Log.meeting.debug("📡 Meeting transcript: \(trimmed, privacy: .private)")
-                self.meetingNotes.append(segment: trimmed, speaker: speakerLabel, at: capturedAt)
-                if self.settings.overlayMode == .captions {
-                    await MainActor.run { [weak self] in
-                        self?.appState.meetingCaption = trimmed
-                    }
-                }
-            } catch {
-                Log.meeting.error("❌ Meeting transcription error: \(error.localizedDescription)")
-                await MainActor.run { [weak self] in
-                    self?.enqueueFailedSegment(audio: capturedAudio, speaker: speakerLabel, capturedAt: capturedAt)
                 }
             }
         }

@@ -105,8 +105,11 @@
 | `Sources/Views/GlowOverlayView.swift` | Floating recording indicator / live-caption overlay |
 | `Sources/Views/MeetingPrepWindow.swift` | Non-modal meeting-prep panel — recent notes for the linked org/opp |
 | `Sources/Utils/DateDisplay.swift` | Date formatting for the menu, Catalog, and note lists |
-| `Sources/App/GhostWriterApp.swift` | `AppDelegate` — recording & meeting lifecycle, permission flow |
+| `Sources/App/GhostWriterApp.swift` | `AppDelegate` core — lifecycle, setup, schedulers, dictation/PTT & quick-notes flow, permissions |
 | `Sources/App/AppDelegate+Menus.swift` | Menu-bar construction, recent-notes submenu, speaker identify, error surface |
+| `Sources/App/AppDelegate+MeetingDetection.swift` | Call auto-detection + the start-meeting dialog (link/template/agenda/live-brief), session glossary, prep card |
+| `Sources/App/AppDelegate+MeetingMode.swift` | Meeting Mode start/stop, end-coverage check, capture-chain startup, elapsed timer, finalization |
+| `Sources/App/AppDelegate+MeetingAudio.swift` | Per-segment mic/system audio processing, diarization, failed-segment retry queue |
 | `Sources/App/AppState.swift` | `AppState` (observable UI state) + `RecordingState` enum |
 | `Sources/App/main.swift` | Executable entry point |
 | `ship.sh` | Build, bundle, sign, and install to `/Applications` |

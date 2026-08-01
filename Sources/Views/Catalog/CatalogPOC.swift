@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Charts
 import UniformTypeIdentifiers
 
 // MARK: - Catalog · POC tracker
@@ -684,6 +685,7 @@ struct PocDetail: View {
             VStack(alignment: .leading, spacing: 14) {
                 header(opp, poc)
                 descriptionField(opp, poc)
+                burndown(poc)
                 if poc.criteria.isEmpty {
                     ContentUnavailableView("No success criteria yet", systemImage: "checklist",
                         description: Text("Add the measurable outcomes this POC must prove — or seed them from the project's meetings."))
@@ -882,6 +884,71 @@ struct PocDetail: View {
         let clean = draftName.trimmingCharacters(in: .whitespaces)
         if clean.isEmpty { draftName = poc.name } else if clean != poc.name {
             store.renamePoc(poc.id, in: opp.id, to: clean)
+        }
+    }
+
+    // MARK: Burndown
+
+    /// A compact burndown: how many criteria remain unproven (total − passed)
+    /// over the POC's life, against a dashed ideal line to zero at the deadline.
+    /// Hidden until at least two dated points exist so there's a trend to draw.
+    @ViewBuilder private func burndown(_ poc: Poc) -> some View {
+        let points = poc.history
+        if points.count >= 2 {
+            let current = points.last!
+            // Ideal guide: from the first logged scope down to zero at the
+            // deadline (falling back to the last point if no deadline is set).
+            let start = points.first!
+            let idealEnd = poc.deadline ?? current.date
+            let ideal: [(date: Date, remaining: Double)] = [
+                (start.date, Double(start.total)),
+                (idealEnd, 0)
+            ]
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label("Burndown", systemImage: "chart.line.downtrend.xyaxis")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text("\(current.remaining) of \(current.total) left")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Chart {
+                        ForEach(ideal, id: \.date) { pt in
+                            LineMark(x: .value("Date", pt.date),
+                                     y: .value("Ideal", pt.remaining),
+                                     series: .value("Series", "Ideal"))
+                                .foregroundStyle(.secondary.opacity(0.5))
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        }
+                        ForEach(points) { s in
+                            AreaMark(x: .value("Date", s.date),
+                                     y: .value("Remaining", s.remaining),
+                                     series: .value("Series", "Remaining"))
+                                .foregroundStyle(.linearGradient(
+                                    colors: [.accentColor.opacity(0.28), .accentColor.opacity(0.02)],
+                                    startPoint: .top, endPoint: .bottom))
+                            LineMark(x: .value("Date", s.date),
+                                     y: .value("Remaining", s.remaining),
+                                     series: .value("Series", "Remaining"))
+                                .foregroundStyle(Color.accentColor)
+                                .interpolationMethod(.monotone)
+                        }
+                        if let deadline = poc.deadline {
+                            RuleMark(x: .value("Deadline", deadline))
+                                .foregroundStyle(.red.opacity(0.4))
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
+                                .annotation(position: .top, alignment: .trailing) {
+                                    Text("Due").font(.caption2).foregroundStyle(.red.opacity(0.7))
+                                }
+                        }
+                    }
+                    .chartYScale(domain: 0...Double(max(1, points.map(\.total).max() ?? 1)))
+                    .chartYAxis { AxisMarks(position: .leading) }
+                    .frame(height: 128)
+                }
+            }
         }
     }
 

@@ -3,9 +3,12 @@ import AppKit
 
 // MARK: - Rename Speakers
 //
-// Give "Them / Them 2" real names — per meeting. Pick any meeting, rename its
-// speakers, and only that notes file is rewritten. When the chosen meeting is
-// the one currently recording, future segments use the new names too.
+// Identify "Them / Them 2" as real people — per meeting. Pick any meeting,
+// assign each speaker to a Catalog person (or create one), and only that notes
+// file is rewritten and the person is linked to the note in the Catalog. This
+// is per-meeting and manual — no voice is learned and nothing is auto-applied to
+// other meetings. When the chosen meeting is the one currently recording, future
+// segments use the new names too.
 
 final class RenameSpeakersWindowController: NSWindowController {
 
@@ -13,17 +16,20 @@ final class RenameSpeakersWindowController: NSWindowController {
     ///   - liveFile: the currently recording meeting's file, if any
     ///   - preselect: a specific meeting to open selected (e.g. the note being
     ///     viewed); defaults to the live meeting, then the most recent
-    ///   - onRename: called per changed label (old, new, file) after the rewrite
-    convenience init(liveFile: URL?, preselect: URL? = nil, onRename: @escaping (String, String, URL) -> Void) {
+    ///   - onRename: called per changed label (old, new, personID, file) after
+    ///     the rewrite — `personID` is the linked Catalog person (nil if the new
+    ///     name isn't a Catalog person, e.g. a legacy free-text edit)
+    convenience init(liveFile: URL?, preselect: URL? = nil,
+                     onRename: @escaping (String, String, String?, URL) -> Void) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 340),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 360),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         window.isReleasedWhenClosed = false
         window.center()
-        window.title = "Rename Speakers"
+        window.title = "Identify Speakers"
 
         self.init(window: window)
         window.contentView = NSHostingView(rootView: RenameSpeakersView(
@@ -36,13 +42,19 @@ final class RenameSpeakersWindowController: NSWindowController {
 private struct RenameSpeakersView: View {
     let liveFile: URL?
     let preselect: URL?
-    let onRename: (String, String, URL) -> Void
+    let onRename: (String, String, String?, URL) -> Void
     let close: () -> Void
 
+    @ObservedObject private var store = CatalogStore.shared
     @State private var files: [URL] = []
     @State private var selected: URL?
     @State private var labels: [String] = []
-    @State private var names: [String: String] = [:]
+    /// label → chosen Catalog person id (nil = leave the label unchanged).
+    @State private var assignment: [String: String] = [:]
+    @State private var newPersonName = ""
+    @State private var addingFor: String?
+
+    private var people: [CatalogPerson] { store.doc.people.sortedByName }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -72,13 +84,10 @@ private struct RenameSpeakersView: View {
                 Spacer()
             } else {
                 Form {
-                    ForEach(labels, id: \.self) { label in
-                        TextField(label, text: Binding(
-                            get: { names[label] ?? label },
-                            set: { names[label] = $0 }
-                        ))
-                    }
+                    ForEach(labels, id: \.self) { label in speakerRow(label) }
                 }
+                Text("Assigning a speaker renames them in this note and links the person to it in the Catalog. Applies to this meeting only.")
+                    .font(.caption2).foregroundColor(.secondary)
                 Spacer()
             }
 
@@ -86,13 +95,13 @@ private struct RenameSpeakersView: View {
                 Spacer()
                 Button("Cancel") { close() }
                     .keyboardShortcut(.cancelAction)
-                Button("Rename") { save() }
+                Button("Save") { save() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!hasChanges)
             }
         }
         .padding(16)
-        .frame(width: 400, height: 340)
+        .frame(width: 420, height: 360)
         .onAppear {
             files = MeetingNotesWriter.allMeetingFiles(under: AppSettings.shared.notesFolder)
             // Prefer an explicitly requested meeting (the one being viewed),
@@ -104,6 +113,45 @@ private struct RenameSpeakersView: View {
         .onChange(of: selected) { _, _ in rescan() }
     }
 
+    @ViewBuilder
+    private func speakerRow(_ label: String) -> some View {
+        HStack {
+            Text(label).frame(width: 90, alignment: .leading)
+            if addingFor == label {
+                TextField("New person's name", text: $newPersonName, onCommit: { commitNewPerson(for: label) })
+                Button("Add") { commitNewPerson(for: label) }
+                    .disabled(newPersonName.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Cancel") { addingFor = nil; newPersonName = "" }
+            } else {
+                Picker("", selection: Binding(
+                    get: { assignment[label] ?? "" },
+                    set: { sel in
+                        if sel == "__new__" { addingFor = label; newPersonName = "" }
+                        else { assignment[label] = sel.isEmpty ? nil : sel }
+                    }
+                )) {
+                    Text("Leave as \(label)").tag("")
+                    Divider()
+                    ForEach(people) { p in Text(p.name).tag(p.id) }
+                    Divider()
+                    Text("New person…").tag("__new__")
+                }
+                .labelsHidden()
+            }
+        }
+    }
+
+    private func commitNewPerson(for label: String) {
+        let name = newPersonName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        // Reuse an existing person of the same name, else create one.
+        let person = store.doc.people.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+            ?? store.addPerson(name: name)
+        assignment[label] = person.id
+        addingFor = nil
+        newPersonName = ""
+    }
+
     private func displayName(of file: URL) -> String {
         file.deletingPathExtension().lastPathComponent
             .replacingOccurrences(of: "Meeting_", with: "")
@@ -111,24 +159,23 @@ private struct RenameSpeakersView: View {
     }
 
     private func rescan() {
-        names = [:]
+        assignment = [:]
+        addingFor = nil
         labels = selected.map { MeetingNotesWriter.speakerLabels(in: $0) } ?? []
     }
 
     private var hasChanges: Bool {
-        labels.contains { label in
-            let new = (names[label] ?? label).trimmingCharacters(in: .whitespaces)
-            return !new.isEmpty && new != label
-        }
+        labels.contains { assignment[$0] != nil }
     }
 
     private func save() {
         guard let file = selected else { return }
         for label in labels {
-            let new = (names[label] ?? label).trimmingCharacters(in: .whitespaces)
+            guard let pid = assignment[label], let person = store.person(pid) else { continue }
+            let new = person.name.trimmingCharacters(in: .whitespaces)
             guard !new.isEmpty, new != label else { continue }
             MeetingNotesWriter.renameSpeaker(from: label, to: new, in: file)
-            onRename(label, new, file)
+            onRename(label, new, pid, file)
         }
         close()
     }

@@ -3,11 +3,14 @@ import AppKit
 
 // MARK: - Ask Your Knowledge Base
 //
-// A persistent, multi-turn chat over the WHOLE meeting archive. Each question
-// retrieves the most relevant excerpts (on-device semantic search when
-// available, keyword otherwise), then answers with cited sources you can click
-// to open. Follow-up questions carry the recent conversation for context, so
-// "what about pricing?" resolves against the prior turn.
+// A persistent, multi-turn chat across your WHOLE knowledge base — every meeting
+// note plus the Catalog (accounts, opportunities, POC health, people). In
+// agentic mode a question is first decomposed into several planned searches and
+// a Catalog snapshot is folded into the context, so both "what did we decide
+// about pricing with Acme?" and "which POCs are at risk?" get answered. Each
+// answer cites sources you can click to open; follow-up questions carry the
+// recent conversation, so "what about their timeline?" resolves against the
+// prior turn.
 
 final class AskWindowController: NSWindowController {
     private static var shared: AskWindowController?
@@ -29,7 +32,7 @@ final class AskWindowController: NSWindowController {
             backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.center()
-        window.title = "Ask Your Notes"
+        window.title = "Ask Anything"
         window.titlebarAppearsTransparent = true
         super.init(window: window)
         window.contentView = NSHostingView(rootView: AskView())
@@ -79,12 +82,19 @@ private struct AskView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 14) {
                             ForEach(messages) { MessageRow(message: $0) }
-                            if asking { thinkingRow }
+                            // Only while retrieving/planning — hidden once the
+                            // assistant turn starts streaming visible tokens.
+                            if asking, (messages.last?.role != .assistant || (messages.last?.text.isEmpty ?? true)) {
+                                thinkingRow
+                            }
                         }
                         .padding(14)
                     }
                     .onChange(of: messages.count) { _, _ in
                         if let last = messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                    }
+                    .onChange(of: messages.last?.text) { _, _ in
+                        if let last = messages.last { proxy.scrollTo(last.id, anchor: .bottom) }
                     }
                 }
             }
@@ -92,7 +102,7 @@ private struct AskView: View {
             Divider()
 
             HStack(spacing: 8) {
-                TextField("Ask about your meetings…", text: $draft, axis: .vertical)
+                TextField("Ask about your meetings, accounts, POCs…", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...4)
                     .onSubmit(send)
@@ -194,9 +204,9 @@ private struct AskView: View {
         VStack(spacing: 10) {
             Image(systemName: "sparkles.rectangle.stack")
                 .font(.system(size: 40)).foregroundStyle(.tertiary)
-            Text("Ask your whole meeting archive")
+            Text("Ask across everything")
                 .font(.headline)
-            Text("“What did we decide about pricing with Acme?”\n“Summarize the DESC compliance thread.”\n“What are my open commitments to the platform team?”")
+            Text("“What did we decide about pricing with Acme?”\n“Which POCs are at risk, and why?”\n“What objections came up about security this quarter?”\n“What are my open commitments to the platform team?”")
                 .font(.caption).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
@@ -223,29 +233,97 @@ private struct AskView: View {
             "\($0.role == .user ? "Q" : "A"): \($0.text)"
         }.joined(separator: "\n")
         let files = resolvedFiles()
+        let currentScope = scope
 
         Task { @MainActor in
             defer { asking = false }
-            let result = await Self.answer(question: q, history: history, files: files)
-            messages.append(AskMessage(role: .assistant, text: result.text,
-                                       citations: result.citations, source: result.engine))
+            // Insert an empty assistant turn we stream tokens into.
+            messages.append(AskMessage(role: .assistant, text: ""))
+            let idx = messages.count - 1
+            let result = await Self.answer(question: q, history: history,
+                                           files: files, scope: currentScope) { delta in
+                Task { @MainActor in
+                    guard messages.indices.contains(idx) else { return }
+                    messages[idx].text += delta
+                }
+            }
+            guard messages.indices.contains(idx) else { return }
+            // The returned text is authoritative (covers the non-streaming
+            // fallbacks and trims/repairs); commit it plus citations & engine.
+            messages[idx].text = result.text
+            messages[idx].citations = result.citations
+            messages[idx].source = result.engine
         }
     }
 
     private struct Answer { let text: String; let citations: [NotesLibrary.ExcerptResult.Citation]; let engine: String? }
 
-    /// Retrieve excerpts across the archive and answer, with an on-device
-    /// fallback when Groq is unavailable or fails. Retrieval is hybrid
-    /// (meaning + keyword), so it works even without an embedding model.
+    /// Retrieve across the knowledge base and answer, with an on-device fallback
+    /// when Groq is unavailable or fails. In agentic mode the question is first
+    /// decomposed into several planned searches, and a Catalog snapshot
+    /// (accounts, opportunities, POC health, people) is folded into the context
+    /// so structured questions ("which POCs are at risk?") can be answered too.
+    /// Retrieval is hybrid (meaning + keyword), so it works without an embedding
+    /// model.
+    @MainActor
     private static func answer(question: String, history: String,
-                               files: [NotesLibrary.MeetingFile]?) async -> Answer {
+                               files: [NotesLibrary.MeetingFile]?, scope: AskScope,
+                               onDelta: @escaping @Sendable (String) -> Void = { _ in }) async -> Answer {
         if let files, files.isEmpty {
             return Answer(text: "That scope has no meetings to search. Pick a different scope.", citations: [], engine: nil)
         }
-        let retrieved = files == nil
-            ? await NotesLibrary.semanticExcerpts(for: question)
-            : await NotesLibrary.semanticExcerpts(for: question, files: files!)
-        guard !retrieved.text.isEmpty else {
+
+        let settings = AppSettings.shared
+        let localFirst = settings.localOnlyMode || settings.preferOnDeviceAI
+        // Agentic planning uses a cloud fast-model hop, so only when going cloud.
+        let agentic = settings.agenticAsk && !localFirst
+        let tp = TextPolisher()
+
+        // Plan → retrieve. Simple path: one keyword search. Agentic path:
+        // decompose into several searches, then run a retrieve→reason→retrieve
+        // loop — after each round the model names what's still missing and we
+        // search for it, up to the configured hop budget.
+        let retrievedRaw: NotesLibrary.ExcerptResult
+        if agentic {
+            var queries = await tp.planQueries(question: question, history: history)
+            var evidence = await NotesLibrary.semanticExcerpts(forQueries: queries, files: files)
+            let maxHops = max(1, settings.agenticAskMaxHops)
+            var hop = 1
+            while hop < maxHops {
+                let more = await tp.followUpQueries(question: question, history: history, evidence: evidence.text)
+                let fresh = more.filter { q in
+                    !queries.contains { $0.caseInsensitiveCompare(q) == .orderedSame }
+                }
+                if fresh.isEmpty { break }   // model is satisfied, or nothing new to chase
+                queries += fresh
+                // Re-retrieve the accumulated query set (dedupes by meeting) so
+                // the answer sees one merged, renumberable evidence set.
+                evidence = await NotesLibrary.semanticExcerpts(forQueries: queries, files: files)
+                hop += 1
+            }
+            retrievedRaw = evidence
+        } else {
+            retrievedRaw = files == nil
+                ? await NotesLibrary.semanticExcerpts(for: question)
+                : await NotesLibrary.semanticExcerpts(for: question, files: files!)
+        }
+        // Number the sources [1…n] so the model can anchor each claim to a
+        // clickable citation card and the UI can label them to match.
+        let retrieved = retrievedRaw.numbered()
+
+        // Catalog snapshot — the structured half of "everything". Included when
+        // agentic and the scope isn't an explicit hand-picked set of meetings.
+        var catalog = ""
+        if agentic {
+            switch scope {
+            case .all:               catalog = KnowledgeBase.catalogSnapshot()
+            case .org(let id):       catalog = KnowledgeBase.catalogSnapshot(orgID: id)
+            case .project(let id):   catalog = KnowledgeBase.catalogSnapshot(projectID: id)
+            case .meetings:          catalog = ""
+            }
+        }
+
+        guard !retrieved.text.isEmpty || !catalog.isEmpty else {
             return Answer(text: "I couldn't find anything relevant in this scope. Try rewording, widening the scope, or check that you have meetings recorded.", citations: [], engine: nil)
         }
 
@@ -254,21 +332,26 @@ private struct AskView: View {
             : "Conversation so far:\n\(history)\n\nAnswer this follow-up: \(question)"
 
         // Cloud first (unless Local-only / prefer-on-device), Apple fallback.
-        let localFirst = AppSettings.shared.localOnlyMode || AppSettings.shared.preferOnDeviceAI
         if !localFirst {
             do {
-                let text = try await TextPolisher().answerAcrossMeetings(question: framed, excerpts: retrieved.text)
+                let text = agentic || !catalog.isEmpty
+                    ? try await tp.answerAcrossKnowledge(question: framed, excerpts: retrieved.text, catalog: catalog, onDelta: onDelta)
+                    : try await tp.answerAcrossMeetings(question: framed, excerpts: retrieved.text, onDelta: onDelta)
                 return Answer(text: text, citations: retrieved.citations, engine: "Groq")
             } catch {
                 // fall through to on-device
             }
         }
+        let catalogBlock = catalog.isEmpty ? "" : "\(catalog)\n\n"
         if let local = await AppleIntelligence.generate(
             instructions: """
-            You answer questions using ONLY the provided meeting excerpts, grouped under "=== Meeting … ===" headers. \
-            Cite which meeting each point comes from. Be concise. If the excerpts don't contain the answer, say so — never guess.
+            You answer questions using ONLY the provided context — a "=== Knowledge Base … ===" snapshot of \
+            accounts, opportunities, POC health and people, plus meeting excerpts grouped under "[n] === Meeting … ===" headers. \
+            Cite the account/POC for snapshot facts, and for an excerpt fact append the meeting's bracket number, e.g. "[2]". \
+            Use only the numbers shown — never invent one. Be concise. \
+            If the context doesn't contain the answer, say so — never guess.
             """,
-            prompt: "Excerpts:\n\(retrieved.text)\n\n\(framed)") {
+            prompt: "\(catalogBlock)Meeting excerpts:\n\(retrieved.text)\n\n\(framed)") {
             return Answer(text: local, citations: retrieved.citations, engine: "Apple Intelligence")
         }
         return Answer(text: "Couldn't reach an AI model to answer. Check your Groq key, or enable Apple Intelligence for on-device answers.", citations: [], engine: nil)
@@ -332,8 +415,15 @@ private struct MessageRow: View {
                                 NotesViewerWindowController.present(fileURL: cite.file.url)
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Label(cite.file.displayName, systemImage: "doc.text")
-                                        .font(.caption)
+                                    HStack(spacing: 5) {
+                                        if cite.index > 0 {
+                                            Text("[\(cite.index)]")
+                                                .font(.caption.monospacedDigit().weight(.semibold))
+                                                .foregroundStyle(.tertiary)
+                                        }
+                                        Label(cite.file.displayName, systemImage: "doc.text")
+                                            .font(.caption)
+                                    }
                                     if !cite.snippet.isEmpty {
                                         Text(MessageRow.highlighted(cite.snippet, terms: cite.terms))
                                             .font(.caption2)

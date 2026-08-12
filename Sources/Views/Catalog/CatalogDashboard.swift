@@ -167,6 +167,8 @@ private struct KPIStrip: View {
     var rangeActive = false          // a finite range is selected (not "All time")
     var rangeLabel = ""              // e.g. "90 days" — for the header
     var loading = false
+    /// Drill-down: tapping a tile jumps to the matching Catalog section.
+    var open: (CatalogSection) -> Void = { _ in }
 
     /// The account subtree (the selected org + descendants), or nil for "all".
     private var scopeOrgIDs: Set<String>? {
@@ -244,21 +246,27 @@ private struct KPIStrip: View {
             // Tiles wrap to the available width rather than living in a column.
             FlowLayout(spacing: 10) {
                 KPITile(icon: "building.2.fill", tint: .blue,
-                        value: "\(orgCount)", label: "Organisations")
+                        value: "\(orgCount)", label: "Organisations",
+                        action: { open(.organisations) })
                 KPITile(icon: "chart.line.uptrend.xyaxis", tint: .green,
-                        value: "\(openOpps)", label: "Open projects")
+                        value: "\(openOpps)", label: "Open projects",
+                        action: { open(.projects) })
                 KPITile(icon: "flask.fill", tint: .cyan,
-                        value: "\(activePOCs)", label: "Active POCs")
+                        value: "\(activePOCs)", label: "Active POCs",
+                        action: { open(.poc) })
                 if activePOCs > 0 {
                     KPITile(icon: "checkmark.seal.fill", tint: .teal,
-                            value: "\(Int(pocPassRate * 100))%", label: "POC criteria passed")
+                            value: "\(Int(pocPassRate * 100))%", label: "POC criteria passed",
+                            action: { open(.poc) })
                 }
                 ForEach(pipeline, id: \.0) { cur, cents in
                     KPITile(icon: "dollarsign.circle.fill", tint: .indigo,
-                            value: Self.money(cents, cur), label: "Open pipeline (\(cur))")
+                            value: Self.money(cents, cur), label: "Open pipeline (\(cur))",
+                            action: { open(.projects) })
                 }
                 KPITile(icon: "doc.text.fill", tint: .gray,
-                        value: "\(linkedNotes)", label: "Linked notes")
+                        value: "\(linkedNotes)", label: "Linked notes",
+                        action: { open(.notes) })
             }
         }
     }
@@ -274,8 +282,12 @@ private struct KPIStrip: View {
 
 private struct KPITile: View {
     let icon: String; let tint: Color; let value: String; let label: String
+    /// When set, the tile becomes a button that drills into the matching section.
+    var action: (() -> Void)? = nil
+    @State private var hovering = false
+
     var body: some View {
-        HStack(spacing: 10) {
+        let card = HStack(spacing: 10) {
             Image(systemName: icon)
                 .foregroundStyle(.white).frame(width: 30, height: 30)
                 .background(RoundedRectangle(cornerRadius: 7).fill(tint))
@@ -283,10 +295,26 @@ private struct KPITile: View {
                 Text(value).font(.title3.bold().monospacedDigit())
                 Text(label).font(.caption).foregroundColor(.secondary).fixedSize()
             }
+            if action != nil {
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                    .opacity(hovering ? 1 : 0)
+            }
         }
         .padding(10)
         .frame(width: 190, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
+        .background(RoundedRectangle(cornerRadius: 10)
+            .fill(Color.secondary.opacity(hovering && action != nil ? 0.16 : 0.08)))
+
+        if let action {
+            Button(action: action) { card }
+                .buttonStyle(.plain)
+                .onHover { hovering = $0 }
+                .help("Open \(label)")
+        } else {
+            card
+        }
     }
 }
 
@@ -294,7 +322,8 @@ private struct KPITile: View {
 
 struct DashboardView: View {
     @ObservedObject var store: CatalogStore
-    var openPOCTracker: () -> Void
+    /// Drill-down out of the dashboard into a chosen Catalog section.
+    var openSection: (CatalogSection) -> Void
 
     @State private var metrics = DashboardMetrics()
     @State private var loading = true
@@ -317,7 +346,7 @@ struct DashboardView: View {
                 KPIStrip(store: store, accountID: orgFilter,
                          scannedURLs: metrics.scannedURLs,
                          rangeActive: range.days != nil, rangeLabel: range.rawValue,
-                         loading: loading)
+                         loading: loading, open: openSection)
                 // Hero — the SE's core artifact, full width.
                 pocCard
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 16)],
@@ -444,7 +473,7 @@ struct DashboardView: View {
                         }.font(.callout)
                     }
                 }
-                Button("Open POC Tracker") { openPOCTracker() }
+                Button("Open POC Tracker") { openSection(.poc) }
                     .buttonStyle(.link).font(.caption)
             }
         }

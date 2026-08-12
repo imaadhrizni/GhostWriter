@@ -86,6 +86,19 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
              sound: .default)
     }
 
+    /// A Groq model the user picked was retired, so we routed to a fallback.
+    func notifyModelSwitched(from: String, to: String) {
+        post(title: "Groq model updated",
+             body: "“\(from)” is no longer available — now using “\(to)”. Change it in Settings → AI & Models.",
+             fileURL: nil, sound: nil)
+    }
+
+    /// An automatic daily backup couldn't be written (disk full, folder gone).
+    /// A silently-failing backup is worse than none, so surface it.
+    func notifyBackupFailed(_ message: String) {
+        post(title: "Automatic backup failed", body: message, fileURL: nil, sound: nil)
+    }
+
     /// "Something went wrong" — no click payload; also surfaced in the menu.
     func notifyError(_ message: String) {
         let clipped = message.count > 160 ? String(message.prefix(160)) + "…" : message

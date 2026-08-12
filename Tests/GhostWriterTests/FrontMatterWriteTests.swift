@@ -1,11 +1,11 @@
-import Testing
+import XCTest
 import Foundation
 @testable import GhostWriter
 
 /// Verifies the front-matter mutation methods (refactored onto
 /// `FrontMatter.mutate` / `insertFields` / `replaceLine` / `yamlScalar`) produce
 /// exactly the expected YAML. Fixtures use neutral placeholder names.
-@Suite struct FrontMatterWriteTests {
+final class FrontMatterWriteTests: XCTestCase {
 
     private func tempNote(_ content: String) -> URL {
         let url = FileManager.default.temporaryDirectory
@@ -28,49 +28,49 @@ import Foundation
 
     // MARK: setFrontMatterTitle
 
-    @Test func setTitlePlain() {
+    func testSetTitlePlain() {
         let u = tempNote(base)
         MeetingNotesWriter.setFrontMatterTitle("Acme Kickoff", to: u)
-        #expect(read(u).contains("title: Acme Kickoff"))
+        XCTAssertTrue(read(u).contains("title: Acme Kickoff"))
         // Body line containing "title:" is untouched.
-        #expect(read(u).contains("Body text with a title: colon"))
+        XCTAssertTrue(read(u).contains("Body text with a title: colon"))
     }
 
-    @Test func setTitleWithColonIsQuoted() {
+    func testSetTitleWithColonIsQuoted() {
         let u = tempNote(base)
         MeetingNotesWriter.setFrontMatterTitle("Acme: Q3 Review", to: u)
-        #expect(read(u).contains("title: \"Acme: Q3 Review\""))
+        XCTAssertTrue(read(u).contains("title: \"Acme: Q3 Review\""))
     }
 
-    @Test func setTitleQuoteCharBecomesSingle() {
+    func testSetTitleQuoteCharBecomesSingle() {
         let u = tempNote(base)
         MeetingNotesWriter.setFrontMatterTitle("The \"Big\": Deal", to: u)
-        #expect(read(u).contains("title: \"The 'Big': Deal\""))
+        XCTAssertTrue(read(u).contains("title: \"The 'Big': Deal\""))
     }
 
-    @Test func setTitleNoFrontMatterIsNoOp() {
+    func testSetTitleNoFrontMatterIsNoOp() {
         let u = tempNote("# Just a body\n")
         MeetingNotesWriter.setFrontMatterTitle("X", to: u)
-        #expect(read(u) == "# Just a body\n")
+        XCTAssertTrue(read(u) == "# Just a body\n")
     }
 
     // MARK: addFrontMatterTags
 
-    @Test func addTagsMergesDedup() {
+    func testAddTagsMergesDedup() {
         let u = tempNote(base)
         MeetingNotesWriter.addFrontMatterTags(["meeting", "acme", "q3"], to: u)
-        #expect(read(u).contains("tags: [meeting, ghostwriter, acme, q3]"))
+        XCTAssertTrue(read(u).contains("tags: [meeting, ghostwriter, acme, q3]"))
     }
 
-    @Test func addTagsNoTagsLineIsNoOp() {
+    func testAddTagsNoTagsLineIsNoOp() {
         let u = tempNote("---\ntitle: X\n---\nbody\n")
         MeetingNotesWriter.addFrontMatterTags(["a"], to: u)
-        #expect(!read(u).contains("tags:"))
+        XCTAssertTrue(!read(u).contains("tags:"))
     }
 
     // MARK: addMeetingMetadata
 
-    @Test func metadataInsertsAfterTags() {
+    func testMetadataInsertsAfterTags() {
         let u = tempNote(base)
         MeetingNotesWriter.addMeetingMetadata(topics: ["topic"], people: ["Ada", "Grace"],
                                               customer: "Globex", project: "Apollo", to: u)
@@ -78,59 +78,59 @@ import Foundation
         let lines = out.components(separatedBy: "\n")
         let tagsIdx = lines.firstIndex { $0.hasPrefix("tags:") }!
         // attendees/customer/project land immediately after the tags line, in order.
-        #expect(lines[tagsIdx + 1] == "attendees: [Ada, Grace]")
-        #expect(lines[tagsIdx + 2] == "customer: Globex")
-        #expect(lines[tagsIdx + 3] == "project: Apollo")
+        XCTAssertTrue(lines[tagsIdx + 1] == "attendees: [Ada, Grace]")
+        XCTAssertTrue(lines[tagsIdx + 2] == "customer: Globex")
+        XCTAssertTrue(lines[tagsIdx + 3] == "project: Apollo")
         // Entities mirrored into tags too.
-        #expect(lines[tagsIdx].contains("globex") && lines[tagsIdx].contains("apollo"))
+        XCTAssertTrue(lines[tagsIdx].contains("globex") && lines[tagsIdx].contains("apollo"))
     }
 
-    @Test func metadataSkipsExistingKeys() {
+    func testMetadataSkipsExistingKeys() {
         let u = tempNote("---\ntitle: X\ntags: [meeting]\ncustomer: Existing\n---\nbody\n")
         MeetingNotesWriter.addMeetingMetadata(topics: [], people: [], customer: "New", project: nil, to: u)
-        #expect(read(u).contains("customer: Existing"))
-        #expect(!read(u).contains("customer: New"))
+        XCTAssertTrue(read(u).contains("customer: Existing"))
+        XCTAssertTrue(!read(u).contains("customer: New"))
     }
 
     // MARK: addFrontMatterFields
 
-    @Test func fieldsInsertedAfterTagsWithPrefix() {
+    func testFieldsInsertedAfterTagsWithPrefix() {
         let u = tempNote(base)
         MeetingNotesWriter.addFrontMatterFields([(key: "meeting_type", value: "customerCall")], to: u)
         let lines = read(u).components(separatedBy: "\n")
         let tagsIdx = lines.firstIndex { $0.hasPrefix("tags:") }!
-        #expect(lines[tagsIdx + 1] == "gw_meeting_type: customerCall")
+        XCTAssertTrue(lines[tagsIdx + 1] == "gw_meeting_type: customerCall")
     }
 
-    @Test func fieldsQuoteSignificantChars() {
+    func testFieldsQuoteSignificantChars() {
         let u = tempNote(base)
         MeetingNotesWriter.addFrontMatterFields([(key: "note", value: "a: b [c]")], to: u)
-        #expect(read(u).contains("gw_note: \"a: b [c]\""))
+        XCTAssertTrue(read(u).contains("gw_note: \"a: b [c]\""))
     }
 
-    @Test func fieldsAnchorFallsBackToTitleThenTop() {
+    func testFieldsAnchorFallsBackToTitleThenTop() {
         // No tags line → insert after title.
         let u = tempNote("---\ntitle: X\n---\nbody\n")
         MeetingNotesWriter.addFrontMatterFields([(key: "k", value: "v")], to: u)
         let lines = read(u).components(separatedBy: "\n")
-        #expect(lines[lines.firstIndex { $0.hasPrefix("title:") }! + 1] == "gw_k: v")
+        XCTAssertTrue(lines[lines.firstIndex { $0.hasPrefix("title:") }! + 1] == "gw_k: v")
     }
 
-    @Test func fieldsSkipExistingKeys() {
+    func testFieldsSkipExistingKeys() {
         let u = tempNote("---\ntitle: X\ngw_k: old\n---\nbody\n")
         MeetingNotesWriter.addFrontMatterFields([(key: "k", value: "new")], to: u)
-        #expect(read(u).contains("gw_k: old"))
-        #expect(!read(u).contains("gw_k: new"))
+        XCTAssertTrue(read(u).contains("gw_k: old"))
+        XCTAssertTrue(!read(u).contains("gw_k: new"))
     }
 
     // MARK: body & fences preserved
 
-    @Test func bodyAndFencesPreserved() {
+    func testBodyAndFencesPreserved() {
         let u = tempNote(base)
         MeetingNotesWriter.setFrontMatterTitle("New", to: u)
         let out = read(u)
-        #expect(out.hasPrefix("---\n"))
-        #expect(out.contains("\n---\n\n# Notes\n"))
-        #expect(out.hasSuffix("must not be touched.\n") || out.hasSuffix("must not be touched."))
+        XCTAssertTrue(out.hasPrefix("---\n"))
+        XCTAssertTrue(out.contains("\n---\n\n# Notes\n"))
+        XCTAssertTrue(out.hasSuffix("must not be touched.\n") || out.hasSuffix("must not be touched."))
     }
 }

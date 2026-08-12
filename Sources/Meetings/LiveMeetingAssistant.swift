@@ -124,6 +124,21 @@ final class LiveMeetingAssistant: ObservableObject {
         visible = false
     }
 
+    /// Cancel the polling loop AND await any in-flight tick, so no live-assistant
+    /// request is still completing when meeting-end refinement begins (cancel
+    /// alone only stops *future* iterations). Closes the straggler-request
+    /// window before the refinery fans out its own calls.
+    func quiesce() async {
+        let running = loop
+        loop?.cancel()
+        loop = nil
+        await running?.value
+        updating = false
+        ended = true
+        panel?.orderOut(nil)
+        visible = false
+    }
+
     /// Restart briefing after `endForMeeting()`, if a meeting is still running.
     func resume() {
         guard ended, transcriptProvider != nil else { return }

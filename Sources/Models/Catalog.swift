@@ -50,9 +50,26 @@ struct CatalogOrg: Codable, Identifiable, Hashable {
 struct CatalogPerson: Codable, Identifiable, Hashable {
     var id = UUID().uuidString
     var name: String
-    /// Which side of the call they came from, when known.
-    var channel: String?      // "internal" | "external"
+    /// The person's type — a link into the user-managed `personTypes` vocabulary
+    /// (Internal, External › Partner, …). `nil` means "no type set".
+    var typeID: String?
+    /// Legacy free-text side ("internal" | "external"). Kept only so older
+    /// catalogs still decode; migrated into `typeID` on load, never surfaced.
+    var channel: String?
     var email: String?
+    var phone: String?
+    /// Job title / role (e.g. "VP Engineering"). Optional so older catalogs decode.
+    var designation: String?
+}
+
+/// A user-defined person classification (e.g. Internal, External, Partner).
+/// Forms an unlimited hierarchy via `parentID`, mirroring orgs/projects, so
+/// people can be grouped as, say, External › Partner. Cycles are prevented on
+/// assignment.
+struct CatalogPersonType: Codable, Identifiable, Hashable {
+    var id = UUID().uuidString
+    var name: String
+    var parentID: String?
 }
 
 enum OppStage: String, Codable, CaseIterable, Identifiable {
@@ -142,6 +159,10 @@ struct Poc: Codable, Identifiable, Hashable {
     var criteria: [PocCriterion] = []
     var startDate: Date?
     var deadline: Date?
+    /// Append-only, one-per-day log of the leaf tally — powers the burndown
+    /// chart. Grown by `recordSnapshot(on:)` whenever the pass/fail/blocked/total
+    /// counts change; empty on POCs created before this was tracked.
+    var history: [PocSnapshot] = []
 
     /// Leaf criteria — the ones that carry a real pass/fail. Parents are just
     /// groupings, so the tallies count leaves to avoid double-counting. A flat
@@ -150,23 +171,25 @@ struct Poc: Codable, Identifiable, Hashable {
         let parents = Set(criteria.compactMap { $0.parentID })
         return criteria.filter { !parents.contains($0.id) }
     }
-    var passed: Int { leaves.filter { $0.status == .pass }.count }
-    var failed: Int { leaves.filter { $0.status == .fail }.count }
-    var total: Int  { leaves.count }
+    var passed: Int  { leaves.filter { $0.status == .pass }.count }
+    var failed: Int  { leaves.filter { $0.status == .fail }.count }
+    var blocked: Int { leaves.filter { $0.status == .blocked }.count }
+    var total: Int   { leaves.count }
 
-    /// At risk when a leaf has failed, or nothing has passed yet. Only
-    /// meaningful once criteria exist.
+    /// At risk when a leaf has failed or is blocked, or nothing has passed yet.
+    /// Only meaningful once criteria exist.
     var isAtRisk: Bool {
         let ls = leaves
-        return ls.contains { $0.status == .fail } || !ls.contains { $0.status == .pass }
+        return ls.contains { $0.status == .fail || $0.status == .blocked } || !ls.contains { $0.status == .pass }
     }
 
-    enum CodingKeys: String, CodingKey { case id, name, detail, phase, criteria, startDate, deadline }
+    enum CodingKeys: String, CodingKey { case id, name, detail, phase, criteria, startDate, deadline, history }
     init(id: String = UUID().uuidString, name: String, detail: String = "",
          phase: PocPhase = .planned, criteria: [PocCriterion] = [],
-         startDate: Date? = nil, deadline: Date? = nil) {
+         startDate: Date? = nil, deadline: Date? = nil, history: [PocSnapshot] = []) {
         self.id = id; self.name = name; self.detail = detail; self.phase = phase
         self.criteria = criteria; self.startDate = startDate; self.deadline = deadline
+        self.history = history
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -177,6 +200,57 @@ struct Poc: Codable, Identifiable, Hashable {
         criteria = try c.decodeIfPresent([PocCriterion].self, forKey: .criteria) ?? []
         startDate = try c.decodeIfPresent(Date.self, forKey: .startDate)
         deadline = try c.decodeIfPresent(Date.self, forKey: .deadline)
+        history = try c.decodeIfPresent([PocSnapshot].self, forKey: .history) ?? []
+    }
+
+    /// A tally of the current leaf state, stamped `on`.
+    func snapshot(on date: Date) -> PocSnapshot {
+        let ls = leaves
+        return PocSnapshot(
+            date: date,
+            passed: ls.filter { $0.status == .pass }.count,
+            failed: ls.filter { $0.status == .fail }.count,
+            blocked: ls.filter { $0.status == .blocked }.count,
+            pending: ls.filter { $0.status == .pending }.count,
+            total: ls.count)
+    }
+
+    /// Append a snapshot iff the leaf tally changed since the last one. A change
+    /// on the same calendar day overwrites that day's point, so the series stays
+    /// at most one-per-day. An empty POC (no criteria) is never seeded.
+    mutating func recordSnapshot(on date: Date) {
+        let snap = snapshot(on: date)
+        if let last = history.last {
+            if last.sameTally(as: snap) { return }
+            if Calendar.current.isDate(last.date, inSameDayAs: date) {
+                history[history.count - 1] = snap
+                return
+            }
+        } else if snap.total == 0 {
+            return
+        }
+        history.append(snap)
+    }
+}
+
+/// A dated tally of a POC's leaf criteria. Snapshots accumulate on `Poc.history`
+/// so the tracker can chart a burndown — how many criteria remained (total −
+/// passed) over the life of the POC — instead of only the current standing.
+struct PocSnapshot: Codable, Hashable, Identifiable {
+    var id = UUID().uuidString
+    var date: Date
+    var passed: Int
+    var failed: Int
+    var blocked: Int
+    var pending: Int
+    var total: Int
+    /// Criteria not yet proven — the burndown quantity that should trend to zero.
+    var remaining: Int { max(0, total - passed) }
+    /// Whether two snapshots carry the same counts (date aside) — the signal
+    /// `recordSnapshot` uses to skip no-op writes.
+    func sameTally(as o: PocSnapshot) -> Bool {
+        passed == o.passed && failed == o.failed && blocked == o.blocked
+            && pending == o.pending && total == o.total
     }
 }
 
@@ -207,13 +281,23 @@ enum PocPhase: String, Codable, CaseIterable, Identifiable {
 
 /// Where a POC success criterion stands. `pending` until an evaluation lands.
 enum PocStatus: String, Codable, CaseIterable {
-    case pending, pass, fail
+    case pending, pass, fail, blocked
     var label: String {
-        switch self { case .pending: return "Pending"; case .pass: return "Passed"; case .fail: return "Failed" }
+        switch self {
+        case .pending: return "Pending"
+        case .pass:    return "Passed"
+        case .fail:    return "Failed"
+        case .blocked: return "Blocked"
+        }
     }
-    /// Cycle pending → pass → fail → pending for a one-tap status control.
+    /// Cycle pending → pass → fail → blocked → pending for a one-tap control.
     var next: PocStatus {
-        switch self { case .pending: return .pass; case .pass: return .fail; case .fail: return .pending }
+        switch self {
+        case .pending: return .pass
+        case .pass:    return .fail
+        case .fail:    return .blocked
+        case .blocked: return .pending
+        }
     }
 }
 
@@ -230,6 +314,10 @@ struct PocCriterion: Codable, Identifiable, Hashable {
     var status: PocStatus = .pending
     /// Parent criterion — nil for a top-level item. Enables sub-criteria.
     var parentID: String?
+    /// Who owns this criterion (free text — a name, or "Vendor" / "Customer")
+    /// and its target date. Both optional so older Catalog.json decodes cleanly.
+    var owner: String?
+    var dueDate: Date?
 }
 
 /// Controlled-vocabulary tag. Aliases fold variants (renewal/renewals) into one.
@@ -264,6 +352,7 @@ struct CatalogNote: Codable, Identifiable, Hashable {
 protocol Named { var name: String { get } }
 extension CatalogOrg: Named {}
 extension CatalogPerson: Named {}
+extension CatalogPersonType: Named {}
 extension CatalogProject: Named {}
 extension CatalogTag: Named {}
 
@@ -288,9 +377,32 @@ struct CatalogDocument: Codable {
     var schemaVersion = 1
     var orgs: [CatalogOrg] = []
     var people: [CatalogPerson] = []
+    /// User-managed person classifications (hierarchical). Optional on the wire
+    /// so catalogs written before the feature still decode.
+    var personTypes: [CatalogPersonType] = []
     var projects: [CatalogProject] = []
     var tags: [CatalogTag] = []
     var notes: [CatalogNote] = []
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion, orgs, people, personTypes, projects, tags, notes
+    }
+
+    /// Tolerant decoder: every collection is optional on the wire, so a catalog
+    /// written before a field existed (notably `personTypes`) still loads
+    /// instead of throwing and appearing to wipe the catalog.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        orgs = try c.decodeIfPresent([CatalogOrg].self, forKey: .orgs) ?? []
+        people = try c.decodeIfPresent([CatalogPerson].self, forKey: .people) ?? []
+        personTypes = try c.decodeIfPresent([CatalogPersonType].self, forKey: .personTypes) ?? []
+        projects = try c.decodeIfPresent([CatalogProject].self, forKey: .projects) ?? []
+        tags = try c.decodeIfPresent([CatalogTag].self, forKey: .tags) ?? []
+        notes = try c.decodeIfPresent([CatalogNote].self, forKey: .notes) ?? []
+    }
 }
 
 // MARK: Store
@@ -329,9 +441,60 @@ final class CatalogStore: ObservableObject {
         guard let data = try? Data(contentsOf: fileURL),
               let decoded = try? Self.makeDecoder().decode(CatalogDocument.self, from: data) else { return }
         doc = decoded
+        migratePersonTypes()
+        backfillDates()   // heal rows saved without a date so they aren't hidden
     }
 
+    /// One-time upgrade of the legacy free-text `channel` into the managed
+    /// `personTypes` vocabulary. Seeds a default hierarchy the first time any
+    /// legacy channel is seen (or the doc has people but no types), then maps
+    /// each person's channel onto the matching type and clears the old field.
+    /// Idempotent: a doc that already has types and no channels is left alone.
+    private func migratePersonTypes() {
+        // Nothing to migrate unless some person still carries a legacy channel.
+        guard doc.people.contains(where: { !($0.channel ?? "").isEmpty }) else { return }
+
+        // Seed defaults only when the vocabulary is empty, so we never clobber a
+        // user's own types. External is a parent of the sales-facing kinds.
+        if doc.personTypes.isEmpty {
+            let internalT = CatalogPersonType(name: "Internal")
+            let external  = CatalogPersonType(name: "External")
+            let partner   = CatalogPersonType(name: "Partner",  parentID: external.id)
+            let customer  = CatalogPersonType(name: "Customer", parentID: external.id)
+            let prospect  = CatalogPersonType(name: "Prospect", parentID: external.id)
+            doc.personTypes = [internalT, external, partner, customer, prospect]
+        }
+
+        // Map each legacy channel string onto a type by name (case-insensitive).
+        func typeID(named name: String) -> String? {
+            doc.personTypes.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.id
+        }
+        for i in doc.people.indices {
+            defer { doc.people[i].channel = nil }
+            guard let ch = doc.people[i].channel, !ch.isEmpty, doc.people[i].typeID == nil else { continue }
+            doc.people[i].typeID = typeID(named: ch)
+        }
+        save()
+    }
+
+    private var saveScheduled = false
+
+    /// Coalesce a burst of mutations into a single write. A bulk operation (or a
+    /// tight loop of single-item mutations) all runs within one runloop turn, so
+    /// scheduling the write on the next turn collapses N re-serializations of the
+    /// whole document down to one — while still landing effectively immediately.
     private func save() {
+        guard !saveScheduled else { return }
+        saveScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.saveScheduled = false
+            self?.writeToDisk()
+        }
+    }
+
+    /// Serialize the whole catalog to `Catalog.json` atomically. The single
+    /// on-disk write; every `save()` funnels here.
+    private func writeToDisk() {
         let dir = AppSettings.shared.notesFolder
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         guard let data = try? Self.makeEncoder().encode(doc) else { return }
@@ -372,6 +535,7 @@ final class CatalogStore: ObservableObject {
             case .merge:
                 Self.upsert(&doc.orgs, incoming.orgs)
                 Self.upsert(&doc.people, incoming.people)
+                Self.upsert(&doc.personTypes, incoming.personTypes)
                 Self.upsert(&doc.projects, incoming.projects)
                 Self.upsert(&doc.tags, incoming.tags)
                 Self.upsert(&doc.notes, incoming.notes)
@@ -395,173 +559,10 @@ final class CatalogStore: ObservableObject {
         }
     }
 
-    // MARK: POC records & success criteria
-
-    /// Every POC in the catalog paired with its owning project — the unit the
-    /// tracker lists, filters, and groups. Newest-touched projects aside, order
-    /// is stable (project order, then the project's POC order).
-    var allPocs: [(project: CatalogProject, poc: Poc)] {
-        doc.projects.filter { !$0.archived }.flatMap { p in p.pocs.map { (p, $0) } }
-    }
-
-    /// Locate a POC and its project by POC id.
-    func poc(_ pocID: String) -> (project: CatalogProject, poc: Poc)? {
-        for p in doc.projects { if let m = p.pocs.first(where: { $0.id == pocID }) { return (p, m) } }
-        return nil
-    }
-
-    /// Create a new POC under a project and return its id.
-    @discardableResult
-    func addPoc(name: String, to projID: String) -> String? {
-        let clean = name.trimmingCharacters(in: .whitespaces)
-        var newID: String?
-        mutate { doc in
-            guard let i = doc.projects.firstIndex(where: { $0.id == projID }) else { return }
-            let poc = Poc(name: clean.isEmpty ? "POC \(doc.projects[i].pocs.count + 1)" : clean)
-            newID = poc.id
-            doc.projects[i].pocs.append(poc)
-        }
-        return newID
-    }
-
-    /// Remove a whole POC from its project.
-    func removePoc(_ pocID: String, from projID: String) {
-        mutatePoc(pocID, in: projID) { _ in } removingIf: { _ in true }
-    }
-
-    /// In-place edit of a single POC. `change` mutates it; if `removingIf`
-    /// returns true afterward the POC is dropped instead.
-    private func mutatePoc(_ pocID: String, in projID: String,
-                           _ change: (inout Poc) -> Void,
-                           removingIf remove: (Poc) -> Bool = { _ in false }) {
-        mutate { doc in
-            guard let pi = doc.projects.firstIndex(where: { $0.id == projID }),
-                  let mi = doc.projects[pi].pocs.firstIndex(where: { $0.id == pocID }) else { return }
-            if remove(doc.projects[pi].pocs[mi]) { doc.projects[pi].pocs.remove(at: mi); return }
-            change(&doc.projects[pi].pocs[mi])
-        }
-    }
-
-    func renamePoc(_ pocID: String, in projID: String, to name: String) {
-        let clean = name.trimmingCharacters(in: .whitespaces)
-        guard !clean.isEmpty else { return }
-        mutatePoc(pocID, in: projID) { $0.name = clean }
-    }
-    func setPocDetail(_ text: String, pocID: String, in projID: String) {
-        mutatePoc(pocID, in: projID) { $0.detail = text }
-    }
-    func setPocPhase(_ phase: PocPhase, pocID: String, in projID: String) {
-        mutatePoc(pocID, in: projID) { $0.phase = phase }
-    }
-    func setPocStartDate(_ date: Date?, pocID: String, in projID: String) {
-        mutatePoc(pocID, in: projID) { $0.startDate = date }
-    }
-    func setPocDeadline(_ date: Date?, pocID: String, in projID: String) {
-        mutatePoc(pocID, in: projID) { $0.deadline = date }
-    }
-
-    /// Bulk-add criteria to a POC (e.g. AI-extracted), skipping any whose text
-    /// already exists on that POC (case-insensitive). Returns how many landed.
-    @discardableResult
-    func addPocCriteriaTexts(_ texts: [String], toPoc pocID: String, in projID: String) -> Int {
-        var added = 0
-        mutatePoc(pocID, in: projID) { poc in
-            var existing = Set(poc.criteria.map { $0.text.lowercased() })
-            for raw in texts {
-                let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                let key = t.lowercased()
-                guard !t.isEmpty, !existing.contains(key) else { continue }
-                poc.criteria.append(PocCriterion(text: t))
-                existing.insert(key)
-                added += 1
-            }
-        }
-        return added
-    }
-
-    /// Bulk-insert a depth-tagged list of criteria as a hierarchy (from a pasted,
-    /// indented list). `depth` is the 0-based indent level; each line nests under
-    /// the most recent shallower line, rooted at `under`. Returns how many landed.
-    @discardableResult
-    func addPocCriteriaTree(_ lines: [(text: String, depth: Int)], under root: String?,
-                            toPoc pocID: String, in projID: String) -> Int {
-        var added = 0
-        mutatePoc(pocID, in: projID) { poc in
-            // Stack of (depth, id); the synthetic base maps any top-level line to `root`.
-            var stack: [(depth: Int, id: String?)] = [(-1, root)]
-            for line in lines {
-                let t = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !t.isEmpty else { continue }
-                while let top = stack.last, top.depth >= line.depth { stack.removeLast() }
-                let parent = stack.last?.id ?? root
-                let c = PocCriterion(text: t, status: .pending, parentID: parent)
-                poc.criteria.append(c)
-                stack.append((line.depth, c.id))
-                added += 1
-            }
-        }
-        return added
-    }
-
-    /// Edit a criterion's text (ignores an empty/whitespace-only value).
-    func setPocCriterionText(_ text: String, criterionID: String, pocID: String, projID: String) {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        mutatePoc(pocID, in: projID) { poc in
-            if let ci = poc.criteria.firstIndex(where: { $0.id == criterionID }) { poc.criteria[ci].text = t }
-        }
-    }
-
-    /// Edit a criterion's optional description (trimmed; may be cleared to "").
-    func setPocCriterionDetail(_ detail: String, criterionID: String, pocID: String, projID: String) {
-        let d = detail.trimmingCharacters(in: .whitespacesAndNewlines)
-        mutatePoc(pocID, in: projID) { poc in
-            if let ci = poc.criteria.firstIndex(where: { $0.id == criterionID }) { poc.criteria[ci].detail = d }
-        }
-    }
-
-    func setPocStatus(_ status: PocStatus, criterionID: String, pocID: String, projID: String) {
-        mutatePoc(pocID, in: projID) { poc in
-            if let ci = poc.criteria.firstIndex(where: { $0.id == criterionID }) { poc.criteria[ci].status = status }
-        }
-    }
-
-    /// Reorder a criterion among its siblings (same `parentID`) by swapping with
-    /// the adjacent one. Descendants stay linked via `parentID`, so the whole
-    /// sub-tree moves with it. No-op at the ends.
-    func movePocCriterion(_ criterionID: String, up: Bool, pocID: String, projID: String) {
-        mutatePoc(pocID, in: projID) { poc in
-            guard let c = poc.criteria.first(where: { $0.id == criterionID }) else { return }
-            let sibs = poc.criteria.enumerated().filter { $0.element.parentID == c.parentID }
-            guard let pos = sibs.firstIndex(where: { $0.element.id == criterionID }) else { return }
-            let other = up ? pos - 1 : pos + 1
-            guard other >= 0, other < sibs.count else { return }
-            poc.criteria.swapAt(sibs[pos].offset, sibs[other].offset)
-        }
-    }
-
-    /// Remove a criterion and its whole sub-tree (descendants by `parentID`).
-    func removePocCriterion(_ criterionID: String, pocID: String, from projID: String) {
-        mutatePoc(pocID, in: projID) { poc in
-            var doomed: Set<String> = [criterionID]
-            var grew = true
-            while grew {
-                grew = false
-                for c in poc.criteria where !doomed.contains(c.id) && (c.parentID.map(doomed.contains) ?? false) {
-                    doomed.insert(c.id); grew = true
-                }
-            }
-            poc.criteria.removeAll { doomed.contains($0.id) }
-        }
-    }
-
-    /// Drop every success criterion from a single POC (the POC record stays).
-    func clearPocCriteria(pocID: String, in projID: String) {
-        mutatePoc(pocID, in: projID) { $0.criteria.removeAll() }
-    }
 
     /// Route every mutation through here so persistence is never forgotten.
-    private func mutate(_ change: (inout CatalogDocument) -> Void) {
+    /// Internal (not private) so the CatalogStore+* extension files funnel here too.
+    func mutate(_ change: (inout CatalogDocument) -> Void) {
         objectWillChange.send()
         change(&doc)
         save()
@@ -595,211 +596,6 @@ final class CatalogStore: ObservableObject {
         mutate { $0 = CatalogDocument() }
     }
 
-    // MARK: Lookups
-
-    func org(_ id: String?) -> CatalogOrg? { doc.orgs.first { $0.id == id } }
-    func project(_ id: String?) -> CatalogProject? { doc.projects.first { $0.id == id } }
-    func tag(_ id: String?) -> CatalogTag? { doc.tags.first { $0.id == id } }
-    func person(_ id: String?) -> CatalogPerson? { doc.people.first { $0.id == id } }
-
-    var orgsSorted: [CatalogOrg] { doc.orgs.sortedByName }
-    var tagsSorted: [CatalogTag] { doc.tags.sortedByName }
-
-    func orgs(relationship: OrgRelationship) -> [CatalogOrg] {
-        orgsSorted.filter { $0.relationship == relationship }
-    }
-
-    // Org hierarchy (unlimited depth).
-    var rootOrgs: [CatalogOrg] { orgsSorted.filter { $0.parentID == nil || org($0.parentID) == nil } }
-    func childOrgs(of id: String) -> [CatalogOrg] { orgsSorted.filter { $0.parentID == id } }
-
-    /// `id` plus every ancestor, nearest first. Guards against broken/looping links.
-    func orgLineage(of id: String) -> [String] {
-        Self.lineage(of: id, exists: { org($0) != nil }, parentOf: { org($0)?.parentID })
-    }
-    /// `id` plus all descendants (for cycle-safe parent choices and subtree filters).
-    func orgSubtree(of id: String) -> Set<String> {
-        Self.subtree(of: id, children: { childOrgs(of: $0).map(\.id) })
-    }
-
-    /// Shared hierarchy walkers for the two parallel org/project trees. Both are
-    /// cycle-safe (a `seen`/visited set stops broken or looping parent links).
-    private static func lineage(of id: String, exists: (String) -> Bool, parentOf: (String) -> String?) -> [String] {
-        var chain: [String] = [], cur: String? = id, seen = Set<String>()
-        while let c = cur, seen.insert(c).inserted, exists(c) {
-            chain.append(c); cur = parentOf(c)
-        }
-        return chain
-    }
-    private static func subtree(of id: String, children: (String) -> [String]) -> Set<String> {
-        var out: Set<String> = [id], stack = [id]
-        while let cur = stack.popLast() {
-            for child in children(cur) where out.insert(child).inserted { stack.append(child) }
-        }
-        return out
-    }
-    /// "Group › Company › Division" for display.
-    func orgPath(of id: String) -> String {
-        orgLineage(of: id).reversed().compactMap { org($0)?.name }.joined(separator: " › ")
-    }
-
-    // Project hierarchy (unlimited depth), mirroring orgs.
-    var projectsSorted: [CatalogProject] { doc.projects.sortedByName }
-    var rootProjects: [CatalogProject] { projectsSorted.filter { $0.parentID == nil || project($0.parentID) == nil } }
-    func childProjects(of id: String) -> [CatalogProject] { projectsSorted.filter { $0.parentID == id } }
-    /// `id` plus every ancestor project, nearest first. Cycle-safe.
-    func projectLineage(of id: String) -> [String] {
-        Self.lineage(of: id, exists: { project($0) != nil }, parentOf: { project($0)?.parentID })
-    }
-    /// `id` plus all descendant projects.
-    func projectSubtree(of id: String) -> Set<String> {
-        Self.subtree(of: id, children: { childProjects(of: $0).map(\.id) })
-    }
-    /// A project's org, resolved by walking up the project hierarchy to the
-    /// first ancestor that carries an orgID.
-    func org(forProject id: String) -> CatalogOrg? {
-        for pid in projectLineage(of: id) { if let o = project(pid)?.orgID { return org(o) } }
-        return nil
-    }
-    /// "Acme › Platform › Phase 2" — org path then the project lineage.
-    func projectPath(of id: String) -> String {
-        let projNames = projectLineage(of: id).reversed().compactMap { project($0)?.name }
-        let orgPart = org(forProject: id).map { orgPath(of: $0.id) }
-        return ([orgPart].compactMap { $0 } + projNames).joined(separator: " › ")
-    }
-
-    /// Which entities a tree picker offers, so one component serves every
-    /// chooser in the app: both (Assign / Ask / import), orgs only (an org's
-    /// parent, a project's org), or projects only (a project's parent — orgs
-    /// still shown for context but not selectable).
-    enum TreeScope { case both, orgsOnly, projectsOnly }
-
-    /// A flattened org→project tree for pickers: every org (nested), each org's
-    /// root projects and their sub-projects, then any orphan projects — with the
-    /// indent depth so callers can render one consistent tree everywhere. Rows
-    /// that don't match `scope` come back `selectable == false` (dimmed context).
-    /// `excluding` drops an id and its subtree (a parent picker excludes itself).
-    /// When `query` is non-empty the tree collapses to a flat, depth-0 match list
-    /// of selectable rows only.
-    struct TreeRow: Identifiable {
-        public let id: String; public let kind: String; public let name: String
-        public let depth: Int; public let selectable: Bool
-    }
-    func orgProjectRows(matching query: String = "",
-                        scope: TreeScope = .both,
-                        excluding: Set<String> = []) -> [TreeRow] {
-        var out: [TreeRow] = []
-        let includeProjects = scope != .orgsOnly
-        let orgsSelectable = scope != .projectsOnly
-        func walkProject(_ p: CatalogProject, _ depth: Int) {
-            if excluding.contains(p.id) { return }
-            out.append(TreeRow(id: p.id, kind: "project", name: p.name, depth: depth, selectable: true))
-            for c in childProjects(of: p.id) { walkProject(c, depth + 1) }
-        }
-        func walkOrg(_ o: CatalogOrg, _ depth: Int) {
-            if excluding.contains(o.id) { return }
-            out.append(TreeRow(id: o.id, kind: "org", name: o.name, depth: depth, selectable: orgsSelectable))
-            for c in childOrgs(of: o.id) { walkOrg(c, depth + 1) }
-            if includeProjects { for p in rootProjects(forOrg: o.id) { walkProject(p, depth + 1) } }
-        }
-        for root in rootOrgs { walkOrg(root, 0) }
-        // Orphan root projects (no org, no parent) so nothing is unreachable.
-        if includeProjects {
-            for p in projectsSorted where p.parentID == nil && org(forProject: p.id) == nil {
-                walkProject(p, 0)
-            }
-        }
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return out }
-        return out.filter { $0.selectable && $0.name.lowercased().contains(q) }
-            .map { TreeRow(id: $0.id, kind: $0.kind, name: $0.name, depth: 0, selectable: true) }
-    }
-
-    /// A note's projects: those directly assigned plus their ancestor projects.
-    func effectiveProjectIDs(of note: CatalogNote) -> Set<String> {
-        var s = Set<String>()
-        for pid in note.projectIDs { s.formUnion(projectLineage(of: pid)) }
-        return s
-    }
-    /// A note's orgs, derived up the chain (project → parent projects → org).
-    func effectiveOrgIDs(of note: CatalogNote) -> Set<String> {
-        var s = Set(note.orgIDs)
-        for pid in effectiveProjectIDs(of: note) { if let o = project(pid)?.orgID { s.insert(o) } }
-        return s
-    }
-    /// A note with no link at all — not on any project and not directly on any
-    /// org, so it doesn't surface anywhere in the map. These are the ones worth
-    /// triaging into a project or an org.
-    func isUnassigned(_ note: CatalogNote) -> Bool {
-        note.projectIDs.isEmpty && note.orgIDs.isEmpty
-    }
-    var unassignedNotes: [CatalogNote] { doc.notes.filter(isUnassigned) }
-
-    /// Notes filed under a project (directly or under a descendant project).
-    func notes(forProject id: String) -> [CatalogNote] {
-        let subtree = projectSubtree(of: id)
-        return doc.notes.filter { !effectiveProjectIDs(of: $0).isDisjoint(with: subtree) }
-    }
-
-    /// The catalog link chain for a note file — its linked project / org names
-    /// (resolved as one consistent chain, deepest link first) plus the project's
-    /// POC criteria. Shared by the notes-viewer PDF export and the Follow-Up
-    /// Packet so the resolution lives in one place.
-    func linkChain(forFileURL fileURL: URL)
-        -> (org: String?, project: String?, criteria: [PocCriterion]) {
-        guard let note = doc.notes.first(where: {
-            url(of: $0).standardizedFileURL == fileURL.standardizedFileURL
-        }) else { return (nil, nil, []) }
-
-        if let projID = note.projectIDs.first, let proj = project(projID) {
-            return (org(forProject: proj.id)?.name, proj.name, proj.pocs.flatMap(\.criteria))
-        }
-        if let orgID = note.orgIDs.first {
-            return (org(orgID)?.name, nil, [])
-        }
-        return (nil, nil, [])
-    }
-    /// Notes assigned *directly* to an org (internal notes with no project).
-    func notes(directlyOnOrg id: String) -> [CatalogNote] {
-        doc.notes.filter { $0.orgIDs.contains(id) }
-    }
-
-    func notes(forOrg id: String, includingDescendants: Bool = false) -> [CatalogNote] {
-        let ids: Set<String> = includingDescendants ? orgSubtree(of: id) : [id]
-        return doc.notes.filter { !effectiveOrgIDs(of: $0).isDisjoint(with: ids) }
-    }
-    func notes(forTag id: String) -> [CatalogNote] {
-        doc.notes.filter { $0.tagIDs.contains(id) }
-    }
-    func projects(forOrg id: String) -> [CatalogProject] {
-        doc.projects.filter { $0.orgID == id }
-    }
-    /// An org's **top-level** projects (no parent project) — its roots in the
-    /// project hierarchy. Sub-projects inherit the org through their parent and
-    /// are reached via `childProjects`, so they aren't listed here.
-    func rootProjects(forOrg id: String) -> [CatalogProject] {
-        doc.projects.filter { $0.parentID == nil && $0.orgID == id }.sortedByName
-    }
-    /// People are independent of orgs; an org's people are simply whoever
-    /// appears on its notes. An org with no notes contributes nobody, mirroring
-    /// how tags surface only where there's note activity.
-    func peopleFromNotes(forOrg id: String) -> [CatalogPerson] {
-        var ids = Set<String>()
-        for n in notes(forOrg: id) { ids.formUnion(n.personIDs) }
-        return doc.people.filter { ids.contains($0.id) }.sortedByName
-    }
-    /// Notes a person appears on directly.
-    func notes(forPerson id: String) -> [CatalogNote] {
-        doc.notes.filter { $0.personIDs.contains(id) }
-    }
-    /// A note's own people (the ones attributed directly to it).
-    func people(of note: CatalogNote) -> [CatalogPerson] {
-        doc.people.filter { note.personIDs.contains($0.id) }.sortedByName
-    }
-    /// A note's own tags.
-    func tags(of note: CatalogNote) -> [CatalogTag] {
-        doc.tags.filter { note.tagIDs.contains($0.id) }.sortedByName
-    }
 
     // MARK: Org CRUD
 
@@ -855,6 +651,101 @@ final class CatalogStore: ObservableObject {
             doc.people.removeAll { $0.id == id }
             for i in doc.notes.indices { doc.notes[i].personIDs.removeAll { $0 == id } }
         }
+    }
+
+    // MARK: Bulk person operations
+
+    /// Create many people at once from fully-formed records (name + optional
+    /// email / phone / designation / type). De-duplicates by name against the
+    /// existing catalog and within the batch, so re-running is safe. Returns the
+    /// people actually created.
+    @discardableResult
+    func addPeople(_ incoming: [CatalogPerson]) -> [CatalogPerson] {
+        let existing = Set(doc.people.map { $0.name.lowercased() })
+        var seen = Set<String>(), created: [CatalogPerson] = []
+        for var p in incoming {
+            let n = p.name.trimmingCharacters(in: .whitespaces)
+            let key = n.lowercased()
+            guard !n.isEmpty, !existing.contains(key), seen.insert(key).inserted else { continue }
+            p.name = n
+            created.append(p)
+        }
+        guard !created.isEmpty else { return [] }
+        mutate { $0.people.append(contentsOf: created) }
+        return created
+    }
+
+    /// Delete several people and scrub them from every note in one pass.
+    func deletePeople(_ ids: [String]) {
+        let gone = Set(ids)
+        guard !gone.isEmpty else { return }
+        mutate { doc in
+            doc.people.removeAll { gone.contains($0.id) }
+            for i in doc.notes.indices { doc.notes[i].personIDs.removeAll { gone.contains($0) } }
+        }
+    }
+
+    /// Reassign the type of several people at once (nil = clear the type).
+    func setPersonType(_ ids: [String], to typeID: String?) {
+        let target = Set(ids)
+        guard !target.isEmpty else { return }
+        mutate { doc in
+            for i in doc.people.indices where target.contains(doc.people[i].id) {
+                doc.people[i].typeID = typeID
+            }
+        }
+    }
+
+    // MARK: Person types (hierarchical)
+
+    func personType(_ id: String?) -> CatalogPersonType? { doc.personTypes.first { $0.id == id } }
+    var personTypesSorted: [CatalogPersonType] { doc.personTypes.sortedByName }
+    var rootPersonTypes: [CatalogPersonType] {
+        personTypesSorted.filter { $0.parentID == nil || personType($0.parentID) == nil }
+    }
+    func childPersonTypes(of id: String) -> [CatalogPersonType] {
+        personTypesSorted.filter { $0.parentID == id }
+    }
+    /// `id` plus all descendant types — for cycle-safe parent choices and delete.
+    func personTypeSubtree(of id: String) -> Set<String> {
+        Self.subtree(of: id, children: { childPersonTypes(of: $0).map(\.id) })
+    }
+    /// "External › Partner" lineage for display.
+    func personTypePath(of id: String) -> String {
+        Self.lineage(of: id, exists: { personType($0) != nil }, parentOf: { personType($0)?.parentID })
+            .reversed().compactMap { personType($0)?.name }.joined(separator: " › ")
+    }
+
+    @discardableResult
+    func addPersonType(name: String, parentID: String? = nil) -> CatalogPersonType {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        if let existing = doc.personTypes.first(where: {
+            $0.name.caseInsensitiveCompare(n) == .orderedSame && $0.parentID == parentID
+        }) { return existing }
+        let t = CatalogPersonType(name: n.isEmpty ? "New Type" : n, parentID: parentID)
+        mutate { $0.personTypes.append(t) }
+        return t
+    }
+    func update(_ t: CatalogPersonType) {
+        var type = t
+        // Reject a parent that would create a cycle (self or a descendant).
+        if let parent = type.parentID, personTypeSubtree(of: type.id).contains(parent) { type.parentID = nil }
+        mutate { doc in if let i = doc.personTypes.firstIndex(where: { $0.id == type.id }) { doc.personTypes[i] = type } }
+    }
+    /// Delete a type and its whole subtree; people that pointed at any removed
+    /// type fall back to "no type".
+    func deletePersonType(_ id: String) {
+        let gone = personTypeSubtree(of: id)
+        mutate { doc in
+            doc.personTypes.removeAll { gone.contains($0.id) }
+            for i in doc.people.indices where doc.people[i].typeID.map(gone.contains) == true {
+                doc.people[i].typeID = nil
+            }
+        }
+    }
+    /// People carrying a given type (nil = untyped). Sorted by name.
+    func people(ofType typeID: String?) -> [CatalogPerson] {
+        doc.people.sortedByName.filter { $0.typeID == typeID }
     }
 
     @discardableResult
@@ -916,15 +807,53 @@ final class CatalogStore: ObservableObject {
         }
     }
 
+    // MARK: Bulk tag operations
+
+    /// Create many tags at once (one name per line). Folds onto existing tags by
+    /// name/alias, so re-running is safe. Returns the tags that were created.
+    @discardableResult
+    func addTags(names: [String]) -> [CatalogTag] {
+        var created: [CatalogTag] = []
+        for raw in names {
+            let n = raw.trimmingCharacters(in: .whitespaces)
+            guard !n.isEmpty else { continue }
+            let before = doc.tags.count
+            let t = addTag(name: n)          // dedupes by name/alias
+            if doc.tags.count > before { created.append(t) }
+        }
+        return created
+    }
+
+    /// Delete several tags and scrub them from every note in one pass.
+    func deleteTags(_ ids: [String]) {
+        let gone = Set(ids)
+        guard !gone.isEmpty else { return }
+        mutate { doc in
+            doc.tags.removeAll { gone.contains($0.id) }
+            for i in doc.notes.indices { doc.notes[i].tagIDs.removeAll { gone.contains($0) } }
+        }
+    }
+
     // MARK: Notes & linking
 
     /// The catalog row for a note file (relative path), created on demand.
     @discardableResult
     func note(forRelativePath path: String, title: String, date: Date?) -> CatalogNote {
         if let existing = doc.notes.first(where: { $0.filePath == path }) { return existing }
-        let n = CatalogNote(filePath: path, title: title, date: date)
+        // Always give a note a date — a nil date makes it vanish under any active
+        // time-window filter (e.g. the default "30 days"). Fall back to the file's
+        // own creation/modification time when the caller didn't supply one.
+        let n = CatalogNote(filePath: path, title: title, date: date ?? Self.fileDate(forRelativePath: path))
         mutate { $0.notes.append(n) }
         return n
+    }
+
+    /// The on-disk creation (else modification) date of a note file, used as a
+    /// fallback so every catalog row carries a date.
+    private static func fileDate(forRelativePath path: String) -> Date? {
+        let url = AppSettings.shared.notesFolder.appendingPathComponent(path)
+        let v = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+        return v?.creationDate ?? v?.contentModificationDate
     }
     func update(_ n: CatalogNote) {
         mutate { doc in if let i = doc.notes.firstIndex(where: { $0.filePath == n.filePath }) { doc.notes[i] = n } }
@@ -936,6 +865,16 @@ final class CatalogStore: ObservableObject {
         mutate { doc in if let i = doc.notes.firstIndex(where: { $0.filePath == relativePath }) { doc.notes[i].title = t } }
     }
     func note(id: String) -> CatalogNote? { doc.notes.first { $0.id == id } }
+
+    /// Link a Catalog person to the note backing `fileURL` (creating the row on
+    /// demand), so identifying a speaker attributes the meeting to that person.
+    /// Idempotent. Used by persistent speaker identification.
+    func linkPerson(_ personID: String, toFile fileURL: URL) {
+        let rel = AppSettings.shared.relativePath(of: fileURL)
+        let title = fileURL.deletingPathExtension().lastPathComponent
+        let row = note(forRelativePath: rel, title: title, date: nil)
+        setPerson(personID, on: row.id, true)
+    }
 
     /// Whether a note's backing Markdown file still exists on disk. Catalog rows
     /// only reference files by path, so a file deleted in Finder leaves a stale
@@ -953,6 +892,85 @@ final class CatalogStore: ObservableObject {
     /// Drop a single catalog row (its Markdown file, if any, is left untouched).
     func deleteNote(_ id: String) {
         mutate { $0.notes.removeAll { $0.id == id } }
+    }
+
+    /// Every retained recording under `<notes>/Audio/` (any accepted audio type,
+    /// recursively across the dated subfolders). Unsorted — callers sort. Shared
+    /// by the Recordings hub and the per-note "assign recording" picker.
+    func audioRecordings() -> [URL] {
+        let root = AppSettings.shared.notesFolder.appendingPathComponent("Audio", isDirectory: true)
+        guard let en = FileManager.default.enumerator(
+            at: root, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]) else { return [] }
+        var out: [URL] = []
+        for case let url as URL in en where AudioFileImporter.isAccepted(url) { out.append(url) }
+        return out
+    }
+
+    /// Move a recording to the Trash and clear the `gw_audio` link on its note
+    /// (when known) — the safe-delete used by the Recordings hub and note editor.
+    func trashRecording(at url: URL, unlinkFrom note: CatalogNote?) {
+        try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        if let note { MeetingNotesWriter.setAudioPath("", to: self.url(of: note)) }
+    }
+
+    /// The retained recording linked to a note via its `gw_audio` front-matter,
+    /// if the file still exists. Path is relative to the notes folder.
+    func audioURL(of note: CatalogNote) -> URL? {
+        guard let text = url(of: note).readText(),
+              let rel = FrontMatter.field("gw_audio", in: text), !rel.isEmpty else { return nil }
+        let url = AppSettings.shared.notesFolder.appendingPathComponent(rel)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Notes created by the Transcribe Audio window, newest first — identified
+    /// by their `gw_source: import` front-matter. This is the durable, single
+    /// source of truth behind that window's history section (no parallel store
+    /// to drift out of sync). Reads each note file's front-matter, so callers
+    /// should cache the result rather than recomputing it per render.
+    func importedAudioNotes() -> [CatalogNote] {
+        notesMatchingFrontMatter { FrontMatter.field("gw_source", in: $0) == "import" }
+    }
+
+    /// Every note that originated from an audio transcription — identified by the
+    /// **permanent** `gw_source_file` marker, which survives a History clear
+    /// (unlike `gw_source: import`). Lets History be fully rebuilt after a clear,
+    /// recovering rows plain Reload can't (Reload only re-reads the live marker).
+    func importOriginNotes() -> [CatalogNote] {
+        notesMatchingFrontMatter { FrontMatter.field("gw_source_file", in: $0) != nil }
+    }
+
+    /// Notes whose front-matter text satisfies `match`, newest-first. Shared
+    /// read+sort for the front-matter-derived note queries; reads each note file,
+    /// so callers should cache rather than recompute per render.
+    private func notesMatchingFrontMatter(_ match: (String) -> Bool) -> [CatalogNote] {
+        doc.notes
+            .filter { match(url(of: $0).readText() ?? "") }
+            .sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+    }
+
+    /// A note produced by a prior transcription of the same audio file, matched
+    /// on original filename **and** byte size, or nil.
+    struct ImportMatch { let note: CatalogNote; let inHistory: Bool }
+
+    /// Find an existing import note for an audio file, matched on original
+    /// filename **and** byte size (`gw_source_file` + `gw_source_bytes`) so two
+    /// different clips that share a name aren't conflated. `inHistory` reports
+    /// whether that note still carries the `gw_source: import` marker (i.e. shows
+    /// in Transcribe History) or was cleared from it. Only matches notes written
+    /// with the size marker (imports made after that field was added).
+    func existingImport(filename: String, bytes: Int) -> ImportMatch? {
+        guard bytes > 0 else { return nil }
+        let quotes = CharacterSet(charactersIn: "\"' ")
+        for note in doc.notes {
+            guard let text = url(of: note).readText(),
+                  let storedName = FrontMatter.field("gw_source_file", in: text)?
+                      .trimmingCharacters(in: quotes),
+                  storedName == filename,
+                  let stored = FrontMatter.field("gw_source_bytes", in: text),
+                  Int(stored) == bytes else { continue }
+            return ImportMatch(note: note, inHistory: FrontMatter.field("gw_source", in: text) == "import")
+        }
+        return nil
     }
 
     /// Move a note's Markdown file to the Trash, then drop its catalog row.
@@ -1062,6 +1080,56 @@ final class CatalogStore: ObservableObject {
         }
     }
 
+    // MARK: Bulk note operations
+
+    /// Trash the Markdown files for several notes and drop their rows. Best
+    /// effort: files that fail to trash are skipped but their rows are still
+    /// removed (matching `trashNote`). Returns how many files were trashed.
+    @discardableResult
+    func trashNotes(_ ids: [String]) -> Int {
+        var trashed = 0
+        for id in ids { if (try? trashNote(id)) == true { trashed += 1 } }
+        return trashed
+    }
+
+    /// Add a tag / person to every note in `ids` (idempotent per note).
+    func addTag(_ tagID: String, toNotes ids: [String]) {
+        let set = Set(ids)
+        mutate { doc in
+            for i in doc.notes.indices where set.contains(doc.notes[i].id) {
+                if !doc.notes[i].tagIDs.contains(tagID) { doc.notes[i].tagIDs.append(tagID) }
+            }
+        }
+    }
+    func addPerson(_ personID: String, toNotes ids: [String]) {
+        let set = Set(ids)
+        mutate { doc in
+            for i in doc.notes.indices where set.contains(doc.notes[i].id) {
+                if !doc.notes[i].personIDs.contains(personID) { doc.notes[i].personIDs.append(personID) }
+            }
+        }
+    }
+    /// File every note in `ids` under one org or project (mutually exclusive,
+    /// matching the single-note rule). Pass `.org` or `.project` scope.
+    func fileNotes(_ ids: [String], underOrg orgID: String) {
+        let set = Set(ids)
+        mutate { doc in
+            for i in doc.notes.indices where set.contains(doc.notes[i].id) {
+                doc.notes[i].projectIDs.removeAll()
+                doc.notes[i].orgIDs = [orgID]
+            }
+        }
+    }
+    func fileNotes(_ ids: [String], underProject projID: String) {
+        let set = Set(ids)
+        mutate { doc in
+            for i in doc.notes.indices where set.contains(doc.notes[i].id) {
+                doc.notes[i].orgIDs.removeAll()
+                doc.notes[i].projectIDs = [projID]
+            }
+        }
+    }
+
     // MARK: Indexing existing notes
 
     /// Scan the notes folder for **meeting notes only** (`Meeting_*.md`) and
@@ -1080,7 +1148,7 @@ final class CatalogStore: ObservableObject {
             guard url.pathExtension.lowercased() == "md",
                   url.lastPathComponent.hasPrefix("Meeting_"),   // notes only
                   !url.path.hasPrefix(dictations) else { continue }
-            let rel = url.path.replacingOccurrences(of: root.path + "/", with: "")
+            let rel = AppSettings.shared.relativePath(of: url)
             guard !known.contains(rel) else { continue }
             let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
             let date = values?.creationDate ?? values?.contentModificationDate
@@ -1090,7 +1158,23 @@ final class CatalogStore: ObservableObject {
         }
         if !newRows.isEmpty { mutate { $0.notes.append(contentsOf: newRows) } }
         backfillTitles()
+        backfillDates()
         return newRows.count
+    }
+
+    /// Repair rows that ended up without a date (e.g. created via `linkPerson`
+    /// or an import with no metadata date) by reading the file's timestamp — so
+    /// they stop being hidden by the notes list's time-window filter.
+    private func backfillDates() {
+        let root = AppSettings.shared.notesFolder
+        var notes = doc.notes
+        var changed = false
+        for i in notes.indices where notes[i].date == nil {
+            let url = root.appendingPathComponent(notes[i].filePath)
+            let v = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+            if let d = v?.creationDate ?? v?.contentModificationDate { notes[i].date = d; changed = true }
+        }
+        if changed { mutate { $0.notes = notes } }
     }
 
     /// Prefer a note's front-matter `title:` over its filename for display.

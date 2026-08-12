@@ -13,6 +13,10 @@ final class NotesViewerWindowController: NSWindowController {
     /// ones are pruned on the next present.
     private static var open: [NotesViewerWindowController] = []
 
+    /// The note this viewer is backing, if any (nil for generated drafts) —
+    /// used to avoid opening the same file in two windows.
+    private var fileURL: URL?
+
     /// Open a notes file in a viewer (used from the menu and Catalog). When
     /// "open notes in external editor" is on, hand the file to the OS default
     /// app (e.g. VS Code) instead.
@@ -22,6 +26,13 @@ final class NotesViewerWindowController: NSWindowController {
             return
         }
         open.removeAll { $0.window?.isVisible == false }
+        // One window per note: if this file is already open, just surface it
+        // rather than spawning a second editor that would clobber the first on
+        // save.
+        if let existing = open.first(where: { $0.fileURL == fileURL }) {
+            existing.bringToFront()
+            return
+        }
         let controller = NotesViewerWindowController(fileURL: fileURL)
         open.append(controller)
         controller.bringToFront()
@@ -64,6 +75,7 @@ final class NotesViewerWindowController: NSWindowController {
         window.titlebarAppearsTransparent = true
 
         self.init(window: window)
+        self.fileURL = fileURL
         window.contentView = NSHostingView(rootView: NotesViewerView(
             fileURL: fileURL, initialText: initialText, regenerate: regenerate,
             documentTitle: fileURL == nil ? title : nil))
@@ -132,6 +144,7 @@ private struct NotesViewerView: View {
     @State private var showPacketConfirm = false
     @State private var summarizing = false
     @State private var regenerating = false
+    @State private var refining = false
     /// Locked (read-only) by default; unlock to edit. Drafts with no backing
     /// file open unlocked since editing is the whole point.
     @State private var isEditable: Bool
@@ -547,7 +560,15 @@ private struct NotesViewerView: View {
                     Button { NSWorkspace.shared.activateFileViewerSelecting([fileURL]) } label: { Label("Reveal in Finder", systemImage: "folder") }
                 }
                 if isMeetingNote, let fileURL {
-                    Button { NotificationCenter.default.post(name: .renameSpeakersForFile, object: fileURL) } label: { Label("Rename Speakers", systemImage: "person.crop.circle") }
+                    Button { NotificationCenter.default.post(name: .renameSpeakersForFile, object: fileURL) } label: { Label("Identify Speakers", systemImage: "person.crop.circle") }
+                }
+                if isMeetingNote {
+                    Divider()
+                    Button { regenerateRefinement() } label: {
+                        Label("Regenerate AI Summary", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(refining)
+                    .help("Re-run the AI-generated sections (summary, key details, chapters, agenda, mentions) from this note's transcript, replacing the existing ones. The transcript itself is left untouched. Use if the original pass failed or after changing the note template.")
                 }
             } label: { Image(systemName: "ellipsis.circle") }
                 .menuStyle(.borderlessButton).fixedSize()
@@ -566,6 +587,38 @@ private struct NotesViewerView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This uses cloud AI to generate \(packetSectionsSummary) from this meeting — several requests in one go. You can change what's included, or turn off this prompt, in Settings → Meetings → Draft Templates.")
+        }
+    }
+
+    /// Re-run the end-of-meeting AI refinement on this note **in place** —
+    /// regenerating the Summary, Key Details, Chapters, Agenda, and Mentions
+    /// from the transcript. Existing generated sections are replaced (not
+    /// duplicated). For recovering a note whose original pass failed (e.g. a
+    /// network error or a decommissioned model), or to refresh after edits.
+    private func regenerateRefinement() {
+        guard let fileURL else { return }
+        refining = true
+        status = "Regenerating AI summary…"
+        Task { @MainActor in
+            defer { refining = false }
+            // Strip old generated sections first, then read the clean transcript
+            // so the summarizer never sees a previous summary.
+            MeetingRefinery.stripGeneratedSections(from: fileURL)
+            guard let transcript = MeetingNotesWriter().transcriptText(of: fileURL) else {
+                status = "Couldn't read this note."
+                return
+            }
+            var failure = ""
+            let produced = await MeetingRefinery.refine(
+                fileURL: fileURL, transcript: transcript,
+                options: .init(stripExisting: false),
+                onError: { failure = $0 })
+            // Reload the file into the viewer so the new sections show at once.
+            let fresh = (fileURL.readText()) ?? text
+            text = fresh
+            savedText = fresh
+            status = !failure.isEmpty ? failure
+                : (produced ? "AI summary regenerated." : "Nothing to regenerate.")
         }
     }
 

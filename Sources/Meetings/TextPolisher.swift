@@ -10,6 +10,7 @@ import Foundation
 enum FollowUpKind: String, CaseIterable, Identifiable {
     case minutes, followUpEmail, statusUpdate, executiveSummary, actionItemList, thankYou
     case recap, decisionLog, talkingPoints, retrospective, faq, proposal, pocPlan
+    case solutionSummary, requirementsChecklist, mutualActionPlan
 
     var id: String { rawValue }
 
@@ -28,6 +29,9 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .faq:              return "FAQ"
         case .proposal:         return "Proposal / Next Steps"
         case .pocPlan:          return "POC Plan"
+        case .solutionSummary:      return "Solution Architecture Summary"
+        case .requirementsChecklist: return "Requirements & Config Checklist"
+        case .mutualActionPlan:     return "Mutual Action Plan"
         }
     }
 
@@ -47,17 +51,21 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .faq:              return "questionmark.circle"
         case .proposal:         return "doc.badge.gearshape"
         case .pocPlan:          return "flask"
+        case .solutionSummary:      return "square.stack.3d.up"
+        case .requirementsChecklist: return "list.bullet.clipboard"
+        case .mutualActionPlan:     return "person.2.badge.gearshape"
         }
     }
 
     /// Category used to group the draft-document pickers and menus.
     enum Category: String, CaseIterable {
-        case emailRecap, records, sales, reports, retro
+        case emailRecap, records, sales, technical, reports, retro
         var title: String {
             switch self {
             case .emailRecap:  return "Email & Recap"
             case .records:     return "Records"
             case .sales:       return "Sales"
+            case .technical:   return "Technical"
             case .reports:     return "Reports"
             case .retro:       return "Retro"
             }
@@ -69,6 +77,7 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .followUpEmail, .recap, .thankYou:        return .emailRecap
         case .minutes, .decisionLog, .actionItemList:  return .records
         case .proposal, .pocPlan, .talkingPoints:      return .sales
+        case .solutionSummary, .requirementsChecklist, .mutualActionPlan: return .technical
         case .statusUpdate, .executiveSummary, .faq:   return .reports
         case .retrospective:                           return .retro
         }
@@ -90,6 +99,9 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .faq:              return "The meeting's questions and answers as Q&A pairs."
         case .proposal:         return "A short proposal memo — context, recommendation, next steps."
         case .pocPlan:          return "A proof-of-concept plan — objective, success criteria, scope, timeline."
+        case .solutionSummary:      return "A technical solution-architecture recap — requirements, proposed design, and integration points."
+        case .requirementsChecklist: return "The customer's technical requirements & environment as an owner-tagged checklist."
+        case .mutualActionPlan:     return "A shared vendor↔customer plan of dated milestones toward a decision."
         }
     }
 
@@ -156,6 +168,18 @@ enum FollowUpKind: String, CaseIterable, Identifiable {
         case .pocPlan:
             return """
             Write a PROOF-OF-CONCEPT (POC) PLAN in Markdown for a technical evaluation, with "## " sections: Objective (what the POC must prove), Success Criteria (specific, measurable pass/fail items as a bullet list), Scope & Use Cases (what will and won't be tested), Environment & Prerequisites (access, data, accounts needed — from either side), Timeline & Milestones (phases with target dates), Roles (who owns what, on the vendor and customer side), and Risks / Open Questions. Draw strictly on the notes; where a detail wasn't discussed, add it as a bracketed placeholder like "[TBD: …]" rather than inventing it.
+            """
+        case .solutionSummary:
+            return """
+            Write a SOLUTION ARCHITECTURE SUMMARY for a technical evaluation, in Markdown with "## " sections: Requirements (the customer's stated technical needs and constraints), Proposed Solution (the architecture/approach discussed, component by component), Integration Points (systems, APIs, data flows, auth it must connect to), Assumptions & Dependencies, and Open Technical Questions. Precise and vendor-neutral in tone. Draw strictly on the notes; mark anything not discussed as "[TBD: …]".
+            """
+        case .requirementsChecklist:
+            return """
+            Output the customer's TECHNICAL REQUIREMENTS & ENVIRONMENT as a Markdown checklist, grouped under "## " headings where natural (e.g. Functional, Security & Compliance, Environment & Access, Integrations, Performance/Scale). Each item: "- [ ] <requirement> — @<owner> (due: <date>)", appending owner/date only when the notes make them clear. Capture must-haves and stated constraints; don't invent requirements. If none are captured, output "_No requirements captured._".
+            """
+        case .mutualActionPlan:
+            return """
+            Write a MUTUAL ACTION PLAN (MAP) — a shared vendor↔customer plan toward a decision — as a Markdown table with columns: Milestone | Owner (Vendor/Customer) | Target Date | Status. Order rows chronologically toward the goal (e.g. POC start → success-criteria sign-off → business case → decision). Use "[TBD]" for dates not yet agreed and default Status to "Not started". Below the table add a one-line "**Decision target:** <date or [TBD]>". Draw strictly on the notes.
             """
         }
     }
@@ -260,12 +284,16 @@ final class TextPolisher {
     /// Groq API key — read from Keychain (never stored in source).
     private var apiKey: String { KeychainService.groqAPIKey() ?? "" }
 
-    private let baseURL = "https://api.groq.com/openai/v1"
+    /// OpenAI-compatible API base URL (Groq by default; user-configurable).
+    private var baseURL: String { AppSettings.shared.apiBaseURL }
     private let session = URLSession.shared
-    private var model: String { AppSettings.shared.polishingModel }  // user-configurable in Settings
+    // Model ids resolve the user's choice against Groq's live catalog (see
+    // ModelResolver): an unavailable pick routes to the best available fallback
+    // for the role, so a Groq deprecation degrades gracefully instead of failing.
+    private var model: String { ModelResolver.shared.resolve(.summary, configured: AppSettings.shared.polishingModel) }
     /// Cheap/fast model for lightweight, high-frequency work (live brief,
     /// tagging, query expansion, agenda coverage) — keeps latency and cost low.
-    private var fastModel: String { AppSettings.shared.fastModel }
+    private var fastModel: String { ModelResolver.shared.resolve(.lightweight, configured: AppSettings.shared.fastModel) }
 
     // Prompt versions for the AICache. Bump the matching one whenever a cached
     // method's system prompt changes, so stale cached outputs miss and refresh.
@@ -386,7 +414,7 @@ final class TextPolisher {
 
         // Graceful degradation: on any failure, return the raw text unchanged.
         do {
-            return try await send(requestBody, timeout: 15)
+            return try await send(requestBody, timeout: 15, source: "Dictation polish")
         } catch {
             Log.api.warning("⚠️ Polishing failed — returning raw text")
             return rawText
@@ -458,7 +486,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 1024
         )
-        return try await send(requestBody, timeout: 30)
+        return try await send(requestBody, timeout: 30, source: "Meeting summary")
     }
 
     /// Map step of map-reduce summarization: when a transcript is longer than
@@ -487,7 +515,7 @@ final class TextPolisher {
                 temperature: 0.1,
                 max_tokens: 700
             )
-            if let text = try? await send(body, timeout: 30) {
+            if let text = try? await send(body, timeout: 30, role: .lightweight, source: "Summary condense") {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty { condensed.append(trimmed) }
             } else {
@@ -537,7 +565,7 @@ final class TextPolisher {
             max_tokens: 400
         )
 
-        let content = try await send(requestBody, timeout: 30)
+        let content = try await send(requestBody, timeout: 30, source: "Chapters")
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed == "NONE" ? "" : trimmed
     }
@@ -567,11 +595,55 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 400
         )
-        let raw = try await send(requestBody, timeout: 40).trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = try await send(requestBody, timeout: 40, source: "POC criteria").trimmingCharacters(in: .whitespacesAndNewlines)
         if raw.uppercased() == "NONE" { return [] }
         return raw.components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "-*• \t")) }
             .filter { !$0.isEmpty && $0.uppercased() != "NONE" }
+    }
+
+    /// Extract sales intelligence from a meeting transcript: the objections /
+    /// concerns the other side raised (pricing, security, timeline, adoption,
+    /// authority, competition …) and any competitor / incumbent tools mentioned,
+    /// each with the context it came up in. Returns a Markdown body with an
+    /// `### Objections` and/or `### Competitors` sub-section, or "" when neither
+    /// is present. Draws only from the transcript — never invents.
+    func extractObjectionsAndCompetitors(transcript: String) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+        let clipped = String(Self.summarizableBody(transcript).prefix(20_000))
+        let requestBody = ChatRequest(
+            model: model,   // nuanced sales-signal reading — use the polishing model
+            messages: [
+                .init(role: "system", content: """
+                You are a sales engineer's analyst. From this meeting transcript, extract TWO things \
+                the account team needs — using ONLY what was actually said, never inventing:
+
+                1. OBJECTIONS — concerns, hesitations, pushback, blockers, or risks the customer/prospect \
+                raised (e.g. price, security/compliance, timeline, integration effort, missing feature, \
+                lack of buy-in, budget/authority). For each, note who raised it and, if stated, any \
+                response or resolution given.
+                2. COMPETITORS — any competing product, incumbent tool, vendor, or "we already use X" \
+                mentioned, with the context (evaluating against us, currently in place, ruled out, …).
+
+                Output GitHub Markdown in EXACTLY this shape, omitting a section entirely if it has no items:
+
+                ### Objections
+                - **<short label>** — <the objection in one line>. _Response:_ <response, or "none given">.
+
+                ### Competitors
+                - **<name>** — <context in one line>.
+
+                No preamble, no other headings, no "N/A" filler. If NEITHER objections nor competitors \
+                are present, output exactly NONE and nothing else.
+                """),
+                .init(role: "user", content: clipped)
+            ],
+            temperature: 0.2,
+            max_tokens: 700
+        )
+        let raw = try await send(requestBody, timeout: 40, source: "Objections & competitors")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.uppercased() == "NONE" ? "" : raw
     }
 
     /// A short, human-readable title for a finished meeting (used as the note's
@@ -593,7 +665,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 24
         )
-        let raw = try await send(requestBody, timeout: 15)
+        let raw = try await send(requestBody, timeout: 15, role: .lightweight, source: "Meeting title")
         // One clean line, strip stray quotes/punctuation the model may add.
         return raw.trimmingCharacters(in: .whitespacesAndNewlines)
             .components(separatedBy: "\n").first?
@@ -628,7 +700,7 @@ final class TextPolisher {
         return try await generateCached(
             kind: .brief, source: clipped, version: Self.briefPromptVersion,
             forceRefresh: forceRefresh, footer: false,
-            groq: { try await self.send(requestBody, timeout: 40).trimmingCharacters(in: .whitespacesAndNewlines) },
+            groq: { try await self.send(requestBody, timeout: 40, source: "Note brief").trimmingCharacters(in: .whitespacesAndNewlines) },
             apple: { await AppleIntelligence.noteBrief(text: clipped) })
     }
 
@@ -662,14 +734,15 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 1024
         )
-        return try await send(requestBody, timeout: 30)
+        return try await send(requestBody, timeout: 30, source: "Ask (meeting)")
     }
 
     // MARK: - Cross-Meeting Q&A
 
     /// Answer a question from excerpts drawn across many meetings.
     /// Excerpts are labeled "=== Meeting <name> ===" so answers can cite them.
-    func answerAcrossMeetings(question: String, excerpts: String) async throws -> String {
+    func answerAcrossMeetings(question: String, excerpts: String,
+                              onDelta: (@Sendable (String) -> Void)? = nil) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
 
         let clipped = String(excerpts.suffix(AppSettings.shared.summaryContextChars))
@@ -678,8 +751,9 @@ final class TextPolisher {
             messages: [
                 .init(role: "system", content: """
                 You answer questions using ONLY the provided meeting-transcript excerpts.
-                Excerpts are grouped under "=== Meeting <date · time> ===" headers.
-                Always cite which meeting(s) an answer comes from, e.g. "(2026-07-03 · 14:30)".
+                Excerpts are grouped under "[n] === Meeting <date · time> ===" headers, where n is a source number.
+                Cite the source inline with its bracket number immediately after each claim it supports, e.g. "Pricing was agreed at $40k [2]." Cite every claim; use multiple markers when several sources agree, e.g. "[1][3]".
+                Use only the numbers shown in the headers — never invent a number.
                 Be concise. If the excerpts do not contain the answer, say so plainly — never guess.
                 Different meetings are different conversations — do not blend them together.
                 """),
@@ -688,13 +762,129 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 1024
         )
-        return try await send(requestBody, timeout: 30)
+        if let onDelta {
+            return try await sendStreaming(requestBody, timeout: 30, source: "Ask (across meetings)", onDelta: onDelta)
+        }
+        return try await send(requestBody, timeout: 30, source: "Ask (across meetings)")
+    }
+
+    // MARK: - Agentic Ask
+
+    /// Plan step for agentic Ask: decompose a question into 1–4 focused search
+    /// queries so retrieval can gather evidence from several angles (e.g.
+    /// "renewal risk with Acme" → "Acme renewal", "Acme objections", "Acme
+    /// contract end date"). Returns the distinct queries; on any failure or a
+    /// trivial question it returns `[question]` so the caller always has one.
+    /// Uses the cheap fast model — this is a lightweight planning hop.
+    func planQueries(question: String, history: String = "") async -> [String] {
+        let fallback = [question]
+        guard !apiKey.isEmpty else { return fallback }
+        let framed = history.isEmpty ? question
+            : "Conversation so far:\n\(history)\n\nLatest question: \(question)"
+        let requestBody = ChatRequest(
+            model: fastModel,
+            messages: [
+                .init(role: "system", content: """
+                You plan a search over a knowledge base of meeting notes to answer the user's question.
+                Break the question into 1–4 short, keyword-style search queries that together cover \
+                everything needed to answer it — distinct angles, entities, and time frames, not \
+                paraphrases of each other. A simple question needs just ONE query.
+                Output ONLY the queries, one per line, no numbering, no quotes, no commentary.
+                """),
+                .init(role: "user", content: framed)
+            ],
+            temperature: 0.1,
+            max_tokens: 120
+        )
+        guard let raw = try? await send(requestBody, timeout: 15, role: .lightweight, source: "Ask (plan)") else {
+            return fallback
+        }
+        let queries = raw.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "-*•0123456789. \t\"")) }
+            .filter { !$0.isEmpty }
+        return queries.isEmpty ? fallback : Array(queries.prefix(4))
+    }
+
+    /// Agentic multi-hop step: given the evidence gathered so far, decide whether
+    /// more retrieval is needed and, if so, emit up to 3 follow-up search queries
+    /// for the *missing* pieces — a retrieve→reason→retrieve loop that lets a
+    /// second round chase down what the first surfaced (e.g. round 1 shows a
+    /// concern was raised → round 2 searches whether it was resolved). Returns
+    /// `[]` when the evidence already suffices (or on any failure), ending the
+    /// loop. Uses the cheap fast model.
+    func followUpQueries(question: String, history: String = "", evidence: String) async -> [String] {
+        guard !apiKey.isEmpty, !evidence.isEmpty else { return [] }
+        let clipped = String(evidence.suffix(8_000))
+        let framed = history.isEmpty ? question
+            : "Conversation so far:\n\(history)\n\nQuestion: \(question)"
+        let requestBody = ChatRequest(
+            model: fastModel,
+            messages: [
+                .init(role: "system", content: """
+                You are gathering evidence to answer a question from a knowledge base of meeting notes.
+                Given the question and the excerpts retrieved so far, decide if anything needed to answer is still missing.
+                If the excerpts are sufficient, output the single word NONE.
+                Otherwise output up to 3 short, keyword-style search queries for the MISSING pieces only — new angles or \
+                entities not already covered by the excerpts. One per line, no numbering, no quotes, no commentary.
+                """),
+                .init(role: "user", content: "Question: \(framed)\n\nExcerpts so far:\n\(clipped)")
+            ],
+            temperature: 0.1,
+            max_tokens: 120
+        )
+        guard let raw = try? await send(requestBody, timeout: 15, role: .lightweight, source: "Ask (follow-up)") else {
+            return []
+        }
+        if raw.uppercased().contains("NONE") { return [] }
+        let queries = raw.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "-*•0123456789. \t\"")) }
+            .filter { !$0.isEmpty }
+        return Array(queries.prefix(3))
+    }
+
+    /// Answer step for agentic Ask: like `answerAcrossMeetings`, but the context
+    /// also carries a `=== Knowledge Base … ===` snapshot of the Catalog
+    /// (accounts, opportunities, POC health, people). The model may draw on
+    /// either source and is told to cite meetings by their header and to name
+    /// the account/POC when the answer comes from the catalog snapshot.
+    func answerAcrossKnowledge(question: String, excerpts: String, catalog: String,
+                               onDelta: (@Sendable (String) -> Void)? = nil) async throws -> String {
+        guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
+
+        let clippedExcerpts = String(excerpts.suffix(AppSettings.shared.summaryContextChars))
+        let context = catalog.isEmpty
+            ? "Meeting excerpts:\n\(clippedExcerpts)"
+            : "\(catalog)\n\nMeeting excerpts:\n\(clippedExcerpts)"
+        let requestBody = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: """
+                You answer questions about the user's sales/work knowledge base using ONLY the context provided.
+                The context has two parts: a "=== Knowledge Base … ===" snapshot of accounts, opportunities, \
+                POC health and people; and meeting-transcript excerpts grouped under "[n] === Meeting <date · time> ===" \
+                headers, where n is a source number.
+                Use whichever part answers the question — structured facts (pipeline value, POC status, who someone is) \
+                from the snapshot, specifics and quotes from the excerpts.
+                Cite your source inline after each claim: for an excerpt fact, the meeting's bracket number, e.g. "…agreed on Tuesday [2]."; \
+                for a snapshot fact, name the account/opportunity/POC. Use only the numbers shown in the headers — never invent one. \
+                Different meetings are different conversations — don't blend them.
+                Be concise. If the context doesn't contain the answer, say so plainly — never guess.
+                """),
+                .init(role: "user", content: "\(context)\n\nQuestion: \(question)")
+            ],
+            temperature: 0.2,
+            max_tokens: 1024
+        )
+        if let onDelta {
+            return try await sendStreaming(requestBody, timeout: 40, source: "Ask (knowledge base)", onDelta: onDelta)
+        }
+        return try await send(requestBody, timeout: 40, source: "Ask (knowledge base)")
     }
 
     // MARK: - Usage
 
     /// Record LLM token usage for the cost estimate in Stats.
-    private func recordUsage(_ result: ChatResponse) {
+    private static func recordUsage(_ result: ChatResponse) {
         guard let u = result.usage else { return }
         UsageStats.shared.recordChat(inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens)
     }
@@ -730,7 +920,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 400
         )
-        let content = try await send(body, timeout: 20)
+        let content = try await send(body, timeout: 20, role: .lightweight, source: "Live brief")
         return Self.parseLiveBrief(content)
     }
 
@@ -800,7 +990,7 @@ final class TextPolisher {
             temperature: 0,
             max_tokens: 220
         )
-        guard let content = try? await send(body, timeout: 18),
+        guard let content = try? await send(body, timeout: 18, role: preferFast ? .lightweight : .summary, source: "Agenda coverage"),
               let obj = Self.firstJSONObject(in: content)
         else { return AgendaStatus(userCovered: Array(repeating: false, count: items.count)) }
 
@@ -867,7 +1057,7 @@ final class TextPolisher {
         return try await generateCached(
             kind: .followUp, source: cacheSource, version: Self.followUpPromptVersion,
             forceRefresh: forceRefresh, footer: true,
-            groq: { try await self.send(body, timeout: 30) },
+            groq: { try await self.send(body, timeout: 30, source: "Draft") },
             apple: { await AppleIntelligence.draftFollowUp(notes: clipped, guidance: guidance) })
     }
 
@@ -1001,7 +1191,7 @@ final class TextPolisher {
             temperature: 0,
             max_tokens: 400
         )
-        guard let content = try? await send(request, timeout: 20) else { return MeetingFacts() }
+        guard let content = try? await send(request, timeout: 20, role: .lightweight, source: "Meeting facts") else { return MeetingFacts() }
         return Self.parseMeetingFacts(content, includeTitle: includeTitle,
                                       includePeople: includePeople, fields: fields)
     }
@@ -1022,27 +1212,149 @@ final class TextPolisher {
         return facts
     }
 
-    /// Shared chat request: sends, records usage, returns the message content.
-    private func send(_ body: ChatRequest, timeout: TimeInterval) async throws -> String {
-        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = timeout
-        request.httpBody = try JSONEncoder().encode(body)
+    /// Shared chat request: sends (through the AIGate concurrency/rate-limit
+    /// guard), records usage, returns the message content. `role` lets a
+    /// model-availability fault refresh the catalog and retry once on the best
+    /// available replacement for that kind of model.
+    private func send(_ body: ChatRequest, timeout: TimeInterval,
+                      role: ModelResolver.Role = .summary,
+                      source: String = "Chat") async throws -> String {
+        do {
+            return try await perform(body, timeout: timeout, source: source)
+        } catch {
+            // A decommissioned/unknown model → refresh the live catalog, re-resolve
+            // for this role, and retry once. Rate-limit/quota is NOT a model fault
+            // (AIGate already backed off) — rethrow it untouched.
+            guard ModelResolver.shared.classify(error) != nil else { throw error }
+            await ModelResolver.shared.refresh(force: true)
+            var retry = body
+            let resolved = ModelResolver.shared.resolve(role, configured: body.model)
+            guard resolved != body.model else { throw error }
+            retry.model = resolved
+            return try await perform(retry, timeout: timeout, source: source)
+        }
+    }
 
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
-        guard http.statusCode == 200 else {
-            let body = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            throw GroqError.apiError(statusCode: http.statusCode, message: String(body.prefix(200)))
+    private func perform(_ body: ChatRequest, timeout: TimeInterval, source: String) async throws -> String {
+        var body = body
+        // Reasoning models (gpt-oss) burn the token budget on hidden reasoning;
+        // cap the effort so the visible answer still fits.
+        if body.model.contains("gpt-oss"), body.reasoning_effort == nil { body.reasoning_effort = "low" }
+        let payload = try JSONEncoder().encode(body)
+        let url = URL(string: "\(baseURL)/chat/completions")!
+        let key = apiKey
+        let modelID = body.model
+
+        return try await AIGate.shared.run(.chat) { [session] in
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = timeout
+            request.httpBody = payload
+
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+            guard http.statusCode == 200 else {
+                APIUsageLog.shared.recordChat(source: source, model: modelID,
+                                              inputTokens: 0, outputTokens: 0, ok: false)
+                let errBody = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                throw GroqError.apiError(statusCode: http.statusCode, message: String(errBody.prefix(200)))
+            }
+            let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+            Self.recordUsage(result)
+            APIUsageLog.shared.recordChat(source: source, model: modelID,
+                                          inputTokens: result.usage?.prompt_tokens ?? 0,
+                                          outputTokens: result.usage?.completion_tokens ?? 0)
+            // Reasoning models (e.g. gpt-oss) can leave `content` empty and put
+            // the answer in `reasoning` — fall back to it so those models work.
+            let msg = result.choices.first?.message
+            let content = [msg?.content, msg?.reasoning]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+            guard let content, !content.isEmpty else { throw GroqError.invalidResponse }
+            return content
         }
-        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
-        recordUsage(result)
-        guard let content = result.choices.first?.message.content, !content.isEmpty else {
-            throw GroqError.invalidResponse
+    }
+
+    // MARK: - Streaming
+
+    /// Streaming counterpart of `send`: emits partial text through `onDelta` as
+    /// tokens arrive and returns the full answer. A model-availability fault is
+    /// retried once (safe — nothing has been emitted yet at that point).
+    private func sendStreaming(_ body: ChatRequest, timeout: TimeInterval,
+                               role: ModelResolver.Role = .summary, source: String = "Chat",
+                               onDelta: @escaping @Sendable (String) -> Void) async throws -> String {
+        do {
+            return try await performStreaming(body, timeout: timeout, source: source, onDelta: onDelta)
+        } catch {
+            guard ModelResolver.shared.classify(error) != nil else { throw error }
+            await ModelResolver.shared.refresh(force: true)
+            var retry = body
+            let resolved = ModelResolver.shared.resolve(role, configured: body.model)
+            guard resolved != body.model else { throw error }
+            retry.model = resolved
+            return try await performStreaming(retry, timeout: timeout, source: source, onDelta: onDelta)
         }
-        return content
+    }
+
+    private func performStreaming(_ body: ChatRequest, timeout: TimeInterval, source: String,
+                                  onDelta: @escaping @Sendable (String) -> Void) async throws -> String {
+        var body = body
+        body.stream = true
+        body.stream_options = .init(include_usage: true)
+        if body.model.contains("gpt-oss"), body.reasoning_effort == nil { body.reasoning_effort = "low" }
+        let payload = try JSONEncoder().encode(body)
+        let url = URL(string: "\(baseURL)/chat/completions")!
+        let key = apiKey
+        let modelID = body.model
+
+        return try await AIGate.shared.run(.chat) { [session] in
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            request.timeoutInterval = timeout
+            request.httpBody = payload
+
+            let (bytes, response) = try await session.bytes(for: request)
+            guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+            guard http.statusCode == 200 else {
+                var errText = ""
+                for try await line in bytes.lines { errText += line; if errText.count > 2000 { break } }
+                APIUsageLog.shared.recordChat(source: source, model: modelID,
+                                              inputTokens: 0, outputTokens: 0, ok: false)
+                throw GroqError.apiError(statusCode: http.statusCode, message: String(errText.prefix(200)))
+            }
+
+            var full = ""
+            var reasoning = ""
+            var usage: ChatResponse.Usage?
+            for try await line in bytes.lines {
+                guard line.hasPrefix("data:") else { continue }
+                let json = line.dropFirst("data:".count).trimmingCharacters(in: .whitespaces)
+                if json == "[DONE]" { break }
+                guard let data = json.data(using: .utf8),
+                      let chunk = try? JSONDecoder().decode(ChatStreamChunk.self, from: data) else { continue }
+                if let u = chunk.usage { usage = u }
+                guard let delta = chunk.choices.first?.delta else { continue }
+                // Stream the visible answer; hidden reasoning (gpt-oss) is kept
+                // as a fallback but not surfaced token-by-token.
+                if let c = delta.content, !c.isEmpty { full += c; onDelta(c) }
+                else if let r = delta.reasoning, !r.isEmpty { reasoning += r }
+            }
+
+            if let usage {
+                UsageStats.shared.recordChat(inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens)
+            }
+            APIUsageLog.shared.recordChat(source: source, model: modelID,
+                                          inputTokens: usage?.prompt_tokens ?? 0,
+                                          outputTokens: usage?.completion_tokens ?? 0)
+            let answer = (full.isEmpty ? reasoning : full).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !answer.isEmpty else { throw GroqError.invalidResponse }
+            return answer
+        }
     }
 
     // MARK: - Context-Aware Prompts
@@ -1080,10 +1392,30 @@ final class TextPolisher {
 // MARK: - Models
 
 private struct ChatRequest: Codable {
-    let model: String
+    var model: String
     let messages: [ChatMessage]
     let temperature: Double
     let max_tokens: Int
+    /// Only sent for reasoning models (gpt-oss) — keeps their hidden reasoning
+    /// cheap so it doesn't consume the whole token budget before the answer.
+    var reasoning_effort: String? = nil
+    /// Set for the streaming (SSE) path; nil = normal buffered request.
+    var stream: Bool? = nil
+    /// Asks Groq to append a final usage chunk when streaming, so token cost is
+    /// still recorded (the streamed choices carry no usage of their own).
+    var stream_options: StreamOptions? = nil
+
+    struct StreamOptions: Codable { let include_usage: Bool }
+}
+
+/// One Server-Sent-Events chunk from a streaming chat completion. `choices` is
+/// empty on the trailing usage-only chunk.
+private struct ChatStreamChunk: Codable {
+    let choices: [Choice]
+    let usage: ChatResponse.Usage?
+
+    struct Choice: Codable { let delta: Delta? }
+    struct Delta: Codable { let content: String?; let reasoning: String? }
 }
 
 private struct ChatMessage: Codable {
@@ -1096,7 +1428,14 @@ private struct ChatResponse: Codable {
     let usage: Usage?
 
     struct Choice: Codable {
-        let message: ChatMessage
+        let message: Message
+    }
+
+    /// Response message — `content` is optional and `reasoning` carries a
+    /// reasoning model's output (which Groq returns in its own field).
+    struct Message: Codable {
+        let content: String?
+        let reasoning: String?
     }
 
     struct Usage: Codable {

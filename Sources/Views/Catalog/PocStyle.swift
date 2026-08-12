@@ -8,15 +8,16 @@ import SwiftUI
 // `ReportPalette.phase` with subtly different values — unified here.
 
 extension PocStatus {
-    /// Tint for a criterion's pass/fail/pending state.
+    /// Tint for a criterion's pass/fail/blocked/pending state.
     var color: Color {
-        switch self { case .pass: .green; case .fail: .red; case .pending: .secondary }
+        switch self { case .pass: .green; case .fail: .red; case .blocked: .orange; case .pending: .secondary }
     }
     /// SF Symbol for a criterion's state (consistent circle family).
     var icon: String {
         switch self {
         case .pass:    "checkmark.circle.fill"
         case .fail:    "xmark.circle.fill"
+        case .blocked: "exclamationmark.octagon.fill"
         case .pending: "circle"
         }
     }

@@ -255,7 +255,7 @@ final class MeetingNotesWriter {
     /// the file URL (nil on write failure). The caller links it into the Catalog.
     static func importAudioNote(transcript: String, recordedAt: Date,
                                 sourceFilename: String, duration: TimeInterval?,
-                                title: String? = nil) -> URL? {
+                                sourceBytes: Int? = nil, title: String? = nil) -> URL? {
         let noteTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? sourceFilename
         let folder = AppSettings.shared.meetingDestinationFolder(for: recordedAt)
         do {
@@ -265,8 +265,17 @@ final class MeetingNotesWriter {
             return nil
         }
 
+        // Filenames key off the file's own recording time, so re-importing the
+        // same clip (or two clips recorded in the same second) would otherwise
+        // collide and silently overwrite the earlier note. Suffix -2, -3, … to
+        // keep every import a distinct file.
         let stamp = fileNameFormatter.string(from: recordedAt)
-        let fileURL = folder.appendingPathComponent("Meeting_\(stamp).md")
+        var fileURL = folder.appendingPathComponent("Meeting_\(stamp).md")
+        var n = 2
+        while FileManager.default.fileExists(atPath: fileURL.path) {
+            fileURL = folder.appendingPathComponent("Meeting_\(stamp)-\(n).md")
+            n += 1
+        }
 
         let displayDate = Self.displayDateTimeFormatter.string(from: recordedAt)
 
@@ -284,6 +293,7 @@ final class MeetingNotesWriter {
                       "gw_meeting_type: general",
                       "gw_source: import",
                       "gw_source_file: \(yaml(sourceFilename))"]
+            if let sourceBytes { fm.append("gw_source_bytes: \(sourceBytes)") }
             if let secs { fm.append("gw_duration: \(secs)") }
             fm.append("tags: [meeting, ghostwriter, imported]")
             fm.append("---")
@@ -463,6 +473,15 @@ final class MeetingNotesWriter {
         Log.meeting.info("📖 Chapters appended")
     }
 
+    /// Append the local talk-time / engagement readout (no AI). No-op when the
+    /// body is empty (too little dialogue to be meaningful).
+    func appendEngagement(_ body: String, to fileURL: URL) {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        append("\n# Engagement\n\n\(trimmed)\n", to: fileURL)
+        Log.meeting.info("📊 Engagement analytics appended")
+    }
+
     /// Replace the front-matter `title:` with an AI-generated meeting title.
     /// No-op without front-matter or a title line (the on-disk filename is left
     /// unchanged, so Catalog links stay valid).
@@ -476,6 +495,34 @@ final class MeetingNotesWriter {
             replaced = FrontMatter.replaceLine(prefix: "title:", with: "title: \(safe)", in: &lines)
         }
         if replaced { Log.meeting.info("🏷 Meeting title set") }
+    }
+
+    /// Set the note's `gw_meeting_type:` front-matter to a template id (replacing
+    /// an existing line, or inserting one when the note has none — e.g. an older
+    /// note). Lets the meeting type be corrected after the fact.
+    static func setMeetingType(_ templateID: String, to fileURL: URL) {
+        let id = templateID.trimmingCharacters(in: .whitespaces)
+        guard !id.isEmpty else { return }
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            if !FrontMatter.replaceLine(prefix: "gw_meeting_type:", with: "gw_meeting_type: \(id)", in: &lines) {
+                lines.append("gw_meeting_type: \(id)")
+            }
+        }
+        Log.meeting.info("🗂 Meeting type set to \(id)")
+    }
+
+    /// Record (or clear) the note's retained-audio path in `gw_audio:`
+    /// front-matter. Path is relative to the notes folder (e.g. `Audio/x.m4a`).
+    /// An empty path removes the line.
+    static func setAudioPath(_ relativePath: String, to fileURL: URL) {
+        FrontMatter.mutate(fileURL: fileURL) { lines in
+            let clean = relativePath.trimmingCharacters(in: .whitespaces)
+            if clean.isEmpty {
+                lines.removeAll { $0.hasPrefix("gw_audio:") }
+            } else if !FrontMatter.replaceLine(prefix: "gw_audio:", with: "gw_audio: \(clean)", in: &lines) {
+                lines.append("gw_audio: \(clean)")
+            }
+        }
     }
 
     /// Count case-insensitive whole-word-ish occurrences of each watchlist term
@@ -502,6 +549,18 @@ final class MeetingNotesWriter {
             .joined(separator: "\n")
         append("\n## Mentions\n\n\(lines)\n", to: fileURL)
         Log.meeting.info("📡 Watchlist mentions appended")
+    }
+
+    /// Append an "Objections & Competitors" section — the sales-intelligence
+    /// readout of objections raised and competitors mentioned. `body` is the
+    /// pre-formatted Markdown (with its own `### Objections` / `### Competitors`
+    /// sub-headings) from `TextPolisher.extractObjectionsAndCompetitors`. No-op
+    /// when empty.
+    func appendObjections(_ body: String, to fileURL: URL) {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        append("\n# Objections & Competitors\n\n\(trimmed)\n", to: fileURL)
+        Log.meeting.info("🛡 Objections & competitors appended")
     }
 
     /// Merge topic tags into the YAML front-matter `tags: [...]` line. No-op if

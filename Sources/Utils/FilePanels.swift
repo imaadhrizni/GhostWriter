@@ -51,4 +51,19 @@ enum FilePanels {
         guard panel.runModal() == .OK else { return nil }
         return panel.url
     }
+
+    /// Run an open panel for a single folder and return the chosen URL, or nil
+    /// on cancel.
+    static func openFolder(directory: URL = AppSettings.shared.notesFolder,
+                           prompt: String? = nil) -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = directory
+        if let prompt { panel.prompt = prompt }
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
 }

@@ -225,14 +225,36 @@ actor SemanticIndex {
             .filter { $0.count >= 2 && !stopwords.contains($0) }
     }
 
+    // MARK: Maintenance
+
+    /// Number of note files currently held in the index (0 before the first
+    /// search builds it). Used by Settings to show the cache size.
+    var indexedFileCount: Int {
+        loadIfNeeded()
+        return cache.count
+    }
+
+    /// Drop the in-memory index and delete its on-disk file, forcing a full
+    /// re-embed on the next search. `loaded` stays true so we don't reload the
+    /// just-deleted file; the next `refresh` re-processes the notes in scope.
+    func clear() {
+        cache.removeAll()
+        loaded = true
+        try? FileManager.default.removeItem(at: cacheURL)
+    }
+
     // MARK: Persistence
 
+    /// The on-disk semantic-index cache file. `nonisolated` so UI (Settings'
+    /// Reveal button) can point at it without hopping onto the actor. The file
+    /// may not exist yet — nothing is written until the first search.
+    nonisolated static var cacheFileURL: URL {
+        AppPaths.caches().appendingPathComponent("semantic-index-v2.json")
+    }
+
     private var cacheURL: URL {
-        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GhostWriter", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // v2: chunk format now carries lexical term tables + optional vectors.
-        return dir.appendingPathComponent("semantic-index-v2.json")
+        Self.cacheFileURL
     }
 
     private func loadIfNeeded() {

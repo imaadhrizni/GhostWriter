@@ -128,8 +128,7 @@ enum DigestService {
     private struct Rel { let key: String; let title: String; let detail: String?; let tint: String }
     private static func relationship(forFileURL url: URL) -> Rel {
         let store = CatalogStore.shared
-        let root = AppSettings.shared.notesFolder.path + "/"
-        let rel = url.path.replacingOccurrences(of: root, with: "")
+        let rel = AppSettings.shared.relativePath(of: url)
         guard let note = store.doc.notes.first(where: { $0.filePath == rel }) else {
             return Rel(key: "unfiled", title: "Unfiled", detail: nil, tint: "unfiled")
         }

@@ -43,7 +43,9 @@ enum PocExport {
             let line: String
             if isLeaf(c, in: poc) {
                 let box: String
-                switch c.status { case .pass: box = "[x]"; case .fail: box = "[-]"; case .pending: box = "[ ]" }
+                switch c.status {
+                case .pass: box = "[x]"; case .fail: box = "[-]"; case .blocked: box = "[!]"; case .pending: box = "[ ]"
+                }
                 line = "\(indent)- \(box) \(c.text)"
             } else {
                 let kids = leafTally(under: c, in: poc)

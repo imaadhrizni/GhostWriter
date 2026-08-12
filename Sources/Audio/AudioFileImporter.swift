@@ -121,20 +121,23 @@ enum AudioFileImporter {
 
     enum ImportError: LocalizedError {
         case tooLarge(mb: Int, limit: Int)
-        case unsupported(ext: String)
         case decodeFailed
         case emptyTranscript
+        case transcriptionFailed(primary: String, fallback: String)
 
         var errorDescription: String? {
             switch self {
             case .tooLarge(let mb, let limit):
                 return "That file is \(mb) MB — over the \(limit) MB import limit."
-            case .unsupported(let ext):
-                return "“.\(ext)” isn't a supported audio format."
             case .decodeFailed:
                 return "Couldn't decode that audio file for on-device transcription."
             case .emptyTranscript:
                 return "No speech was found in that audio."
+            case .transcriptionFailed(let primary, let fallback):
+                // Groq is the primary path; on-device is a best-effort rescue.
+                // Lead with the primary failure (the actionable one) and note
+                // that the fallback was tried too.
+                return "Transcription failed: \(primary) (on-device fallback also failed: \(fallback))"
             }
         }
     }

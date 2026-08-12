@@ -19,13 +19,26 @@ final class AudioImportService: ObservableObject {
         let id = UUID()
         let url: URL
         var status: Status = .queued
-        var noteURL: URL?
         var error: String?
+        /// This file was already transcribed before (matched an existing import
+        /// note by name + size). Excluded from the run by default — so a re-select
+        /// after relaunch doesn't silently re-bill — until "Transcribe anyway".
+        var duplicate = false
+        /// The matching prior import note, and whether it still shows in History
+        /// (vs. was cleared) — drives the row's "Add to History" / "Show in
+        /// History" affordance. Set alongside `duplicate`.
+        var duplicateNoteID: String?
+        var duplicateInHistory = false
         var name: String { url.deletingPathExtension().lastPathComponent }
     }
 
+    /// The outcome of the most recent `run()`, for the window's completion
+    /// banner. Reset when a new run starts; cleared by the UI when dismissed.
+    struct RunSummary: Equatable { let done: Int; let failed: Int }
+
     @Published var items: [Item] = []
     @Published var isRunning = false
+    @Published var lastRun: RunSummary?
     /// Batch assignment applied to every note created this run.
     @Published var targetKind = ""   // "", "org", or "project"
     @Published var targetID = ""
@@ -45,25 +58,82 @@ final class AudioImportService: ObservableObject {
     func add(_ urls: [URL]) {
         let existing = Set(items.map { $0.url })
         for u in urls where AudioFileImporter.isAccepted(u) && !existing.contains(u) {
-            items.append(Item(url: u))
+            var item = Item(url: u)
+            // Flag files already transcribed in a prior session so we don't
+            // silently re-transcribe (and re-bill) them; the user can still
+            // override per-row with "Transcribe anyway" — or, when the prior note
+            // was cleared from History, cheaply "Add to History" instead.
+            let bytes = (try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            if let match = CatalogStore.shared.existingImport(filename: u.lastPathComponent, bytes: bytes) {
+                item.duplicate = true
+                item.duplicateNoteID = match.note.id
+                item.duplicateInHistory = match.inHistory
+            }
+            items.append(item)
         }
     }
     func remove(_ id: UUID) { items.removeAll { $0.id == id && $0.status != .working } }
-    func clearFinished() { items.removeAll { $0.status == .done } }
-    var queuedCount: Int { items.filter { $0.status == .queued }.count }
+
+    /// Clear the duplicate flag so a knowingly re-imported file transcribes.
+    func transcribeAnyway(_ id: UUID) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        items[i].duplicate = false
+    }
+
+    /// Queued files that will actually run — duplicates are held back until the
+    /// user opts in, so they don't inflate the count or the Transcribe button.
+    var queuedCount: Int { items.filter { $0.status == .queued && !$0.duplicate }.count }
+    var failedCount: Int { items.filter { $0.status == .failed }.count }
+
+    /// Reset a failed item back to the queue so the next run retries it.
+    func retry(_ id: UUID) {
+        guard let i = items.firstIndex(where: { $0.id == id }), items[i].status == .failed else { return }
+        items[i].status = .queued
+        items[i].error = nil
+    }
+
+    /// Requeue every failed item for a one-click retry-all.
+    func retryFailed() {
+        for i in items.indices where items[i].status == .failed {
+            items[i].status = .queued
+            items[i].error = nil
+        }
+    }
+
+    /// Re-transcribe a retained recording into a **fresh** note, filed under the
+    /// same org/project as `sourceNote`, and point the new note back at the same
+    /// recording. Used by the Catalog's "Regenerate from audio" recovery when a
+    /// meeting's original transcription/summary failed. Returns the new note URL.
+    func regenerate(fromAudio url: URL, like sourceNote: CatalogNote) async -> URL? {
+        let prevKind = targetKind, prevID = targetID
+        if let pid = sourceNote.projectIDs.first { targetKind = "project"; targetID = pid }
+        else if let oid = sourceNote.orgIDs.first { targetKind = "org"; targetID = oid }
+        else { targetKind = ""; targetID = "" }
+        defer { targetKind = prevKind; targetID = prevID }
+        do {
+            let newURL = try await importOne(url)
+            MeetingNotesWriter.setAudioPath(settings.relativePath(of: url), to: newURL)
+            return newURL
+        } catch {
+            Log.meeting.error("🎙️ Regenerate from audio failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
 
     // MARK: Run
 
     func run() async {
         guard !isRunning else { return }
         isRunning = true
+        lastRun = nil            // a fresh batch supersedes the previous summary
         defer { isRunning = false }
 
         let maxBytes = settings.audioImportMaxMB * 1_000_000
         var firstNote: URL?
         var done = 0
+        var failed = 0
 
-        for idx in items.indices where items[idx].status == .queued {
+        for idx in items.indices where items[idx].status == .queued && !items[idx].duplicate {
             items[idx].status = .working
             let url = items[idx].url
             do {
@@ -72,16 +142,17 @@ final class AudioImportService: ObservableObject {
                     throw AudioFileImporter.ImportError.tooLarge(mb: size / 1_000_000, limit: settings.audioImportMaxMB)
                 }
                 let note = try await importOne(url)
-                items[idx].noteURL = note
                 items[idx].status = .done
                 if firstNote == nil { firstNote = note }
                 done += 1
             } catch {
                 items[idx].error = error.localizedDescription
                 items[idx].status = .failed
+                failed += 1
             }
         }
 
+        lastRun = RunSummary(done: done, failed: failed)
         if done > 0, let firstNote {
             NotificationManager.shared.notifyAudioImported(count: done, fileURL: firstNote)
         }
@@ -106,9 +177,10 @@ final class AudioImportService: ObservableObject {
             title = t.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
+        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize)
         guard let fileURL = MeetingNotesWriter.importAudioNote(
-            transcript: trimmed, recordedAt: meta.date, sourceFilename: fallback,
-            duration: meta.duration, title: title) else {
+            transcript: trimmed, recordedAt: meta.date, sourceFilename: url.lastPathComponent,
+            duration: meta.duration, sourceBytes: bytes, title: title) else {
             throw AudioFileImporter.ImportError.decodeFailed
         }
 
@@ -118,8 +190,7 @@ final class AudioImportService: ObservableObject {
         // transcript intact.
         await enrich(fileURL: fileURL, transcript: trimmed)
 
-        let root = settings.notesFolder.path + "/"
-        let rel = fileURL.path.replacingOccurrences(of: root, with: "")
+        let rel = settings.relativePath(of: fileURL)
         let note = CatalogStore.shared.note(forRelativePath: rel, title: title, date: meta.date)
         if targetKind == "project", !targetID.isEmpty {
             CatalogStore.shared.setProject(targetID, on: note.id, true)
@@ -157,19 +228,92 @@ final class AudioImportService: ObservableObject {
     }
 
     private func transcribe(_ url: URL, mime: String, seconds: Double) async throws -> String {
-        let text: String
         if settings.localOnlyMode {
             let pcm = try AudioFileImporter.decodePCM16k(from: url)
-            text = try await offline.transcribe(audioData: pcm)
-        } else {
+            return Redactor.redact(try await offline.transcribe(audioData: pcm))
+        }
+
+        // Cloud path. When we can decode the file, normalize it to a compact,
+        // Whisper-optimal 16 kHz-mono upload (Opus → FLAC → WAV) and chunk it if
+        // it would exceed Groq's request limit — smaller uploads, and the
+        // "unsupported container" failure class disappears because we control
+        // what's sent. Containers Core Audio can't read (ogg/opus/webm) can't be
+        // decoded, so those upload as-is.
+        if let pcm = try? AudioFileImporter.decodePCM16k(from: url) {
             do {
-                text = try await groq.transcribe(fileURL: url, mimeType: mime, audioSeconds: seconds)
-            } catch {
-                guard settings.offlineFallback, let pcm = try? AudioFileImporter.decodePCM16k(from: url) else { throw error }
-                Log.api.warning("⚠️ Groq file transcription failed (\(error.localizedDescription)) — trying on-device")
-                text = try await offline.transcribe(audioData: pcm)
+                return Redactor.redact(try await cloudTranscribe(pcm16k: pcm))
+            } catch let cloudError {
+                guard settings.offlineFallback else { throw cloudError }
+                do {
+                    return Redactor.redact(try await offline.transcribe(audioData: pcm))
+                } catch {
+                    throw AudioFileImporter.ImportError.transcriptionFailed(
+                        primary: cloudError.localizedDescription,
+                        fallback: error.localizedDescription)
+                }
             }
         }
-        return Redactor.redact(text)
+
+        // Undecodable container → the original bytes are the only cloud option.
+        return Redactor.redact(try await groq.transcribe(fileURL: url, mimeType: mime, audioSeconds: seconds))
+    }
+
+    /// Transcribe decoded 16 kHz PCM via Groq: compress to the smallest accepted
+    /// format and, if the whole clip would exceed Groq's per-request limit, split
+    /// it on silence and stitch the pieces. Throws if every attempt fails.
+    private func cloudTranscribe(pcm16k: Data) async throws -> String {
+        let totalSeconds = Double(pcm16k.count) / Double(AudioTranscoder.bytesPerSecond)
+
+        // 1) Whole clip — upload the first candidate that fits and Groq accepts.
+        let whole = AudioTranscoder.uploadCandidates(pcm16k: pcm16k)
+        defer { AudioTranscoder.cleanUp(whole) }
+        if let text = try await uploadFirstAccepted(whole, seconds: totalSeconds, source: "Audio import") {
+            return text
+        }
+
+        // 2) Too large — size the chunk length from the smallest encoding's
+        //    bitrate so each piece fits, split on silence, and transcribe each.
+        let smallest = whole.map(\.bytes).min() ?? pcm16k.count
+        let pieces = max(2, Int((Double(smallest) / Double(GroqService.uploadLimitBytes)).rounded(.up)) + 1)
+        let chunkSeconds = max(30, totalSeconds / Double(pieces))
+        let chunks = AudioTranscoder.splitOnSilence(pcm16k: pcm16k, maxSeconds: chunkSeconds)
+        guard chunks.count > 1 else { throw AudioFileImporter.ImportError.emptyTranscript }
+
+        var parts: [String] = []
+        for (i, chunk) in chunks.enumerated() {
+            let candidates = AudioTranscoder.uploadCandidates(pcm16k: chunk)
+            defer { AudioTranscoder.cleanUp(candidates) }
+            let secs = Double(chunk.count) / Double(AudioTranscoder.bytesPerSecond)
+            guard let text = try await uploadFirstAccepted(
+                candidates, seconds: secs,
+                source: "Audio import (chunk \(i + 1)/\(chunks.count))") else {
+                throw AudioFileImporter.ImportError.emptyTranscript
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { parts.append(trimmed) }
+        }
+        return parts.joined(separator: " ")
+    }
+
+    /// Upload candidates in order (smallest first), skipping any over Groq's
+    /// size limit, and return the first transcript Groq accepts. Returns nil
+    /// when nothing fits (the caller then chunks); throws when something fit but
+    /// every fitting upload failed.
+    private func uploadFirstAccepted(_ candidates: [AudioTranscoder.Encoded],
+                                     seconds: Double, source: String) async throws -> String? {
+        var lastError: Error?
+        var anyFit = false
+        for c in candidates where c.bytes <= GroqService.uploadLimitBytes {
+            anyFit = true
+            do {
+                return try await groq.transcribe(fileURL: c.url, mimeType: c.mime,
+                                                 audioSeconds: seconds, source: source)
+            } catch {
+                lastError = error
+                Log.api.warning("⚠️ Groq rejected \(c.mime) upload (\(error.localizedDescription)) — trying next candidate")
+            }
+        }
+        if anyFit, let lastError { throw lastError }
+        return nil
     }
 }

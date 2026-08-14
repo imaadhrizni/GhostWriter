@@ -30,6 +30,7 @@ final class AppSettings: ObservableObject {
             "qwen/qwen3-32b",
             "moonshotai/kimi-k2-instruct-0905",
             "moonshotai/kimi-k2-instruct",
+            "llama-3.1-8b-instant",   // decommissioned by Groq; heal onto the 70b chat model
         ]
         for key in [Key.polishingModel, Key.fastModel] {
             if let cur = defaults.string(forKey: key), deprecated.contains(cur) {

@@ -58,7 +58,7 @@ final class ModelResolver {
     static let preferences: [Role: [String]] = [
         .transcription: ["whisper-large-v3", "whisper-large-v3-turbo"],
         .summary:       ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile"],
-        .lightweight:   ["llama-3.3-70b-versatile", "openai/gpt-oss-20b"],
+        .lightweight:   ["openai/gpt-oss-20b", "llama-3.3-70b-versatile"],
         .reasoning:     ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
     ]
 
@@ -114,8 +114,8 @@ final class ModelResolver {
             "llama-3.3-70b-versatile":    "Best all-round quality — recommended",
             "llama-3.1-70b-versatile":    "Older 70B — use only if 3.3 is gone",
             "llama-3.1-8b-instant":       "Cheapest & fastest, lower quality — being retired",
-            "openai/gpt-oss-120b":        "Deepest reasoning for hard tasks — slowest",
-            "openai/gpt-oss-20b":         "Strong reasoning, lighter — faster than 120B",
+            "openai/gpt-oss-120b":        "Deepest reasoning for the hardest tasks — slowest",
+            "openai/gpt-oss-20b":         "Strong reasoning, lower cost — fast & light",
             "groq/compound":              "Agentic — LLM with built-in web search & tools",
             "groq/compound-mini":         "Lighter agentic model with built-in tools",
         ]

@@ -13,8 +13,7 @@ struct AIPane: View {
         "distil-whisper-large-v3-en",
     ]
     private static let polishingModels = [
-        "llama-3.3-70b-versatile",                      // non-reasoning, plain Markdown — default
-        "openai/gpt-oss-120b",                          // reasoning model (answer arrives via the reasoning field)
+        "openai/gpt-oss-120b",                          // reasoning model — default; answer arrives via the reasoning field
         "openai/gpt-oss-20b",
     ]
 

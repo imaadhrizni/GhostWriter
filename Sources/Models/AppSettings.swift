@@ -20,33 +20,25 @@ final class AppSettings: ObservableObject {
     /// call). Rewrite any persisted model setting that points at a now-removed
     /// id onto its recommended replacement, so upgrades self-heal.
     private func migrateDeprecatedModels() {
-        // Deprecated Groq model id → live replacement (per console.groq.com/docs/deprecations).
-        // Targets a non-reasoning chat model: the summary/polish pipeline expects
-        // plain Markdown in `content`, which reasoning models (gpt-oss) leave empty.
-        let replacement = "llama-3.3-70b-versatile"
+        // Groq-decommissioned model ids (per console.groq.com/docs/deprecations).
+        // A stored id here 404s on every call, so heal it onto the role's current
+        // default — which is role-appropriate (polishing → gpt-oss-120b,
+        // lightweight → gpt-oss-20b), Groq's own recommended replacements. The
+        // send() pipeline reads reasoning-model output, so gpt-oss is safe here.
         let deprecated: Set<String> = [
             "meta-llama/llama-4-scout-17b-16e-instruct",
             "meta-llama/llama-4-maverick-17b-128e-instruct",
             "qwen/qwen3-32b",
             "moonshotai/kimi-k2-instruct-0905",
             "moonshotai/kimi-k2-instruct",
-            "llama-3.1-8b-instant",   // decommissioned by Groq; heal onto the 70b chat model
+            "llama-3.1-8b-instant",      // decommissioned 2026-08-16 → gpt-oss-20b
+            "llama-3.3-70b-versatile",   // decommissioned 2026-08-16 → gpt-oss-120b
         ]
-        for key in [Key.polishingModel, Key.fastModel] {
+        for (key, replacement) in [(Key.polishingModel, Default.polishingModel),
+                                   (Key.fastModel, Default.fastModel)] {
             if let cur = defaults.string(forKey: key), deprecated.contains(cur) {
                 defaults.set(replacement, forKey: key)
             }
-        }
-        // One-time heal: an earlier build auto-migrated the retired Scout model
-        // onto gpt-oss-120b, whose reasoning output breaks the summarizer. Move
-        // those installs to a non-reasoning model once, without permanently
-        // blocking a user who later picks gpt-oss deliberately.
-        let healFlag = "api.healedGptOssPolishing"
-        if !defaults.bool(forKey: healFlag) {
-            if defaults.string(forKey: Key.polishingModel) == "openai/gpt-oss-120b" {
-                defaults.set(replacement, forKey: Key.polishingModel)
-            }
-            defaults.set(true, forKey: healFlag)
         }
     }
 

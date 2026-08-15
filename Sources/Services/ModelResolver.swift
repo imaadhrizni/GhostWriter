@@ -57,8 +57,8 @@ final class ModelResolver {
     /// since the pipeline expects plain Markdown in `content`.
     static let preferences: [Role: [String]] = [
         .transcription: ["whisper-large-v3", "whisper-large-v3-turbo"],
-        .summary:       ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile"],
-        .lightweight:   ["openai/gpt-oss-20b", "llama-3.3-70b-versatile"],
+        .summary:       ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
+        .lightweight:   ["openai/gpt-oss-20b", "openai/gpt-oss-120b"],
         .reasoning:     ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
     ]
 
@@ -111,11 +111,11 @@ final class ModelResolver {
             "whisper-large-v3":           "Highest accuracy — best for noisy/multilingual audio",
             "whisper-large-v3-turbo":     "Faster, still multilingual — good default",
             "distil-whisper-large-v3-en": "Fastest & cheapest, English-only",
-            "llama-3.3-70b-versatile":    "Best all-round quality — recommended",
-            "llama-3.1-70b-versatile":    "Older 70B — use only if 3.3 is gone",
-            "llama-3.1-8b-instant":       "Cheapest & fastest, lower quality — being retired",
-            "openai/gpt-oss-120b":        "Deepest reasoning for the hardest tasks — slowest",
-            "openai/gpt-oss-20b":         "Strong reasoning, lower cost — fast & light",
+            "llama-3.3-70b-versatile":    "Being retired by Groq (Aug 2026) — switch to GPT-OSS",
+            "llama-3.1-70b-versatile":    "Older Llama 70B — legacy, prefer GPT-OSS",
+            "llama-3.1-8b-instant":       "Being retired by Groq (Aug 2026) — switch to GPT-OSS 20B",
+            "openai/gpt-oss-120b":        "Strongest quality — recommended for summaries",
+            "openai/gpt-oss-20b":         "Fast & light — recommended for background tasks",
             "groq/compound":              "Agentic — LLM with built-in web search & tools",
             "groq/compound-mini":         "Lighter agentic model with built-in tools",
         ]

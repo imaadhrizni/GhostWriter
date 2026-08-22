@@ -184,6 +184,18 @@ final class AudioImportService: ObservableObject {
             throw AudioFileImporter.ImportError.decodeFailed
         }
 
+        // Link the note back to its audio, exactly as the live-recording path
+        // does. `gw_source_file` above records only the original filename (for
+        // duplicate detection); the *playable* link is `gw_audio`, which must
+        // point at a file under the notes folder. Retain a copy in `<notes>/
+        // Audio/` (mirrored dated layout, keyed to the note stem) so the link
+        // survives the user moving/deleting their original import. Gated on the
+        // same opt-out as live retention; best-effort, never fails the import.
+        if settings.retainMeetingAudio,
+           let retained = retainImportedAudio(url, noteURL: fileURL, date: meta.date) {
+            MeetingNotesWriter.setAudioPath(settings.relativePath(of: retained), to: fileURL)
+        }
+
         // Same AI enrichment a live meeting gets (summary, action items,
         // structured extraction, unanswered questions, chapters) — gated by the
         // same settings, cloud-only. Best-effort: a failure leaves the raw
@@ -198,6 +210,32 @@ final class AudioImportService: ObservableObject {
             CatalogStore.shared.setOrg(targetID, on: note.id, true)
         }
         return fileURL
+    }
+
+    /// Copy an imported source file into `<notes>/Audio/` (dated layout mirroring
+    /// the note), named to match the note's stem so it reads like a retained
+    /// recording. Returns the retained copy's URL, or `nil` on failure. Skips the
+    /// copy when the source already lives under the Audio folder (e.g. the
+    /// "Regenerate from audio" recovery re-importing a retained recording).
+    private func retainImportedAudio(_ source: URL, noteURL: URL, date: Date) -> URL? {
+        let fm = FileManager.default
+        let audioRoot = settings.notesFolder.appendingPathComponent("Audio", isDirectory: true).path + "/"
+        if source.path.hasPrefix(audioRoot) { return source }
+
+        let dir = settings.audioDestinationFolder(for: date)
+        let stem = noteURL.deletingPathExtension().lastPathComponent
+        let ext = source.pathExtension.isEmpty ? "m4a" : source.pathExtension
+        let dest = dir.appendingPathComponent("\(stem).\(ext)")
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? fm.removeItem(at: dest)   // overwrite any stale copy
+            try fm.copyItem(at: source, to: dest)
+            Log.meeting.info("🎙️ Retained imported audio → \(dest.lastPathComponent)")
+            return dest
+        } catch {
+            Log.meeting.error("🎙️ Could not retain imported audio: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     /// Append the meeting-style AI sections to a freshly-written import. Uses the

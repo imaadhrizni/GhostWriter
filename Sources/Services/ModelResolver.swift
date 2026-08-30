@@ -24,7 +24,23 @@ final class ModelResolver {
     static let shared = ModelResolver()
 
     /// What a given call needs from a model — not a specific id.
-    enum Role { case transcription, summary, lightweight, reasoning }
+    enum Role {
+        case transcription, summary, lightweight, reasoning
+
+        /// Whether a catalog id is a plausible model for this role — used both to
+        /// populate the Settings preset menu and to pick a live last-resort when
+        /// none of the ordered fallbacks exist. Transcription wants Whisper;
+        /// chat roles want anything that isn't speech/moderation-only.
+        func matches(_ id: String) -> Bool {
+            let m = id.lowercased()
+            let isSpeech = m.contains("whisper") || m.contains("tts") || m.contains("playai")
+            let isGuard = m.contains("guard")
+            switch self {
+            case .transcription: return m.contains("whisper")
+            default:             return !isSpeech && !isGuard
+            }
+        }
+    }
 
     /// A model-availability fault (the model is gone / unknown). Distinct from
     /// rate-limit/quota, which this deliberately does not treat as a fault.
@@ -41,8 +57,8 @@ final class ModelResolver {
     /// since the pipeline expects plain Markdown in `content`.
     static let preferences: [Role: [String]] = [
         .transcription: ["whisper-large-v3", "whisper-large-v3-turbo"],
-        .summary:       ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "llama-3.1-8b-instant"],
-        .lightweight:   ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+        .summary:       ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
+        .lightweight:   ["openai/gpt-oss-20b", "openai/gpt-oss-120b"],
         .reasoning:     ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
     ]
 
@@ -84,6 +100,63 @@ final class ModelResolver {
     var lastFetched: Date? { queue.sync { cache?.fetchedAt } }
     var catalogCount: Int { queue.sync { cache?.ids.count ?? 0 } }
 
+    /// A short, human-friendly blurb for a model id, to help pick from the
+    /// dropdown. Groq's catalog API returns only ids (no descriptions), so this
+    /// curates the families we know and otherwise derives a hint (family + size)
+    /// from the id, so even an unfamiliar model gets a useful one-liner.
+    static func describe(_ id: String) -> String {
+        let m = id.lowercased()
+        // Exact, curated blurbs for the models we ship as presets / defaults.
+        let known: [String: String] = [
+            "whisper-large-v3":           "Highest accuracy — best for noisy/multilingual audio",
+            "whisper-large-v3-turbo":     "Faster, still multilingual — good default",
+            "distil-whisper-large-v3-en": "Fastest & cheapest, English-only",
+            "llama-3.3-70b-versatile":    "Being retired by Groq (Aug 2026) — switch to GPT-OSS",
+            "llama-3.1-70b-versatile":    "Older Llama 70B — legacy, prefer GPT-OSS",
+            "llama-3.1-8b-instant":       "Being retired by Groq (Aug 2026) — switch to GPT-OSS 20B",
+            "openai/gpt-oss-120b":        "Strongest quality — recommended for summaries",
+            "openai/gpt-oss-20b":         "Fast & light — recommended for background tasks",
+            "groq/compound":              "Agentic — LLM with built-in web search & tools",
+            "groq/compound-mini":         "Lighter agentic model with built-in tools",
+        ]
+        if let d = known[m] { return d }
+
+        // Derive a hint for anything else: family + parameter size when present.
+        let family: String? =
+            m.contains("whisper")           ? "Speech-to-text" :
+            m.contains("guard")             ? "Safety / moderation model" :
+            (m.contains("tts") || m.contains("playai")) ? "Text-to-speech" :
+            m.contains("compound")          ? "Agentic system with built-in tools" :
+            m.contains("gpt-oss")           ? "OpenAI open-weight reasoning" :
+            m.contains("llama")             ? "Meta Llama chat model" :
+            m.contains("qwen")              ? "Alibaba Qwen chat model" :
+            m.contains("gemma")             ? "Google Gemma chat model" :
+            m.contains("kimi") || m.contains("moonshot") ? "Moonshot Kimi chat model" :
+            m.contains("deepseek")          ? "DeepSeek reasoning model" : nil
+
+        // Pull the first "<n>b" token as a parameter-size badge (e.g. "70b").
+        let size = m.split(whereSeparator: { !"0123456789b".contains($0) })
+            .first(where: { $0.hasSuffix("b") && $0.dropLast().allSatisfy(\.isNumber) })
+            .map { "~\($0.dropLast())B params" }
+
+        switch (family, size) {
+        case let (f?, s?): return "\(f) · \(s)"
+        case let (f?, nil): return f
+        case let (nil, s?): return s
+        default:            return ""
+        }
+    }
+
+    /// Live catalog ids relevant to a role, sorted — so the Settings preset menu
+    /// can offer *only models that actually exist* (a pick that isn't in the
+    /// catalog would just get routed around, making the dropdown feel inert).
+    /// Empty when the catalog hasn't been fetched yet; callers fall back to their
+    /// static preset list then.
+    func catalogModels(for role: Role) -> [String] {
+        let ids = queue.sync { cache?.ids ?? [] }
+        return ids.filter { role.matches($0) }.sorted()
+    }
+
     /// If `configured` isn't in the catalog and resolves to something else, post
     /// `didAutoSwitch` once per configured id so the app can toast the swap.
     func announceIfSubstituted(_ role: Role, configured: String?) {
@@ -108,6 +181,11 @@ final class ModelResolver {
             if ids.isEmpty { return want.isEmpty ? (Self.preferences[role]?.first ?? "") : want }
             if !want.isEmpty, ids.contains(want) { return want }
             for pref in Self.preferences[role] ?? [] where ids.contains(pref) { return pref }
+            // The configured id is gone and none of our ordered fallbacks exist
+            // in the live catalog either (they age out too). Rather than hand back
+            // a dead id that's guaranteed to 404, land on any live model that fits
+            // the role — a working request beats a broken one.
+            if let live = ids.filter({ role.matches($0) }).sorted().first { return live }
             return want.isEmpty ? (Self.preferences[role]?.first ?? "") : want
         }
     }

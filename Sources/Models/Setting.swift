@@ -34,12 +34,19 @@ struct Setting<Value> {
         self.write = write
     }
 
-    // The wrapper never stores the value itself; on `AppSettings` (a class) access
-    // always routes through the enclosing-instance subscript below, so this is
-    // never called. It exists only to satisfy the property-wrapper requirement.
+    // Direct member access (`settings.foo`) routes through the enclosing-instance
+    // subscript below. But **key-path** access does NOT — and SwiftUI builds every
+    // `$settings.foo` binding from a `ReferenceWritableKeyPath`, so a Toggle/Picker/
+    // Menu write lands *here*, not on the subscript. This therefore has to be fully
+    // functional (read + persist + notify), or UI edits silently vanish. It routes
+    // through the `AppSettings.shared` singleton — the only instance these live on —
+    // so both access paths behave identically.
     var wrappedValue: Value {
-        get { defaultValue }
-        set { _ = newValue }
+        get { read(AppSettings.shared.defaults) }
+        set {
+            AppSettings.shared.objectWillChange.send()
+            write(AppSettings.shared.defaults, newValue)
+        }
     }
 
     static subscript(

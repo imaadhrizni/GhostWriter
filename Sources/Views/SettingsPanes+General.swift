@@ -13,9 +13,7 @@ struct AIPane: View {
         "distil-whisper-large-v3-en",
     ]
     private static let polishingModels = [
-        "llama-3.3-70b-versatile",                      // non-reasoning, plain Markdown — default
-        "llama-3.1-8b-instant",
-        "openai/gpt-oss-120b",                          // reasoning model (answer arrives via the reasoning field)
+        "openai/gpt-oss-120b",                          // reasoning model — default; answer arrives via the reasoning field
         "openai/gpt-oss-20b",
     ]
 
@@ -73,6 +71,7 @@ struct AIPane: View {
             SettingsGroup("Models") {
                 ModelField(
                     title: "Transcription model",
+                    role: .transcription,
                     presets: Self.transcriptionModels,
                     defaultValue: AppSettings.Default.transcriptionModel,
                     value: $settings.transcriptionModel
@@ -101,6 +100,7 @@ struct AIPane: View {
 
                 ModelField(
                     title: "Polishing model",
+                    role: .summary,
                     presets: Self.polishingModels,
                     defaultValue: AppSettings.Default.polishingModel,
                     value: $settings.polishingModel
@@ -110,6 +110,7 @@ struct AIPane: View {
 
                 ModelField(
                     title: "Lightweight-tasks model",
+                    role: .lightweight,
                     presets: Self.polishingModels,
                     defaultValue: AppSettings.Default.fastModel,
                     value: $settings.fastModel
@@ -372,6 +373,7 @@ struct AutomaticBackupRow: View {
 /// Editable model name with a preset menu and reset-to-default.
 struct ModelField: View {
     let title: String
+    let role: ModelResolver.Role
     let presets: [String]
     let defaultValue: String
     @Binding var value: String
@@ -379,6 +381,18 @@ struct ModelField: View {
     /// Bumped once the live catalog is fetched, so the availability note
     /// re-evaluates. ModelResolver isn't observable, hence the manual tick.
     @State private var catalogTick = 0
+
+    /// Menu options: Groq's live catalog for this role when we have it (so every
+    /// pick is a model that actually exists and won't be silently rerouted),
+    /// otherwise the static presets. The current value is always included so a
+    /// custom or not-yet-listed id stays selectable.
+    private var options: [String] {
+        _ = catalogTick
+        let live = ModelResolver.shared.catalogModels(for: role)
+        let base = live.isEmpty ? presets : live
+        let cur = value.trimmingCharacters(in: .whitespaces)
+        return cur.isEmpty || base.contains(cur) ? base : base + [cur]
+    }
 
     /// True only when we have a catalog AND it doesn't contain the chosen id —
     /// so we never warn just because the catalog hasn't loaded yet.
@@ -398,8 +412,19 @@ struct ModelField: View {
                     .frame(width: 230)
                     .multilineTextAlignment(.trailing)
                 Menu {
-                    ForEach(presets, id: \.self) { preset in
-                        Button(preset) { value = preset }
+                    ForEach(options, id: \.self) { preset in
+                        Button {
+                            value = preset
+                        } label: {
+                            let desc = ModelResolver.describe(preset)
+                            if desc.isEmpty {
+                                Text(preset)
+                            } else {
+                                // Two-line menu item: id on top, blurb beneath.
+                                Text(preset)
+                                Text(desc)
+                            }
+                        }
                     }
                 } label: {
                     Image(systemName: "chevron.up.chevron.down")
@@ -412,6 +437,13 @@ struct ModelField: View {
                 Label("Not in Groq's current model list — a working model is used automatically until you pick another.",
                       systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundColor(.orange)
+            } else {
+                // Blurb for the current selection, so the trade-off is visible
+                // without opening the menu.
+                let desc = ModelResolver.describe(value.trimmingCharacters(in: .whitespaces))
+                if !desc.isEmpty {
+                    Text(desc).font(.caption).foregroundColor(.secondary)
+                }
             }
         }
         .task {

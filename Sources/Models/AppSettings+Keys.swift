@@ -171,8 +171,8 @@ extension AppSettings {
     enum Default {
         static let apiBaseURL                      = "https://api.groq.com/openai/v1"
         static let transcriptionModel              = "whisper-large-v3"
-        static let polishingModel                  = "llama-3.3-70b-versatile"  // non-reasoning chat model — plain Markdown output the summarizer can use
-        static let fastModel                       = "llama-3.1-8b-instant"
+        static let polishingModel                  = "openai/gpt-oss-120b"  // Groq's replacement for the retired llama-3.3-70b; reasoning output handled by send()
+        static let fastModel                       = "openai/gpt-oss-20b"
         static let pttKeyCode: Int                 = 61     // Right Option
         static let pttActivation                   = "toggle" // hold | tapLock | toggle
         static let preferBuiltInMic                = false  // use the system default input

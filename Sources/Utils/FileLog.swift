@@ -117,9 +117,9 @@ final class FileLog: @unchecked Sendable {
     private func sessionHeader() -> String {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "?"
-        let build = info?["CFBundleVersion"] as? String ?? "?"
+        let build = (info?["CFBundleVersion"] as? String).map { " (\($0))" } ?? ""
         let os = ProcessInfo.processInfo.operatingSystemVersionString
-        return "\(stamp.string(from: Date())) [INFO ] [app] ── GhostWriter \(version) (\(build)) · macOS \(os) · verbose=\(Self.verbose) ──\n"
+        return "\(stamp.string(from: Date())) [INFO ] [app] ── GhostWriter \(version)\(build) · macOS \(os) · verbose=\(Self.verbose) ──\n"
     }
 
     private func open() {

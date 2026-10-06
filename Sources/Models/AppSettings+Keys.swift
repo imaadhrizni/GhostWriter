@@ -96,6 +96,7 @@ extension AppSettings {
         static let autoTagging            = "meeting.autoTagging"
         static let errorNotifications     = "diagnostics.errorNotifications"
         static let verboseLogging         = "diagnostics.verboseLogging"
+        static let modelFailover          = "ai.modelFailover"
         static let uiDateFormat           = "ui.dateFormat"
         static let pdfPaperSize           = "export.pdfPaperSize"
         static let browserTabDetection    = "dictation.browserTabDetection"
@@ -154,7 +155,7 @@ extension AppSettings {
                           dictationStyleOverrides, userDictationStyles, defaultDictationStyle,
                           quickNotesFolderPath, quickNoteNotify,
                           localOnlyMode, redactionEnabled, redactEmails, redactPhones, redactNumbers,
-                          autoTagging, errorNotifications, verboseLogging, uiDateFormat, pdfPaperSize,
+                          autoTagging, errorNotifications, verboseLogging, modelFailover, uiDateFormat, pdfPaperSize,
                           browserTabDetection, domainStyleRules,
                           saveDictations, dictationsFolderPath, dictationOrganization, audioImportMaxMB,
                           meetingDetectInterval, liveBriefMinGrowth, transcriptionTimeout,
@@ -254,6 +255,7 @@ extension AppSettings {
         static let autoTagging                     = true
         static let errorNotifications              = true
         static let verboseLogging                  = false   // debug-level lines in the file log
+        static let modelFailover                   = true    // switch models when one is out of capacity
         static let uiDateFormat                    = "dd MMM yyyy"
         static let pdfPaperSize                     = "letter"   // "letter" | "a4"
         static let browserTabDetection             = true

@@ -160,7 +160,7 @@ final class GroqService {
                 APIDiagnostics.failure(kind: .transcription, source: source, model: resolvedModel,
                                        endpoint: "audio/transcriptions", started: started,
                                        response: httpResponse, body: errorBody)
-                throw GroqError.apiError(statusCode: httpResponse.statusCode, message: String(errorBody.prefix(200)))
+                throw GroqError.http(httpResponse, body: errorBody)
             }
             let result: TranscriptionResponse
             do {
@@ -200,34 +200,6 @@ final class GroqService {
 
 private struct TranscriptionResponse: Codable {
     let text: String
-}
-
-// MARK: - Errors
-
-enum GroqError: LocalizedError {
-    case missingAPIKey
-    case invalidResponse
-    case apiError(statusCode: Int, message: String)
-
-    var errorDescription: String? {
-        switch self {
-        case .missingAPIKey:
-            return "Groq API key not set. Add one via the menu bar → Set API Key…"
-        case .invalidResponse:
-            return "Invalid response from Groq API."
-        case .apiError(let code, let message):
-            return "Groq API error (\(code)): \(message)"
-        }
-    }
-
-    /// A rate-limit / quota response (HTTP 429 or a matching error body) — the
-    /// signal AIGate backs off on. Distinct from a model-availability fault,
-    /// which ModelResolver handles.
-    var isRateLimited: Bool {
-        guard case let .apiError(code, message) = self else { return false }
-        let m = message.lowercased()
-        return code == 429 || m.contains("rate_limit") || m.contains("quota")
-    }
 }
 
 // MARK: - Data Helpers

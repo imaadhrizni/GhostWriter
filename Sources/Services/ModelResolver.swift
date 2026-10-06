@@ -62,6 +62,13 @@ final class ModelResolver {
         .reasoning:     ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
     ]
 
+    /// Chat models tried *after* a role's ordered preferences when failing over
+    /// for capacity (see `ModelFailover`). Each has its own per-minute and daily
+    /// allowance, so it absorbs work the gpt-oss models can't. Used only when
+    /// the live catalog actually lists them, and never for streamed answers
+    /// (their reasoning-style output isn't filtered live).
+    static let failoverExtras = ["qwen/qwen3.8-27b"]
+
     private struct Cache: Codable { var ids: [String]; var fetchedAt: Date }
 
     private let queue = DispatchQueue(label: "com.ghostwriter.modelresolver")
@@ -116,6 +123,7 @@ final class ModelResolver {
             "llama-3.1-8b-instant":       "Being retired by Groq (Aug 2026) — switch to GPT-OSS 20B",
             "openai/gpt-oss-120b":        "Strongest quality — recommended for summaries",
             "openai/gpt-oss-20b":         "Fast & light — recommended for background tasks",
+            "qwen/qwen3.8-27b":           "Mid-size Qwen — separate quota, used as an overflow model",
             "groq/compound":              "Agentic — LLM with built-in web search & tools",
             "groq/compound-mini":         "Lighter agentic model with built-in tools",
         ]
@@ -188,6 +196,21 @@ final class ModelResolver {
             if let live = ids.filter({ role.matches($0) }).sorted().first { return live }
             return want.isEmpty ? (Self.preferences[role]?.first ?? "") : want
         }
+    }
+
+    /// The ordered models to try for `role`, `primary` first: the role's other
+    /// preferences, then `failoverExtras` that the live catalog confirms exist.
+    /// Preferences are trusted when the catalog isn't known yet; extras are not.
+    func failoverChain(for role: Role, primary: String, includeExtras: Bool = true) -> [String] {
+        let ids = queue.sync { cache?.ids ?? [] }
+        var chain = [primary]
+        for id in Self.preferences[role] ?? [] where !chain.contains(id) && (ids.isEmpty || ids.contains(id)) {
+            chain.append(id)
+        }
+        if includeExtras {
+            for id in Self.failoverExtras where !chain.contains(id) && ids.contains(id) { chain.append(id) }
+        }
+        return chain
     }
 
     // MARK: Error classification

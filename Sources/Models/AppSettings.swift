@@ -1163,6 +1163,11 @@ final class AppSettings: ObservableObject {
     /// the persistent diagnostic log. Off by default to keep the file small.
     @Setting(Key.verboseLogging, Default.verboseLogging) var verboseLogging: Bool
 
+    /// When a chat model is rate-limited, over its daily quota, or erroring, try
+    /// the next model in the task's chain (per-model quotas are independent)
+    /// instead of waiting or failing. Off = always wait on the chosen model.
+    @Setting(Key.modelFailover, Default.modelFailover) var modelFailover: Bool
+
     /// DateFormatter pattern for dates shown in the menu and Catalog.
     @Setting(Key.uiDateFormat, Default.uiDateFormat) var uiDateFormat: String
 

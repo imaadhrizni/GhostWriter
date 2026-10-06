@@ -123,6 +123,12 @@ struct AIPane: View {
                 ModelAvailabilityView()
                 Text("Groq adds and retires models over time. Each choice above is checked against Groq's live catalog; an unavailable one is routed to the best working replacement automatically until you pick another.")
                     .font(.caption).foregroundColor(.secondary)
+
+                Divider()
+
+                Toggle("Switch models automatically when one is out of capacity", isOn: $settings.modelFailover)
+                Text("Groq limits each model separately. When the chosen model is rate-limited, over its daily quota, or erroring, GhostWriter sends the work to the next suitable model instead of failing — but only if that is meaningfully sooner than waiting (GPT-OSS 120B ↔ 20B). Background tasks such as chapters and objections can also overflow to Qwen if your account has it; summaries, Ask answers and drafts never do. Output quality can differ slightly between models; the model used for every call is recorded in the API Call Log. Off = always wait on the model you picked.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("On-Device & Fallback") {

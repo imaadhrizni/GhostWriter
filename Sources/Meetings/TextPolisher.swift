@@ -565,7 +565,7 @@ final class TextPolisher {
             max_tokens: 400
         )
 
-        let content = try await send(requestBody, timeout: 30, source: "Chapters")
+        let content = try await send(requestBody, timeout: 30, source: "Chapters", overflow: true)
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed == "NONE" ? "" : trimmed
     }
@@ -641,7 +641,7 @@ final class TextPolisher {
             temperature: 0.2,
             max_tokens: 700
         )
-        let raw = try await send(requestBody, timeout: 40, source: "Objections & competitors")
+        let raw = try await send(requestBody, timeout: 40, source: "Objections & competitors", overflow: true)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return raw.uppercased() == "NONE" ? "" : raw
     }
@@ -1216,11 +1216,46 @@ final class TextPolisher {
     /// guard), records usage, returns the message content. `role` lets a
     /// model-availability fault refresh the catalog and retry once on the best
     /// available replacement for that kind of model.
+    ///
+    /// `overflow` lets a capacity failover reach beyond the GPT-OSS models to an
+    /// overflow model (Qwen). It defaults on for lightweight/background work and
+    /// is opt-in for the polishing role: the summary, Ask, drafts and briefs stay
+    /// on the models this app's prompts were tuned for.
     private func send(_ body: ChatRequest, timeout: TimeInterval,
                       role: ModelResolver.Role = .summary,
-                      source: String = "Chat") async throws -> String {
+                      source: String = "Chat", overflow: Bool? = nil) async throws -> String {
+        let includeExtras = overflow ?? (role == .lightweight)
+        return try await withFailover(body, role: role, source: source, includeExtras: includeExtras) { candidate, retries in
+            try await self.sendOnModel(candidate, timeout: timeout, role: role, source: source, retries: retries)
+        }
+    }
+
+    /// Run `attempt` on the best model for this call, failing over down the
+    /// role's chain on a capacity fault (rate limit / quota / provider error).
+    /// With failover off, or a single-model chain, it just runs the call as-is.
+    /// `retries` is how many rate-limit waits `AIGate` may sit through: none while
+    /// another model can take the work, the normal allowance on the last one.
+    private func withFailover<T>(_ body: ChatRequest, role: ModelResolver.Role, source: String,
+                                 includeExtras: Bool,
+                                 _ attempt: (ChatRequest, Int?) async throws -> T) async throws -> T {
+        let chain = AppSettings.shared.modelFailover
+            ? ModelResolver.shared.failoverChain(for: role, primary: body.model, includeExtras: includeExtras)
+            : [body.model]
+        let estimate = body.messages.reduce(0) { $0 + $1.content.count } / 4 + body.max_tokens
+        return try await ModelFailover.run(chain: chain, estimate: estimate, source: source) { model, mayWait in
+            var candidate = body
+            candidate.model = model
+            return try await attempt(candidate, mayWait ? nil : 0)
+        }
+    }
+
+    /// One model's attempt: the request, plus the refresh-and-re-resolve retry
+    /// when that model has been decommissioned.
+    private func sendOnModel(_ body: ChatRequest, timeout: TimeInterval,
+                             role: ModelResolver.Role, source: String,
+                             retries: Int?) async throws -> String {
         do {
-            return try await perform(body, timeout: timeout, source: source)
+            return try await perform(body, timeout: timeout, source: source, retries: retries)
         } catch {
             // A decommissioned/unknown model → refresh the live catalog, re-resolve
             // for this role, and retry once. Rate-limit/quota is NOT a model fault
@@ -1231,11 +1266,12 @@ final class TextPolisher {
             let resolved = ModelResolver.shared.resolve(role, configured: body.model)
             guard resolved != body.model else { throw error }
             retry.model = resolved
-            return try await perform(retry, timeout: timeout, source: source)
+            return try await perform(retry, timeout: timeout, source: source, retries: retries)
         }
     }
 
-    private func perform(_ body: ChatRequest, timeout: TimeInterval, source: String) async throws -> String {
+    private func perform(_ body: ChatRequest, timeout: TimeInterval, source: String,
+                         retries: Int? = nil) async throws -> String {
         var body = body
         // Reasoning models (gpt-oss) burn the token budget on hidden reasoning;
         // cap the effort so the visible answer still fits.
@@ -1245,7 +1281,12 @@ final class TextPolisher {
         let key = apiKey
         let modelID = body.model
 
-        return try await AIGate.shared.run(.chat) { [session] in
+        // Groq counts input + max_tokens against the tokens-per-minute allowance;
+        // ~4 characters per token is close enough to pace by.
+        let estimatedTokens = payload.count / 4 + body.max_tokens
+
+        return try await AIGate.shared.run(.chat, model: modelID, estimatedTokens: estimatedTokens,
+                                           retries: retries) { [session] in
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
@@ -1264,12 +1305,16 @@ final class TextPolisher {
                 throw error
             }
             guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+            await AIGate.shared.noteBudget(model: modelID, response: http)
             guard http.statusCode == 200 else {
                 let errBody = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 APIDiagnostics.failure(kind: .chat, source: source, model: modelID,
                                        endpoint: "chat/completions", started: started,
                                        response: http, body: errBody)
-                throw GroqError.apiError(statusCode: http.statusCode, message: String(errBody.prefix(200)))
+                if let u = GroqError.tokenUsage(in: errBody) {
+                    await AIGate.shared.noteBudget(model: modelID, limit: u.limit, remaining: u.limit - u.used)
+                }
+                throw GroqError.http(http, body: errBody)
             }
             let result: ChatResponse
             do {
@@ -1290,7 +1335,7 @@ final class TextPolisher {
             // Reasoning models (e.g. gpt-oss) can leave `content` empty and put
             // the answer in `reasoning` — fall back to it so those models work.
             let msg = result.choices.first?.message
-            let content = [msg?.content, msg?.reasoning]
+            let content = [Self.strippingThinking(msg?.content), msg?.reasoning]
                 .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .first { !$0.isEmpty }
             guard let content, !content.isEmpty else {
@@ -1301,6 +1346,12 @@ final class TextPolisher {
         }
     }
 
+    /// Drop inline `<think>…</think>` reasoning that some overflow models (Qwen)
+    /// put in `content`, so only the answer reaches the note.
+    private static func strippingThinking(_ text: String?) -> String? {
+        text?.replacingOccurrences(of: #"<think>[\s\S]*?</think>"#, with: "", options: .regularExpression)
+    }
+
     // MARK: - Streaming
 
     /// Streaming counterpart of `send`: emits partial text through `onDelta` as
@@ -1309,8 +1360,20 @@ final class TextPolisher {
     private func sendStreaming(_ body: ChatRequest, timeout: TimeInterval,
                                role: ModelResolver.Role = .summary, source: String = "Chat",
                                onDelta: @escaping @Sendable (String) -> Void) async throws -> String {
+        // Streamed text is shown live, so overflow models (whose reasoning-style
+        // output isn't filtered per-token) are excluded from this chain.
+        try await withFailover(body, role: role, source: source, includeExtras: false) { candidate, retries in
+            try await self.streamOnModel(candidate, timeout: timeout, role: role, source: source,
+                                         retries: retries, onDelta: onDelta)
+        }
+    }
+
+    private func streamOnModel(_ body: ChatRequest, timeout: TimeInterval,
+                               role: ModelResolver.Role, source: String, retries: Int?,
+                               onDelta: @escaping @Sendable (String) -> Void) async throws -> String {
         do {
-            return try await performStreaming(body, timeout: timeout, source: source, onDelta: onDelta)
+            return try await performStreaming(body, timeout: timeout, source: source,
+                                              retries: retries, onDelta: onDelta)
         } catch {
             guard ModelResolver.shared.classify(error) != nil else { throw error }
             await ModelResolver.shared.refresh(force: true)
@@ -1318,11 +1381,13 @@ final class TextPolisher {
             let resolved = ModelResolver.shared.resolve(role, configured: body.model)
             guard resolved != body.model else { throw error }
             retry.model = resolved
-            return try await performStreaming(retry, timeout: timeout, source: source, onDelta: onDelta)
+            return try await performStreaming(retry, timeout: timeout, source: source,
+                                              retries: retries, onDelta: onDelta)
         }
     }
 
     private func performStreaming(_ body: ChatRequest, timeout: TimeInterval, source: String,
+                                  retries: Int? = nil,
                                   onDelta: @escaping @Sendable (String) -> Void) async throws -> String {
         var body = body
         body.stream = true
@@ -1333,7 +1398,12 @@ final class TextPolisher {
         let key = apiKey
         let modelID = body.model
 
-        return try await AIGate.shared.run(.chat) { [session] in
+        // Groq counts input + max_tokens against the tokens-per-minute allowance;
+        // ~4 characters per token is close enough to pace by.
+        let estimatedTokens = payload.count / 4 + body.max_tokens
+
+        return try await AIGate.shared.run(.chat, model: modelID, estimatedTokens: estimatedTokens,
+                                           retries: retries) { [session] in
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
@@ -1353,13 +1423,17 @@ final class TextPolisher {
                 throw error
             }
             guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
+            await AIGate.shared.noteBudget(model: modelID, response: http)
             guard http.statusCode == 200 else {
                 var errText = ""
                 for try await line in bytes.lines { errText += line; if errText.count > 2000 { break } }
                 APIDiagnostics.failure(kind: .chat, source: source, model: modelID,
                                        endpoint: "chat/completions (stream)", started: started,
                                        response: http, body: errText)
-                throw GroqError.apiError(statusCode: http.statusCode, message: String(errText.prefix(200)))
+                if let u = GroqError.tokenUsage(in: errText) {
+                    await AIGate.shared.noteBudget(model: modelID, limit: u.limit, remaining: u.limit - u.used)
+                }
+                throw GroqError.http(http, body: errText)
             }
 
             var full = ""

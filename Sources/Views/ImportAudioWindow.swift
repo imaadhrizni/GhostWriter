@@ -110,8 +110,11 @@ struct ImportAudioView: View {
 
             dropZone
 
+            if service.isRunning { progressCard }
+
             if !queueItems.isEmpty {
                 fileList
+                if queueItems.count >= 2 || service.combineIntoOneNote { combineRow }
                 assignRow
             }
 
@@ -174,6 +177,13 @@ struct ImportAudioView: View {
         List {
             ForEach(queueItems) { item in
                 HStack(spacing: 8) {
+                    if let part = service.partNumber(for: item.id) {
+                        Text("\(part)")
+                            .font(.caption2.monospacedDigit().weight(.semibold))
+                            .frame(width: 18, height: 18)
+                            .background(Circle().fill(Color.accentColor.opacity(0.18)))
+                            .help("Part \(part) of the combined note")
+                    }
                     if item.duplicate {
                         Image(systemName: "doc.on.doc").foregroundStyle(.secondary)
                     } else {
@@ -185,9 +195,18 @@ struct ImportAudioView: View {
                             Text("Already transcribed").font(.caption2).foregroundStyle(.secondary)
                         } else if let err = item.error {
                             Text(err).font(.caption2).foregroundStyle(.red).lineLimit(2)
+                        } else if item.status == .working, !item.stage.isEmpty {
+                            Text(item.stage).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        } else if item.partTranscript != nil && item.status == .queued {
+                            Text("Transcribed — waiting for the other parts").font(.caption2).foregroundStyle(.secondary)
                         }
                     }
                     Spacer()
+                    if item.status == .working {
+                        ProgressView(value: item.progress)
+                            .progressViewStyle(.linear)
+                            .frame(width: 70)
+                    }
                     if item.duplicate {
                         Menu {
                             if item.duplicateInHistory {
@@ -221,8 +240,59 @@ struct ImportAudioView: View {
                 }
                 .padding(.vertical, 2)
             }
+            .onMove { service.moveQueue(from: $0, to: $1) }
         }
         .frame(minHeight: 140)
+    }
+
+    // MARK: Progress
+
+    /// Overall progress while a run is going: which file/recording it's on, a
+    /// percentage weighted by audio length, and the step in progress. Determinate
+    /// where the work is countable (files, chunks, pipeline steps); a single
+    /// upload shows no sub-progress, so the bar advances at step boundaries.
+    private var progressCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(service.runLabel).font(.callout.weight(.medium))
+                Spacer()
+                Text("\(Int((service.overallProgress * 100).rounded()))%")
+                    .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            ProgressView(value: service.overallProgress)
+                .progressViewStyle(.linear)
+                .animation(.easeOut(duration: 0.3), value: service.overallProgress)
+            if let stage = service.activeStage {
+                Text(stage).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+    }
+
+    // MARK: Combine
+
+    /// Treat the queue as consecutive parts of one recording → a single note.
+    private var combineRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Combine into one note", isOn: $service.combineIntoOneNote)
+                .disabled(service.isRunning)
+            if service.combineIntoOneNote {
+                HStack(spacing: 8) {
+                    Text("Order parts by:").foregroundStyle(.secondary)
+                    Picker("", selection: $service.partOrder) {
+                        ForEach(PartOrder.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden().pickerStyle(.segmented).frame(maxWidth: 330)
+                    .disabled(service.isRunning)
+                    Spacer()
+                }
+                Text(service.willCombine
+                     ? "The files become consecutive parts of one recording: a single transcript, summary and linked audio file. Drag rows to arrange the order."
+                     : "Add at least two files to combine them into one note.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 
     // MARK: History tab
@@ -351,7 +421,9 @@ struct ImportAudioView: View {
             }
             Spacer()
             if service.isRunning { ProgressView().controlSize(.small).padding(.trailing, 4) }
-            Button(service.isRunning ? "Transcribing…" : "Transcribe \(service.queuedCount) file\(service.queuedCount == 1 ? "" : "s")") {
+            Button(service.isRunning ? "Transcribing…"
+                   : service.willCombine ? "Transcribe \(service.queuedCount) files as one note"
+                   : "Transcribe \(service.queuedCount) file\(service.queuedCount == 1 ? "" : "s")") {
                 Task { await service.run() }
             }
             .keyboardShortcut(.defaultAction)

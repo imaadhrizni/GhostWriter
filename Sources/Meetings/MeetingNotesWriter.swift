@@ -253,9 +253,15 @@ final class MeetingNotesWriter {
     /// Dates and duration come from the source file's own metadata so the note
     /// is filed under when it was *recorded*, not when it was imported. Returns
     /// the file URL (nil on write failure). The caller links it into the Catalog.
+    ///
+    /// `parts` is set for a multi-file import (several recordings combined into
+    /// this one note): `sourceFilename`/`sourceBytes` then describe the *first*
+    /// part (so History and rebuild keep working off the single-file markers) and
+    /// `gw_source_parts` lists every part for duplicate detection.
     static func importAudioNote(transcript: String, recordedAt: Date,
                                 sourceFilename: String, duration: TimeInterval?,
-                                sourceBytes: Int? = nil, title: String? = nil) -> URL? {
+                                sourceBytes: Int? = nil, title: String? = nil,
+                                parts: [(name: String, bytes: Int?)] = []) -> URL? {
         let noteTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? sourceFilename
         let folder = AppSettings.shared.meetingDestinationFolder(for: recordedAt)
         do {
@@ -294,6 +300,7 @@ final class MeetingNotesWriter {
                       "gw_source: import",
                       "gw_source_file: \(yaml(sourceFilename))"]
             if let sourceBytes { fm.append("gw_source_bytes: \(sourceBytes)") }
+            if parts.count > 1 { fm.append("gw_source_parts: \(ImportSeries.encodeParts(parts))") }
             if let secs { fm.append("gw_duration: \(secs)") }
             fm.append("tags: [meeting, ghostwriter, imported]")
             fm.append("---")
@@ -301,8 +308,11 @@ final class MeetingNotesWriter {
             content += fm.joined(separator: "\n") + "\n"
         }
         content += "# Meeting Notes\n**\(displayDate)**\n\n"
-        let sourceLine = durationText.map { "*Imported from `\(sourceFilename)` · \($0)*" }
-            ?? "*Imported from `\(sourceFilename)`*"
+        let sourceText = parts.count > 1
+            ? "\(parts.count) recordings (" + parts.map { "`\($0.name)`" }.joined(separator: ", ") + ")"
+            : "`\(sourceFilename)`"
+        let sourceLine = durationText.map { "*Imported from \(sourceText) · \($0)*" }
+            ?? "*Imported from \(sourceText)*"
         content += "\(sourceLine)\n\n---\n\n"
         content += transcript.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
 

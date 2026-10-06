@@ -663,13 +663,14 @@ final class TextPolisher {
                 .init(role: "user", content: clipped)
             ],
             temperature: 0.2,
-            max_tokens: 24
+            // Reasoning models (gpt-oss) spend part of this on hidden reasoning; a
+            // title-sized budget left nothing for the answer, and the `reasoning`
+            // fallback then returned the model's *thinking* as the title.
+            max_tokens: 200
         )
         let raw = try await send(requestBody, timeout: 15, role: .lightweight, source: "Meeting title")
-        // One clean line, strip stray quotes/punctuation the model may add.
-        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            .components(separatedBy: "\n").first?
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'.")) ?? ""
+        // One clean line; "" (→ caller keeps its fallback) if it isn't a real title.
+        return TranscriptFormatter.cleanTitle(raw)
     }
 
     /// The single structured artifact for a note — key points, Next Steps, and

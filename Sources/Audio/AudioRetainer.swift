@@ -20,6 +20,14 @@ import AVFoundation
 final class AudioRetainer: @unchecked Sendable {
 
     private let sampleRate = 16_000.0
+
+    /// Speech-grade AAC (16 kHz mono, ~32 kbps) used for every retained recording.
+    private static let aacSettings: [String: Any] = [
+        AVFormatIDKey: kAudioFormatMPEG4AAC,
+        AVSampleRateKey: 16_000.0,
+        AVNumberOfChannelsKey: 1,
+        AVEncoderBitRateKey: 32_000,
+    ]
     private let baseName: String
     private let audioDir: URL
     private let tmpDir: URL
@@ -95,6 +103,52 @@ final class AudioRetainer: @unchecked Sendable {
         }
     }
 
+    // MARK: Multi-part import
+
+    /// Join several audio files, in order, into one AAC `.m4a` — the retained
+    /// recording of a multi-part import. Decodes and encodes one file at a time,
+    /// so memory stays bounded however long the series is. Returns `false`
+    /// (leaving no partial file) if any part can't be decoded — e.g. ogg/opus,
+    /// which Core Audio can't read — so the caller can fall back to keeping the
+    /// parts separately.
+    static func concatenate(_ sources: [URL], to outURL: URL) -> Bool {
+        let fm = FileManager.default
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1) else { return false }
+        try? fm.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fm.removeItem(at: outURL)
+        guard let file = try? AVAudioFile(forWriting: outURL, settings: aacSettings) else { return false }
+
+        let chunkBytes = 16_000 * 2                         // ~1 s of Int16 per write
+        for source in sources {
+            guard let pcm = try? AudioFileImporter.decodePCM16k(from: source) else {
+                try? fm.removeItem(at: outURL)
+                return false
+            }
+            var offset = 0
+            while offset < pcm.count {
+                let end = min(offset + chunkBytes, pcm.count)
+                let frames = (end - offset) / 2
+                guard frames > 0,
+                      let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))
+                else { break }
+                buffer.frameLength = AVAudioFrameCount(frames)
+                let out = buffer.floatChannelData![0]
+                let start = offset / 2
+                pcm.withUnsafeBytes { raw in
+                    let samples = raw.bindMemory(to: Int16.self)
+                    for i in 0..<frames { out[i] = Float(samples[start + i]) / 32768.0 }
+                }
+                do { try file.write(from: buffer) } catch {
+                    try? fm.removeItem(at: outURL)
+                    return false
+                }
+                offset = end
+            }
+        }
+        Log.meeting.info("🎙️ Joined \(sources.count) recordings → \(outURL.lastPathComponent)")
+        return true
+    }
+
     // MARK: Mix + encode
 
     /// Stream both raw Int16 files, sum sample-by-sample (with clipping), and
@@ -113,13 +167,7 @@ final class AudioRetainer: @unchecked Sendable {
         try? fm.createDirectory(at: audioDir, withIntermediateDirectories: true)
         let outURL = audioDir.appendingPathComponent("\(baseName).m4a")
         try? fm.removeItem(at: outURL)   // overwrite any stale file
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 32_000,
-        ]
-        guard let file = try? AVAudioFile(forWriting: outURL, settings: settings) else { return nil }
+        guard let file = try? AVAudioFile(forWriting: outURL, settings: Self.aacSettings) else { return nil }
 
         let chunkSamples = 16_000                       // ~1s per chunk
         let byteCount = chunkSamples * 2                // Int16

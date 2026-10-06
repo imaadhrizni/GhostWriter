@@ -74,6 +74,16 @@ rm -rf ".build"
 rm -rf "${APP_NAME}.app"
 pkill "${APP_NAME}" || true
 
+# The macOS 27 SDK turns SwiftUI's @State into a macro whose compiler plugin
+# ships only with full Xcode, so a Command Line Tools-only build fails there
+# ("plugin for module 'SwiftUIMacros' not found"). Pin the 26.x SDK when it's
+# installed; otherwise (Xcode, or an older CLT) use the default. An explicit
+# SDKROOT from the caller always wins.
+if [ -z "${SDKROOT:-}" ] && [ -d "/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk" ]; then
+    export SDKROOT="/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk"
+    echo "🔧 Using ${SDKROOT##*/} (Command Line Tools)"
+fi
+
 echo "🔨 Building ${APP_NAME} in release mode..."
 swift build -c release
 

@@ -97,6 +97,11 @@ extension AppSettings {
         static let errorNotifications     = "diagnostics.errorNotifications"
         static let verboseLogging         = "diagnostics.verboseLogging"
         static let modelFailover          = "ai.modelFailover"
+        static let networkShowNotes       = "catalog.network.showNotes"
+        static let networkShowTags        = "catalog.network.showTags"
+        static let networkDerivedLinks    = "catalog.network.derivedLinks"
+        static let networkAnimate         = "catalog.network.animate"
+        static let networkDormantDays     = "catalog.network.dormantDays"
         static let uiDateFormat           = "ui.dateFormat"
         static let pdfPaperSize           = "export.pdfPaperSize"
         static let browserTabDetection    = "dictation.browserTabDetection"
@@ -155,7 +160,9 @@ extension AppSettings {
                           dictationStyleOverrides, userDictationStyles, defaultDictationStyle,
                           quickNotesFolderPath, quickNoteNotify,
                           localOnlyMode, redactionEnabled, redactEmails, redactPhones, redactNumbers,
-                          autoTagging, errorNotifications, verboseLogging, modelFailover, uiDateFormat, pdfPaperSize,
+                          autoTagging, errorNotifications, verboseLogging, modelFailover,
+                          networkShowNotes, networkShowTags, networkDerivedLinks, networkAnimate, networkDormantDays,
+                          uiDateFormat, pdfPaperSize,
                           browserTabDetection, domainStyleRules,
                           saveDictations, dictationsFolderPath, dictationOrganization, audioImportMaxMB,
                           meetingDetectInterval, liveBriefMinGrowth, transcriptionTimeout,
@@ -256,6 +263,11 @@ extension AppSettings {
         static let errorNotifications              = true
         static let verboseLogging                  = false   // debug-level lines in the file log
         static let modelFailover                   = true    // switch models when one is out of capacity
+        static let networkShowNotes                = false   // notes as nodes (a hairball at scale — opt in)
+        static let networkShowTags                 = true
+        static let networkDerivedLinks             = true    // person/tag ↔ organisation links computed from notes
+        static let networkAnimate                  = true    // live layout animation (off = settle instantly)
+        static let networkDormantDays: Int         = 45      // days without a note before an account counts as dormant
         static let uiDateFormat                    = "dd MMM yyyy"
         static let pdfPaperSize                     = "letter"   // "letter" | "a4"
         static let browserTabDetection             = true

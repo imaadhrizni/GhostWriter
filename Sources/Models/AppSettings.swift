@@ -1168,6 +1168,23 @@ final class AppSettings: ObservableObject {
     /// instead of waiting or failing. Off = always wait on the chosen model.
     @Setting(Key.modelFailover, Default.modelFailover) var modelFailover: Bool
 
+    // MARK: Catalog Network
+
+    /// Show notes as nodes when the Network opens (they multiply the node count,
+    /// so off by default; the toolbar can still toggle them).
+    @Setting(Key.networkShowNotes, Default.networkShowNotes) var networkShowNotes: Bool
+    /// Show tags as nodes when the Network opens.
+    @Setting(Key.networkShowTags, Default.networkShowTags) var networkShowTags: Bool
+    /// Draw the computed person/tag ↔ organisation links.
+    @Setting(Key.networkDerivedLinks, Default.networkDerivedLinks) var networkDerivedLinks: Bool
+    /// Animate the layout settling (off = jump straight to the settled picture).
+    @Setting(Key.networkAnimate, Default.networkAnimate) var networkAnimate: Bool
+    /// Days without a note before an open organisation/project is flagged dormant.
+    var networkDormantDays: Int {
+        get { min(365, max(7, int(Key.networkDormantDays, Default.networkDormantDays))) }
+        set { set(min(365, max(7, newValue)), Key.networkDormantDays) }
+    }
+
     /// DateFormatter pattern for dates shown in the menu and Catalog.
     @Setting(Key.uiDateFormat, Default.uiDateFormat) var uiDateFormat: String
 

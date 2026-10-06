@@ -195,6 +195,25 @@ struct GeneralPane: View {
                 DateFormatField()
             }
 
+            SettingsGroup("Catalog Network") {
+                Toggle("Show tags", isOn: $settings.networkShowTags)
+                Toggle("Show notes as nodes", isOn: $settings.networkShowNotes)
+                Toggle("Show derived links", isOn: $settings.networkDerivedLinks)
+                Toggle("Animate the layout", isOn: $settings.networkAnimate)
+                HStack {
+                    Text("Flag an account dormant after")
+                    Spacer()
+                    Stepper("\(settings.networkDormantDays) days without a note",
+                            value: $settings.networkDormantDays, in: 7...365, step: 7)
+                        .frame(width: 250)
+                    DefaultResetButton(isDefault: settings.networkDormantDays == AppSettings.Default.networkDormantDays) {
+                        settings.networkDormantDays = AppSettings.Default.networkDormantDays
+                    }
+                }
+                Text("What the Network section (Catalog → Explore) shows when it opens — you can still toggle each from its toolbar. Derived links connect people and tags to the organisations whose notes they appear in, so accounts that share a contact are linked even with notes hidden. With animation off the layout appears already settled (it is also instant when macOS Reduce Motion is on).")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
             SettingsGroup("PDF Export") {
                 Picker("Paper size", selection: $settings.pdfPaperSize) {
                     Text("US Letter").tag("letter")

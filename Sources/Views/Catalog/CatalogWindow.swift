@@ -47,6 +47,7 @@ enum CatalogSection: String, CaseIterable, Identifiable {
     case poc           = "POC Tracker"
     case radar         = "Keyword Radar"
     case map           = "Map"
+    case network       = "Network"
     var id: String { rawValue }
 
     /// Sidebar layout, grouped for scanning — five tight clusters (≤4 items each)
@@ -57,19 +58,20 @@ enum CatalogSection: String, CaseIterable, Identifiable {
     ///   contiguous to match the Map tree, with People and Tags — the cross-cutting
     ///   per-note entities — last.
     /// • **Track** — the watch/resolve surfaces, led by the actionable inbox.
-    /// • **Explore** — the graph lens over everything.
+    /// • **Explore** — the graph lenses over everything: Map (the hierarchy as a
+    ///   tree) and Network (the same records as a linked graph).
     static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
         ("Overview", [.dashboard, .reports]),
         ("Records",  [.notes, .recordings]),
         ("Graph",    [.organisations, .projects, .people, .tags]),
         ("Track",    [.questions, .poc, .radar]),
-        ("Explore",  [.map]),
+        ("Explore",  [.map, .network]),
     ]
 
     var singular: String {
         switch self {
         case .dashboard:     return "Dashboard"
-        case .map:           return "Item"
+        case .map, .network: return "Item"
         case .organisations: return "Organisation"
         case .people:        return "Person"
         case .projects:      return "Project"
@@ -86,6 +88,7 @@ enum CatalogSection: String, CaseIterable, Identifiable {
         switch self {
         case .dashboard:     return "square.grid.2x2.fill"
         case .map:           return "point.3.filled.connected.trianglepath.dotted"
+        case .network:       return "network"
         case .organisations: return "building.2"
         case .people:        return "person.2"
         case .projects:      return "folder"
@@ -102,6 +105,7 @@ enum CatalogSection: String, CaseIterable, Identifiable {
         switch self {
         case .dashboard:     return .accentColor
         case .map:           return .purple
+        case .network:       return .gray
         case .organisations: return .blue
         case .people:        return .teal
         case .projects:      return .orange
@@ -175,7 +179,7 @@ struct CatalogView: View {
     private func count(_ s: CatalogSection) -> Int {
         switch s {
         case .dashboard:     return 0
-        case .map:           return 0
+        case .map, .network: return 0
         case .organisations: return store.doc.orgs.count
         case .people:        return store.doc.people.count
         case .projects:      return store.doc.projects.count
@@ -193,6 +197,9 @@ struct CatalogView: View {
     private var wideCanvas: Bool { section == .dashboard || section == .questions || section == .reports || section == .recordings }
     /// Master lists that carry a filter/sort toolbar and so want a wider column.
     private var wideMaster: Bool { section == .poc || section == .radar || section == .map }
+    /// The Network graph needs room to breathe: a wide content column with its
+    /// editor still in the detail pane.
+    private var wideGraph: Bool { section == .network }
 
     var body: some View {
         NavigationSplitView {
@@ -224,20 +231,23 @@ struct CatalogView: View {
                 // this column); every other section is a normal master list, so
                 // cap it narrower.
                 .navigationSplitViewColumnWidth(
-                    min: wideCanvas ? 460 : (wideMaster ? 330 : 240),
-                    ideal: wideCanvas ? 640 : (wideMaster ? 370 : 285),
-                    max: wideCanvas ? 5000 : (wideMaster ? 460 : 400))
+                    min: wideCanvas || wideGraph ? 460 : (wideMaster ? 330 : 240),
+                    ideal: wideCanvas ? 640 : (wideGraph ? 720 : (wideMaster ? 370 : 285)),
+                    max: wideCanvas || wideGraph ? 5000 : (wideMaster ? 460 : 400))
                 .navigationTitle(section.rawValue)
         } detail: {
             if wideCanvas {
                 // Self-contained full-width sections — collapse the detail column
                 // away so there's no blank pane on the right.
                 Color.clear.frame(width: 0).navigationSplitViewColumnWidth(0)
-            } else if section == .map {
+            } else if section == .map || section == .network {
                 if let sec = mapSection, let id = mapID {
                     EntityEditorView(store: store, section: sec, id: id) { mapID = nil }
                         .id(id)
                         .frame(minWidth: 340)
+                } else if section == .network {
+                    ContentUnavailableView("Catalog network", systemImage: "network",
+                                           description: Text("Click any node to open it here. Double-click to focus on it, or shift-click a second node to trace how they connect."))
                 } else {
                     ContentUnavailableView("Catalog map", systemImage: "point.3.filled.connected.trianglepath.dotted",
                                            description: Text("Expand the tree and pick any item to open it here."))
@@ -293,6 +303,10 @@ struct CatalogView: View {
             RadarTermList(store: store, model: radarModel, selID: $selID)
         } else if section == .map {
             MapTree(store: store) { sec, id in mapSection = sec; mapID = id }
+        } else if section == .network {
+            CatalogNetworkView(store: store,
+                               onSelect: { sec, id in mapSection = sec; mapID = id },
+                               onOpenNote: { id in if let n = store.note(id: id) { openNote(n) } })
         } else if section == .poc {
             PocProjectList(store: store, selID: $selID)
         } else if section == .questions {

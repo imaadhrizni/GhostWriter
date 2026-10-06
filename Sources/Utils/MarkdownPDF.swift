@@ -43,10 +43,9 @@ enum MarkdownPDF {
                      project: String? = nil, poc: [POCItem] = []) -> Data? {
         let body = FrontMatter.body(markdown)
         // Prefer the note's own front-matter title (the AI-generated one) over
-        // the raw filename the caller passes.
-        let fmTitle = FrontMatter.field("title", in: markdown)?
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
-        let displayTitle = (fmTitle?.isEmpty == false) ? fmTitle! : title
+        // the raw filename the caller passes. This one value drives both the
+        // header and the footer.
+        let displayTitle = FrontMatter.displayTitle(in: markdown) ?? title
 
         // Fixed prefix (never affected by TOC paging): title + Properties box.
         let prefix = NSMutableAttributedString()
@@ -107,7 +106,7 @@ enum MarkdownPDF {
             CTFrameDraw(frame, ctx)
             drawLinks(ctx, frame: frame, textRect: textRectForLinks,
                       headingAbs: headingAbs, tocEntryAbs: tocEntryAbs)
-            drawFooter(ctx, page: i + 1, total: total, title: title)
+            drawFooter(ctx, page: i + 1, total: total, title: displayTitle)
             ctx.endPDFPage()
         }
         ctx.closePDF()

@@ -76,7 +76,7 @@ enum EventDispatcher {
         guard !trimmed.isEmpty else { return }
         let url = URL(fileURLWithPath: trimmed)
         guard FileManager.default.isExecutableFile(atPath: url.path) else {
-            Log.meeting.error("❌ Script hook not executable: \(url.path, privacy: .public)")
+            Log.meeting.error("❌ Script hook not executable: \(url.path)")
             return
         }
         DispatchQueue.global(qos: .utility).async {
@@ -91,7 +91,7 @@ enum EventDispatcher {
                 process.waitUntilExit()
                 Log.meeting.info("🔗 Script hook finished (exit \(process.terminationStatus))")
             } catch {
-                Log.meeting.error("❌ Script hook failed: \(error.localizedDescription, privacy: .public)")
+                Log.meeting.error("❌ Script hook failed: \(error.localizedDescription)")
             }
         }
     }
@@ -111,7 +111,7 @@ enum EventDispatcher {
         request.timeoutInterval = 15
         URLSession.shared.dataTask(with: request) { _, response, error in
             if let error {
-                Log.meeting.error("❌ Webhook POST failed: \(error.localizedDescription, privacy: .public)")
+                Log.meeting.error("❌ Webhook POST failed: \(error.localizedDescription)")
             } else if let code = (response as? HTTPURLResponse)?.statusCode {
                 Log.meeting.info("🔗 Webhook POST → \(code)")
             }

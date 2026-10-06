@@ -31,6 +31,14 @@ final class APIUsageLog {
         var audioSeconds: Double  // transcription only
         var costUSD: Double
         var ok: Bool
+        /// HTTP status of a failed call (nil for success or a transport error).
+        /// Optional so logs written before this field existed still decode.
+        var status: Int?
+        /// Why a failed call failed — Groq's error text or the transport error,
+        /// trimmed. Never contains the request (prompt/transcript) content.
+        var failure: String?
+        /// Round-trip time in milliseconds, when measured.
+        var latencyMs: Int?
     }
 
     private let queue = DispatchQueue(label: "com.ghostwriter.apiusagelog")
@@ -54,19 +62,23 @@ final class APIUsageLog {
     // MARK: Record
 
     func recordChat(source: String, model modelID: String,
-                    inputTokens: Int, outputTokens: Int, ok: Bool = true) {
+                    inputTokens: Int, outputTokens: Int, ok: Bool = true,
+                    status: Int? = nil, failure: String? = nil, latencyMs: Int? = nil) {
         let cost = GroqPricing.chatCost(inputTokens: inputTokens, outputTokens: outputTokens)
         append(Entry(date: Date(), kind: .chat, source: source, model: modelID,
                      inputTokens: inputTokens, outputTokens: outputTokens,
-                     audioSeconds: 0, costUSD: cost, ok: ok))
+                     audioSeconds: 0, costUSD: cost, ok: ok,
+                     status: status, failure: failure, latencyMs: latencyMs))
     }
 
     func recordTranscription(source: String, model modelID: String,
-                             audioSeconds: Double, ok: Bool = true) {
+                             audioSeconds: Double, ok: Bool = true,
+                             status: Int? = nil, failure: String? = nil, latencyMs: Int? = nil) {
         let cost = GroqPricing.audioCost(seconds: audioSeconds)
         append(Entry(date: Date(), kind: .transcription, source: source, model: modelID,
                      inputTokens: 0, outputTokens: 0,
-                     audioSeconds: audioSeconds, costUSD: cost, ok: ok))
+                     audioSeconds: audioSeconds, costUSD: cost, ok: ok,
+                     status: status, failure: failure, latencyMs: latencyMs))
     }
 
     func clear() {

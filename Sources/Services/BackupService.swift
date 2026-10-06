@@ -130,12 +130,12 @@ enum BackupService {
                 pruneAutomaticBackups(in: folder, keeping: retention)
                 DispatchQueue.main.async {
                     AppSettings.shared.lastAutomaticBackupAt = Date()
-                    Log.app.info("💾 Automatic backup written: \(destination.lastPathComponent, privacy: .public)")
+                    Log.app.info("💾 Automatic backup written: \(destination.lastPathComponent)")
                     NotificationCenter.default.post(name: automaticBackupDidComplete, object: nil)
                 }
             } catch {
                 DispatchQueue.main.async {
-                    Log.app.error("💾 Automatic backup failed: \(error.localizedDescription, privacy: .public)")
+                    Log.app.error("💾 Automatic backup failed: \(error.localizedDescription)")
                     if AppSettings.shared.errorNotifications {
                         NotificationManager.shared.notifyBackupFailed(error.localizedDescription)
                     }

@@ -44,7 +44,8 @@ final class GroqService {
         let wavData = AudioCapture.createWAV(from: audioData)
         let text = try await postTranscription(
             fileData: wavData, filename: "audio.wav", mimeType: "audio/wav",
-            timeout: TimeInterval(AppSettings.shared.transcriptionTimeout), context: context)
+            timeout: TimeInterval(AppSettings.shared.transcriptionTimeout), context: context,
+            source: source)
         // Bill estimate: 16 kHz, 16-bit, mono PCM → 2 bytes/sample.
         let seconds = Double(audioData.count) / 2.0 / 16_000.0
         UsageStats.shared.recordTranscription(audioSeconds: seconds)
@@ -67,7 +68,8 @@ final class GroqService {
         // user-configurable import timeout.
         let text = try await postTranscription(
             fileData: fileData, filename: Self.uploadFilename(for: fileURL), mimeType: mimeType,
-            timeout: TimeInterval(AppSettings.shared.importTranscriptionTimeout), context: context)
+            timeout: TimeInterval(AppSettings.shared.importTranscriptionTimeout), context: context,
+            source: source)
         if audioSeconds > 0 { UsageStats.shared.recordTranscription(audioSeconds: audioSeconds) }
         logTranscription(source: source, audioSeconds: audioSeconds)
         return text
@@ -96,7 +98,8 @@ final class GroqService {
     /// status check, decode, and the user's find→replace pass. Callers differ
     /// only in the file part, timeout, and usage accounting.
     private func postTranscription(fileData: Data, filename: String, mimeType: String,
-                                   timeout: TimeInterval, context: String) async throws -> String {
+                                   timeout: TimeInterval, context: String,
+                                   source: String) async throws -> String {
         guard !apiKey.isEmpty else { throw GroqError.missingAPIKey }
 
         // Resolve the configured Whisper model against Groq's live catalog, so a
@@ -141,13 +144,35 @@ final class GroqService {
         // never starved by chat fan-out, and shares the rate-limit backoff.
         let requestCopy = request
         let text = try await AIGate.shared.run(.transcription) { [session] in
-            let (data, response) = try await session.data(for: requestCopy)
+            let started = Date()
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await session.data(for: requestCopy)
+            } catch {
+                APIDiagnostics.failure(kind: .transcription, source: source, model: resolvedModel,
+                                       endpoint: "audio/transcriptions", started: started, error: error)
+                throw error
+            }
             guard let httpResponse = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
             guard httpResponse.statusCode == 200 else {
                 let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+                APIDiagnostics.failure(kind: .transcription, source: source, model: resolvedModel,
+                                       endpoint: "audio/transcriptions", started: started,
+                                       response: httpResponse, body: errorBody)
                 throw GroqError.apiError(statusCode: httpResponse.statusCode, message: String(errorBody.prefix(200)))
             }
-            let result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
+            let result: TranscriptionResponse
+            do {
+                result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
+            } catch {
+                APIDiagnostics.failure(kind: .transcription, source: source, model: resolvedModel,
+                                       endpoint: "audio/transcriptions", started: started,
+                                       response: httpResponse, body: "undecodable response (\(data.count) bytes)", error: error)
+                throw error
+            }
+            APIDiagnostics.success(endpoint: "audio/transcriptions", source: source, model: resolvedModel,
+                                   started: started, detail: "upload=\(requestCopy.httpBody?.count ?? 0)B")
             return result.text
         }
         return AppSettings.shared.applyReplacements(to: text)

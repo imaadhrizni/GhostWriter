@@ -1253,26 +1253,50 @@ final class TextPolisher {
             request.timeoutInterval = timeout
             request.httpBody = payload
 
-            let (data, response) = try await session.data(for: request)
+            let started = Date()
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await session.data(for: request)
+            } catch {
+                APIDiagnostics.failure(kind: .chat, source: source, model: modelID,
+                                       endpoint: "chat/completions", started: started, error: error)
+                throw error
+            }
             guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
             guard http.statusCode == 200 else {
-                APIUsageLog.shared.recordChat(source: source, model: modelID,
-                                              inputTokens: 0, outputTokens: 0, ok: false)
                 let errBody = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                APIDiagnostics.failure(kind: .chat, source: source, model: modelID,
+                                       endpoint: "chat/completions", started: started,
+                                       response: http, body: errBody)
                 throw GroqError.apiError(statusCode: http.statusCode, message: String(errBody.prefix(200)))
             }
-            let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+            let result: ChatResponse
+            do {
+                result = try JSONDecoder().decode(ChatResponse.self, from: data)
+            } catch {
+                APIDiagnostics.failure(kind: .chat, source: source, model: modelID,
+                                       endpoint: "chat/completions", started: started,
+                                       response: http, body: "undecodable response (\(data.count) bytes)", error: error)
+                throw error
+            }
             Self.recordUsage(result)
             APIUsageLog.shared.recordChat(source: source, model: modelID,
                                           inputTokens: result.usage?.prompt_tokens ?? 0,
-                                          outputTokens: result.usage?.completion_tokens ?? 0)
+                                          outputTokens: result.usage?.completion_tokens ?? 0,
+                                          latencyMs: APIDiagnostics.latencyMs(since: started))
+            APIDiagnostics.success(endpoint: "chat/completions", source: source, model: modelID, started: started,
+                                   detail: "in=\(result.usage?.prompt_tokens ?? 0) out=\(result.usage?.completion_tokens ?? 0)")
             // Reasoning models (e.g. gpt-oss) can leave `content` empty and put
             // the answer in `reasoning` — fall back to it so those models work.
             let msg = result.choices.first?.message
             let content = [msg?.content, msg?.reasoning]
                 .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .first { !$0.isEmpty }
-            guard let content, !content.isEmpty else { throw GroqError.invalidResponse }
+            guard let content, !content.isEmpty else {
+                Log.api.error("✖ chat/completions \"\(source)\" model=\(modelID) HTTP 200 — empty completion (no content or reasoning in \(data.count) bytes)")
+                throw GroqError.invalidResponse
+            }
             return content
         }
     }
@@ -1318,13 +1342,23 @@ final class TextPolisher {
             request.timeoutInterval = timeout
             request.httpBody = payload
 
-            let (bytes, response) = try await session.bytes(for: request)
+            let started = Date()
+            let bytes: URLSession.AsyncBytes
+            let response: URLResponse
+            do {
+                (bytes, response) = try await session.bytes(for: request)
+            } catch {
+                APIDiagnostics.failure(kind: .chat, source: source, model: modelID,
+                                       endpoint: "chat/completions (stream)", started: started, error: error)
+                throw error
+            }
             guard let http = response as? HTTPURLResponse else { throw GroqError.invalidResponse }
             guard http.statusCode == 200 else {
                 var errText = ""
                 for try await line in bytes.lines { errText += line; if errText.count > 2000 { break } }
-                APIUsageLog.shared.recordChat(source: source, model: modelID,
-                                              inputTokens: 0, outputTokens: 0, ok: false)
+                APIDiagnostics.failure(kind: .chat, source: source, model: modelID,
+                                       endpoint: "chat/completions (stream)", started: started,
+                                       response: http, body: errText)
                 throw GroqError.apiError(statusCode: http.statusCode, message: String(errText.prefix(200)))
             }
 
@@ -1350,7 +1384,11 @@ final class TextPolisher {
             }
             APIUsageLog.shared.recordChat(source: source, model: modelID,
                                           inputTokens: usage?.prompt_tokens ?? 0,
-                                          outputTokens: usage?.completion_tokens ?? 0)
+                                          outputTokens: usage?.completion_tokens ?? 0,
+                                          latencyMs: APIDiagnostics.latencyMs(since: started))
+            APIDiagnostics.success(endpoint: "chat/completions (stream)", source: source, model: modelID,
+                                   started: started,
+                                   detail: "in=\(usage?.prompt_tokens ?? 0) out=\(usage?.completion_tokens ?? 0)")
             let answer = (full.isEmpty ? reasoning : full).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !answer.isEmpty else { throw GroqError.invalidResponse }
             return answer

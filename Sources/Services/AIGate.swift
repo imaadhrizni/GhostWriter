@@ -109,5 +109,6 @@ actor AIGate {
     private func armBackoff() {
         backoff = backoff == 0 ? Self.firstBackoff : min(backoff * 2, Self.maxBackoff)
         pausedUntil = Date().addingTimeInterval(backoff)
+        Log.api.warning("⏸ Rate limited — pausing all AI calls for \(Int(backoff))s")
     }
 }

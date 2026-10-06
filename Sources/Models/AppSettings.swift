@@ -1159,6 +1159,10 @@ final class AppSettings: ObservableObject {
     /// Post a notification when something fails (also logged in Diagnostics).
     @Setting(Key.errorNotifications, Default.errorNotifications) var errorNotifications: Bool
 
+    /// Also write debug-level detail (per-call API timings, segment events) to
+    /// the persistent diagnostic log. Off by default to keep the file small.
+    @Setting(Key.verboseLogging, Default.verboseLogging) var verboseLogging: Bool
+
     /// DateFormatter pattern for dates shown in the menu and Catalog.
     @Setting(Key.uiDateFormat, Default.uiDateFormat) var uiDateFormat: String
 

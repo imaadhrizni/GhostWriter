@@ -231,8 +231,12 @@ struct DiagnosticsPane: View {
                 }
             }
 
+            SettingsGroup("Debug Log") {
+                DebugLogView()
+            }
+
             SettingsGroup("Reliability") {
-                Text("When a Groq request fails, GhostWriter automatically retries meeting segments and — if offline fallback is on (AI & Models → On-Device & Fallback) — transcribes on-device so you don't lose audio. Detailed logs are in Console.app under the “GhostWriter” subsystem.")
+                Text("When a Groq request fails, GhostWriter automatically retries meeting segments and — if offline fallback is on (AI & Models → On-Device & Fallback) — transcribes on-device so you don't lose audio. Every failed call is recorded above with its HTTP status and the server's reason. The same log is also in Console.app under the app's subsystem.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }

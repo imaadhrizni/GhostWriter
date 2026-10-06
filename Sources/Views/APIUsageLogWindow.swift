@@ -150,7 +150,14 @@ private struct APIUsageLogView: View {
             TableColumn("Kind") { e in Text(e.kind.rawValue.capitalized) }
             TableColumn("Model") { e in Text(e.model).lineLimit(1).truncationMode(.middle) }
             TableColumn("Detail") { e in
-                if e.kind == .chat {
+                if !e.ok {
+                    // Why it failed — status + the server's reason (full text on hover).
+                    let status = e.status.map { "HTTP \($0)" } ?? "Network error"
+                    Text([status, e.failure].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                        .foregroundStyle(.orange)
+                        .lineLimit(1).truncationMode(.tail)
+                        .help(e.failure ?? status)
+                } else if e.kind == .chat {
                     Text("\(e.inputTokens) in / \(e.outputTokens) out").monospacedDigit()
                 } else {
                     Text(UsageStats.hoursMinutes(Int(e.audioSeconds.rounded()))).monospacedDigit()

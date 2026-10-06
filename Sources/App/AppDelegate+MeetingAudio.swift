@@ -78,7 +78,7 @@ extension AppDelegate {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty,
                       !self.whisperHallucinations.contains(trimmed.lowercased()) else { return }
-                Log.meeting.debug("🎤 You: \(trimmed, privacy: .private)")
+                Log.meeting.debug("🎤 You: segment transcribed (\(trimmed.count) chars)")
                 self.meetingNotes.append(segment: trimmed, speaker: "You", at: capturedAt)
             } catch {
                 Log.meeting.error("❌ Mic transcription error: \(error.localizedDescription)")
@@ -256,11 +256,11 @@ extension AppDelegate {
 
                 // Discard known Whisper hallucinations
                 guard !self.whisperHallucinations.contains(trimmed.lowercased()) else {
-                    Log.meeting.debug("⏭ Filtered hallucination: '\(trimmed, privacy: .private)'")
+                    Log.meeting.debug("⏭ Filtered hallucination (\(trimmed.count) chars)")
                     return
                 }
 
-                Log.meeting.debug("📡 Meeting transcript: \(trimmed, privacy: .private)")
+                Log.meeting.debug("📡 Meeting segment transcribed (\(trimmed.count) chars)")
                 self.meetingNotes.append(segment: trimmed, speaker: speakerLabel, at: capturedAt)
                 if self.settings.overlayMode == .captions {
                     await MainActor.run { [weak self] in

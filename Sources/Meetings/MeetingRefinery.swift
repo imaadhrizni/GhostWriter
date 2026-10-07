@@ -86,6 +86,12 @@ enum MeetingRefinery {
 
     // MARK: Cloud
 
+    /// Run a throwing model call, keeping the error instead of discarding it
+    /// (`try?`) so a failure can be reported with its real cause.
+    private static func capturing(_ work: () async throws -> String) async -> (text: String?, error: Error?) {
+        do { return (try await work(), nil) } catch { return (nil, error) }
+    }
+
     private static func refineCloud(fileURL: URL, transcript: String, options: Options,
                                     writer: MeetingNotesWriter,
                                     onError: @escaping (String) -> Void) async -> Bool {
@@ -111,12 +117,14 @@ enum MeetingRefinery {
         // failure never cancels the others (same graceful degradation as the
         // old sequential path), and the FILE WRITES are done afterwards, in the
         // canonical section order, so concurrent calls never race on the note.
-        async let summaryRawTask: String? = wantsSummarySection
-            ? (try? await tp.summarize(
-                transcript: transcript, template: settings.selectedTemplate,
-                includeSummary: wantsSummary, includeActionItems: wantsActions,
-                includeStructured: wantsStructured, includeOpenQuestions: wantsOpenQuestions))
-            : nil
+        async let summaryOutcome: (text: String?, error: Error?) = wantsSummarySection
+            ? await Self.capturing {
+                try await tp.summarize(
+                    transcript: transcript, template: settings.selectedTemplate,
+                    includeSummary: wantsSummary, includeActionItems: wantsActions,
+                    includeStructured: wantsStructured, includeOpenQuestions: wantsOpenQuestions)
+            }
+            : (nil, nil)
         async let factsTask: TextPolisher.MeetingFacts? = wantsFacts
             ? await tp.extractMeetingFacts(
                 transcript: transcript, includeTitle: wantsTitle,
@@ -132,7 +140,7 @@ enum MeetingRefinery {
             ? await tp.agendaStatus(userAgenda: options.userAgenda, transcript: transcript, preferFast: true)
             : nil
 
-        let summaryRaw = await summaryRawTask
+        let (summaryRaw, summaryError) = await summaryOutcome
         let facts = await factsTask
         let chaptersText = await chaptersTask
         let objectionsText = await objectionsTask
@@ -146,8 +154,11 @@ enum MeetingRefinery {
                 writer.appendSummary(summary, to: fileURL)
                 produced = true
             } else if summaryRaw == nil {
-                Log.meeting.error("❌ Summary failed or returned nothing")
-                onError("Meeting summary failed.")
+                // Surface the real cause (HTTP status / rate limit / timeout) rather
+                // than a bare "failed", so the user can act on it.
+                let reason = summaryError?.localizedDescription
+                Log.meeting.error("❌ Summary failed: \(reason ?? "no content returned")")
+                onError(reason.map { "Meeting summary failed — \($0)" } ?? "Meeting summary failed.")
             } else {
                 Log.meeting.info("⏭ Summary skipped — not enough content")
             }

@@ -52,7 +52,9 @@ final class NotesViewerWindowController: NSWindowController {
     /// Open an existing notes file for viewing/editing.
     convenience init(fileURL: URL) {
         let text = (fileURL.readText()) ?? ""
-        self.init(title: fileURL.lastPathComponent, fileURL: fileURL, initialText: text)
+        // The note's own title (front-matter) reads better than "Meeting_2026-10-06_….md".
+        self.init(title: FrontMatter.displayTitle(in: text) ?? fileURL.lastPathComponent,
+                  fileURL: fileURL, initialText: text)
     }
 
     /// Present generated text (e.g. a follow-up draft) with no backing file.
@@ -172,6 +174,13 @@ private struct NotesViewerView: View {
     }
 
     private var isDirty: Bool { text != savedText }
+
+    /// The note's human title — its front-matter `title:` (AI-generated or edited
+    /// by hand) — falling back to the file name. Used for draft-window titles and
+    /// PDF export instead of "Meeting_2026-10-06_17-50-36".
+    private var noteTitle: String {
+        FrontMatter.displayTitle(in: text) ?? fileURL?.deletingPathExtension().lastPathComponent ?? "Note"
+    }
 
     /// Speaker labels only exist in meeting notes.
     private var isMeetingNote: Bool {
@@ -628,7 +637,7 @@ private struct NotesViewerView: View {
         let source = text
         summarizing = true
         status = "Summarizing…"
-        let base = fileURL?.deletingPathExtension().lastPathComponent ?? "Note"
+        let base = noteTitle
         Task { @MainActor in
             defer { summarizing = false }
             do {
@@ -681,7 +690,7 @@ private struct NotesViewerView: View {
     /// clobbers another for the same meeting.
     private func draftDoc(_ doc: DraftDoc) {
         guard let fileURL, let transcript = fileURL.readText() else { return }
-        let base = fileURL.deletingPathExtension().lastPathComponent
+        let base = noteTitle
         let title = doc.displayName
         // The POC plan builds on the project's tracked success criteria (same
         // grounding the Follow-Up Packet uses) rather than re-inventing them.
@@ -714,7 +723,7 @@ private struct NotesViewerView: View {
     /// present, else the type inferred from its headings, else the default.
     private func draftAutoFollowUp() {
         guard let fileURL, let transcript = fileURL.readText() else { return }
-        let base = fileURL.deletingPathExtension().lastPathComponent
+        let base = noteTitle
         drafting = true
         status = "Drafting…"
         let template = recordedMeetingTypeID(transcript).flatMap { AppSettings.shared.template(withID: $0) }
@@ -769,7 +778,7 @@ private struct NotesViewerView: View {
     /// per-section toggles in Settings) and opened in its own viewer window.
     private func generatePacket() {
         guard let fileURL else { return }
-        let base = fileURL.deletingPathExtension().lastPathComponent
+        let base = noteTitle
         drafting = true
         status = "Assembling packet…"
         Task { @MainActor in
@@ -796,14 +805,16 @@ private struct NotesViewerView: View {
 
     /// Render the current Markdown to a paginated PDF and let the user save it.
     private func exportPDF() {
-        let base = fileURL?.deletingPathExtension().lastPathComponent ?? "Note"
+        let fileStem = fileURL?.deletingPathExtension().lastPathComponent ?? "Note"
         let ctx = pdfCatalogContext()
-        guard let pdf = MarkdownPDF.data(from: text, title: base,
+        guard let pdf = MarkdownPDF.data(from: text, title: noteTitle,
                                          org: ctx.org,
                                          project: ctx.project, poc: ctx.poc) else {
             status = "Export failed: could not render PDF"; return
         }
-        if let s = FilePanels.save(defaultName: base + ".pdf", contentTypes: [.pdf],
+        // Name the file after the note's title (falling back to its file name).
+        let saveName = FilePanels.fileSafeName(noteTitle) ?? fileStem
+        if let s = FilePanels.save(defaultName: saveName + ".pdf", contentTypes: [.pdf],
                                    directory: fileURL?.deletingLastPathComponent() ?? AppSettings.shared.notesFolder,
                                    successVerb: "Exported", failVerb: "Export",
                                    write: { try pdf.write(to: $0) }) {

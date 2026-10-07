@@ -962,12 +962,17 @@ final class CatalogStore: ObservableObject {
         guard bytes > 0 else { return nil }
         let quotes = CharacterSet(charactersIn: "\"' ")
         for note in doc.notes {
-            guard let text = url(of: note).readText(),
-                  let storedName = FrontMatter.field("gw_source_file", in: text)?
-                      .trimmingCharacters(in: quotes),
-                  storedName == filename,
-                  let stored = FrontMatter.field("gw_source_bytes", in: text),
-                  Int(stored) == bytes else { continue }
+            guard let text = url(of: note).readText() else { continue }
+            let single: Bool = {
+                guard let storedName = FrontMatter.field("gw_source_file", in: text)?
+                        .trimmingCharacters(in: quotes), storedName == filename,
+                      let stored = FrontMatter.field("gw_source_bytes", in: text) else { return false }
+                return Int(stored) == bytes
+            }()
+            // A note combined from several recordings lists every part.
+            let part = ImportSeries.contains(FrontMatter.field("gw_source_parts", in: text),
+                                             filename: filename, bytes: bytes)
+            guard single || part else { continue }
             return ImportMatch(note: note, inHistory: FrontMatter.field("gw_source", in: text) == "import")
         }
         return nil

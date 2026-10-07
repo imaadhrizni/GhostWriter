@@ -123,6 +123,12 @@ struct AIPane: View {
                 ModelAvailabilityView()
                 Text("Groq adds and retires models over time. Each choice above is checked against Groq's live catalog; an unavailable one is routed to the best working replacement automatically until you pick another.")
                     .font(.caption).foregroundColor(.secondary)
+
+                Divider()
+
+                Toggle("Switch models automatically when one is out of capacity", isOn: $settings.modelFailover)
+                Text("Groq limits each model separately. When the chosen model is rate-limited, over its daily quota, or erroring, GhostWriter sends the work to the next suitable model instead of failing — but only if that is meaningfully sooner than waiting (GPT-OSS 120B ↔ 20B). Background tasks such as chapters and objections can also overflow to Qwen if your account has it; summaries, Ask answers and drafts never do. Output quality can differ slightly between models; the model used for every call is recorded in the API Call Log. Off = always wait on the model you picked.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("On-Device & Fallback") {
@@ -187,6 +193,25 @@ struct GeneralPane: View {
 
             SettingsGroup("Display") {
                 DateFormatField()
+            }
+
+            SettingsGroup("Catalog Network") {
+                Toggle("Show tags", isOn: $settings.networkShowTags)
+                Toggle("Show notes as nodes", isOn: $settings.networkShowNotes)
+                Toggle("Show derived links", isOn: $settings.networkDerivedLinks)
+                Toggle("Animate the layout", isOn: $settings.networkAnimate)
+                HStack {
+                    Text("Flag an account dormant after")
+                    Spacer()
+                    Stepper("\(settings.networkDormantDays) days without a note",
+                            value: $settings.networkDormantDays, in: 7...365, step: 7)
+                        .frame(width: 250)
+                    DefaultResetButton(isDefault: settings.networkDormantDays == AppSettings.Default.networkDormantDays) {
+                        settings.networkDormantDays = AppSettings.Default.networkDormantDays
+                    }
+                }
+                Text("What the Network section (Catalog → Explore) shows when it opens — you can still toggle each from its toolbar. Derived links connect people and tags to the organisations whose notes they appear in, so accounts that share a contact are linked even with notes hidden. With animation off the layout appears already settled (it is also instant when macOS Reduce Motion is on).")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("PDF Export") {

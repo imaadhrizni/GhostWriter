@@ -44,11 +44,28 @@ enum FrontMatter {
     }
 
     /// The note's `title:` field, stripped of surrounding quotes/whitespace, or
-    /// nil when absent/empty. Callers supply their own fallback (filename, etc.).
+    /// nil when absent/empty. A double-quoted value is unescaped (`\"` → `"`,
+    /// `\\` → `\`) — the inverse of how `MeetingNotesWriter.yamlScalar` writes
+    /// it, so a title containing a quote reads back as typed. Callers supply their
+    /// own fallback (filename, etc.).
     static func title(in text: String) -> String? {
-        let t = field("title", in: text)?
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
-        return (t?.isEmpty == false) ? t : nil
+        guard let raw = field("title", in: text)?.trimmingCharacters(in: .whitespaces) else { return nil }
+        var t = raw
+        if raw.count >= 2, raw.hasPrefix("\""), raw.hasSuffix("\"") {
+            t = String(raw.dropFirst().dropLast())
+                .replacingOccurrences(of: "\\\"", with: "\"")
+                .replacingOccurrences(of: "\\\\", with: "\\")
+        }
+        t = t.trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+        return t.isEmpty ? nil : t
+    }
+
+    /// `title(in:)` for *display*: nil when the stored title is a reasoning model's
+    /// leaked thinking (older imports saved "Need concise title. Topic: …"), so the
+    /// caller falls back to the file name rather than showing that.
+    static func displayTitle(in text: String) -> String? {
+        guard let t = title(in: text), !TranscriptFormatter.looksLikeReasoning(t) else { return nil }
+        return t
     }
 
     /// Parse a YAML `tags: [a, b, c]` line from the front-matter into trimmed,

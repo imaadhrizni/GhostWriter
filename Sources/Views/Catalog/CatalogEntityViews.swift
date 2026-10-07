@@ -34,7 +34,7 @@ struct EntityList: View {
             Divider()
             Group {
                 switch section {
-                case .dashboard, .map, .notes, .recordings, .poc, .radar, .questions, .reports: EmptyView()   // handled by CatalogView
+                case .dashboard, .map, .network, .notes, .recordings, .poc, .radar, .questions, .reports: EmptyView()   // handled by CatalogView
                 case .organisations: orgList
                 case .people:        peopleList
                 case .projects:      projectList
@@ -274,7 +274,7 @@ struct EntityList: View {
 
     private func add() {
         switch section {
-        case .map:           break
+        case .map, .network: break
         case .organisations: selID = store.addOrg(name: "New Organisation").id
         case .people:        selID = store.addPerson(name: "New Person").id
         case .projects:      selID = store.addProject(name: "New Project").id
@@ -319,7 +319,7 @@ struct EntityEditorView: View {
 
     var body: some View {
         switch section {
-        case .dashboard, .map, .recordings, .poc, .radar, .questions, .reports: EmptyView()
+        case .dashboard, .map, .network, .recordings, .poc, .radar, .questions, .reports: EmptyView()
         case .organisations:
             if let o = store.org(id) { OrgEditor(store: store, org: o, onDelete: onDelete) } else { missing }
         case .people:

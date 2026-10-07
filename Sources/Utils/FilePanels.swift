@@ -10,6 +10,18 @@ import UniformTypeIdentifiers
 
 enum FilePanels {
 
+    /// A title made safe to use as a file name: path/reserved characters become
+    /// hyphens, whitespace is collapsed, and it's capped at 100 characters.
+    /// Returns nil when nothing usable is left, so the caller keeps its fallback.
+    static func fileSafeName(_ title: String) -> String? {
+        let bad = CharacterSet(charactersIn: "/\\:?%*|\"<>").union(.controlCharacters)
+        let cleaned = title.unicodeScalars.map { bad.contains($0) ? "-" : String($0) }.joined()
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            .trimmingCharacters(in: CharacterSet(charactersIn: ". -"))
+        let capped = String(cleaned.prefix(100)).trimmingCharacters(in: CharacterSet(charactersIn: ". -"))
+        return capped.isEmpty ? nil : capped
+    }
+
     /// Run a save panel and, on confirmation, hand the chosen URL to `write`.
     /// Returns a user-facing status string ("<successVerb> <file>" on success,
     /// "<failVerb> failed: …" on error), or nil when the user cancels.

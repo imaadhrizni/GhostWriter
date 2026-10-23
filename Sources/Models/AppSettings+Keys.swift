@@ -68,6 +68,7 @@ extension AppSettings {
         static let retryIntervalSeconds   = "meeting.retryIntervalSeconds"
         static let notesOrganization      = "meeting.notesOrganization"
         static let meetingAutoDetect      = "meeting.autoDetect"
+        static let meetingTabDetection    = "meeting.tabDetection"
         static let voiceCommandsEnabled   = "dictation.voiceCommands"
         static let voiceCommandRules      = "dictation.voiceCommandRules"
         static let streamingDictation     = "dictation.streaming"
@@ -150,7 +151,7 @@ extension AppSettings {
                           vocabulary, replacements, appProfiles, pasteOnlyApps,
                           dictationHistoryOn, dictationHistoryLimit,
                           captionLingerSeconds, retryMaxAttempts, retryIntervalSeconds,
-                          notesOrganization, meetingAutoDetect,
+                          notesOrganization, meetingAutoDetect, meetingTabDetection,
                           voiceCommandsEnabled, voiceCommandRules, streamingDictation,
                           streamChunkSeconds, skipSilentDictation, dictationSilenceThreshold,
                           maxSpeakers, speakerSensitivity,
@@ -205,7 +206,7 @@ extension AppSettings {
         static let objectionIntel                  = true
         static let agenticAsk                      = true
         static let agenticAskMaxHops               = 3
-        static let liveAssistantEnabled            = true
+        static let liveAssistantEnabled            = false   // live brief is opt-in (extra token cost; Settings or per-meeting switch)
         static let meetingPrepCard                 = true
         static let notifyOnMeetingEnd              = true
         static let retainMeetingAudio              = true
@@ -235,6 +236,7 @@ extension AppSettings {
         static let summaryContextChars: Int        = 24000  // char budget fed to summary/extraction prompts
         static let pttTapThreshold: Double         = 0.4    // seconds: below = tap-lock, above = hold
         static let meetingAutoDetect               = true
+        static let meetingTabDetection             = true    // notice web meetings (Zoom/Meet/Teams/Webex) by the active browser tab
         static let voiceCommandsEnabled            = true
         static let voiceCommandRules = """
         "new paragraph" or "new line" → insert a paragraph or line break

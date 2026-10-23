@@ -13,12 +13,16 @@ import CoreAudio
 //   • a web browser capturing the mic — that's a browser call
 //     (Google Meet, Teams web, Discord web, …)
 //
-// Fires `onMeetingDetected` once per call; re-arms when the capture stops.
+// Fires `onMeetingDetected` once per distinct call source (see
+// `CallEpisodeTracker`); re-arms when the capture stops. Whenever the set of
+// processes holding the mic changes it writes one line to the debug log, so a
+// call that wasn't noticed can be traced to the process that held the mic.
 final class MeetingDetector {
 
     /// Called on the main thread with a human-readable source ("Zoom",
-    /// "browser call (Google Chrome)").
-    var onMeetingDetected: ((String) -> Void)?
+    /// "browser call (Google Chrome)") and, when the call was recognised from an
+    /// open meeting tab, the service it is ("Zoom", "Google Meet", …).
+    var onMeetingDetected: ((String, String?) -> Void)?
 
     /// Called on the main thread when a tracked call releases the microphone —
     /// the cue to offer stopping Meeting Mode instead of recording silence.
@@ -30,10 +34,14 @@ final class MeetingDetector {
     var suppressed = false
 
     private var timer: Timer?
-    private var armed = true             // one prompt per mic-capture episode
-    private var snoozedThisCall = false  // user said no / stopped — skip the rest of this call
+    private var episode = CallEpisodeTracker()   // which call sources have already been offered
     private var activeSource: String?    // the call currently being tracked
     private var quietPolls = 0           // consecutive polls with no call mic — debounce for end
+    private var lastHolders = ""         // last logged set of mic-holding processes (log on change only)
+    private var tabHold = TabCallHold()  // a web-meeting tab seen in the frontmost browser
+    private var lastTabRead = Date.distantPast
+    private var tabDenied = Set<String>() // browsers whose Automation permission was refused (logged once each)
+    private var lastTabLog = ""
 
     /// Bundle-ID prefixes of native conferencing apps.
     private static let meetingApps: [(prefix: String, name: String)] = [
@@ -75,10 +83,10 @@ final class MeetingDetector {
     }
 
     /// Call when the user declines a prompt or stops Meeting Mode mid-call:
-    /// no more prompts until the current call ends (mic released). The next
-    /// call prompts fresh.
+    /// no more prompts for what's on the line now until it ends (mic released).
+    /// A different app starting a call still gets offered.
     func snooze() {
-        snoozedThisCall = true
+        episode.dismissCurrent()
     }
 
     // MARK: - Polling
@@ -86,47 +94,113 @@ final class MeetingDetector {
     private func poll() {
         guard AppSettings.shared.meetingAutoDetect else { return }
 
-        guard let source = Self.micCapturingCallSource() else {
+        let scan = Self.scanMic()
+        logHolders(scan.holders)
+        let tab = readTab()
+
+        // Call END is judged by the microphone alone: a tab can stay open long
+        // after the call, so it must never keep a call "alive" or end one.
+        if scan.sources.isEmpty {
             // Nobody call-like holds the mic. A configurable number of quiet
             // polls in a row counts as the call ending — a single blip doesn't.
             if activeSource != nil {
                 quietPolls += 1
-                guard quietPolls >= AppSettings.shared.meetingEndQuietPolls else { return }
-                Log.meeting.info("👂 Call ended (\(self.activeSource ?? "?") released the mic)")
-                activeSource = nil
-                quietPolls = 0
-                onCallEnded?()
+                if quietPolls >= AppSettings.shared.meetingEndQuietPolls {
+                    Log.meeting.info("👂 Call ended (\(self.activeSource ?? "?") released the mic)")
+                    activeSource = nil
+                    quietPolls = 0
+                    onCallEnded?()
+                }
             }
-            // Fully re-arm so the next call prompts again.
-            armed = true
-            snoozedThisCall = false
-            return
+        } else {
+            quietPolls = 0
+            activeSource = scan.sources[0]
         }
 
-        quietPolls = 0
-        activeSource = source
+        // OFFERING Meeting Mode considers the mic *and* an open meeting tab. The
+        // tab's key is the browser's own call label, so a browser that has both an
+        // open meeting page and the mic is one call, offered once.
+        let (offerSources, tabLabel) = CallEpisodeTracker.offerSources(mic: scan.sources, tab: tab)
 
-        guard !suppressed, armed, !snoozedThisCall else { return }
-        armed = false
-        Log.meeting.info("👂 Detected \(source) using the microphone")
-        onMeetingDetected?(source)
+        if let source = episode.observe(offerSources, suppressed: suppressed) {
+            let service = (source == tabLabel) ? tab?.service : nil
+            let basis = scan.sources.contains(source) ? "using the microphone" : "open in the browser (microphone not in use yet)"
+            Log.meeting.info("👂 Detected \(service.map { "\($0) — " } ?? "")\(source) \(basis)")
+            onMeetingDetected?(source, service)
+        }
+    }
+
+    // MARK: - Browser tab
+
+    /// The meeting open in the frontmost browser's active tab, held across brief
+    /// glances at other tabs (`TabCallHold`). Reads only while a scriptable browser
+    /// is frontmost, at most every few seconds, and logs a recognised meeting's
+    /// service and browser — never the address.
+    private func readTab() -> (browser: String, service: String)? {
+        guard AppSettings.shared.meetingTabDetection else { return nil }
+        let now = Date()
+
+        guard let id = NSWorkspace.shared.frontmostApplication?.bundleIdentifier?.lowercased(),
+              BrowserURL.isReadable(id),
+              let browser = Self.browsers.first(where: { id.hasPrefix($0.prefix) })?.name,
+              now.timeIntervalSince(lastTabRead) >= 4 else {
+            return tabHold.observe(.unread, now: now)
+        }
+        lastTabRead = now
+
+        let result = MainActor.assumeIsolated { BrowserURL.read(forBundleID: id) }
+        if result.denied {
+            if tabDenied.insert(id).inserted {
+                Log.meeting.warning("🌐 Can't read \(browser)'s active tab — macOS Automation permission was refused. Allow GhostWriter under System Settings → Privacy & Security → Automation to detect web meetings.")
+            }
+            return tabHold.observe(.unread, now: now)
+        }
+        let reading: TabCallHold.Reading = result.url.flatMap(WebMeeting.service(for:))
+            .map { .meeting(browser: browser, service: $0) } ?? .other
+        let held = tabHold.observe(reading, now: now)
+
+        let logKey = held.map { "\($0.service)|\($0.browser)" } ?? ""
+        if logKey != lastTabLog {
+            lastTabLog = logKey
+            if let held { Log.meeting.info("🌐 \(held.service) meeting tab open in \(held.browser)") }
+            else { Log.meeting.info("🌐 Meeting tab closed or left") }
+        }
+        return held
+    }
+
+    /// One log line each time the set of mic-holding processes changes — the
+    /// record that explains a call which wasn't noticed ("Chrome helper held the
+    /// mic but matched nothing", "no process held it at all").
+    private func logHolders(_ holders: [String]) {
+        let key = holders.sorted().joined(separator: "; ")
+        guard key != lastHolders else { return }
+        let hadAny = !lastHolders.isEmpty
+        lastHolders = key
+        if holders.isEmpty { if hadAny { Log.meeting.info("👂 Microphone released by every process") } }
+        else { Log.meeting.info("👂 Mic in use by: \(key)") }
     }
 
     // MARK: - CoreAudio process inspection
 
-    /// The call-like source currently capturing the microphone, if any.
-    private static func micCapturingCallSource() -> String? {
+    /// Every process holding the mic (`holders`, as "bundle id → what we made of
+    /// it") and the distinct call-like sources among them (`sources`, native
+    /// conferencing apps first, then browsers).
+    private static func scanMic() -> (sources: [String], holders: [String]) {
         let ownBundle = Bundle.main.bundleIdentifier?.lowercased() ?? ""
-        for bundleID in bundleIDsCapturingInput() {
-            guard bundleID != ownBundle else { continue }
+        var native: [String] = [], web: [String] = [], holders: [String] = []
+        for bundleID in bundleIDsCapturingInput() where bundleID != ownBundle {
             if let app = meetingApps.first(where: { bundleID.hasPrefix($0.prefix) }) {
-                return app.name
-            }
-            if let browser = browsers.first(where: { bundleID.hasPrefix($0.prefix) }) {
-                return "browser call (\(browser.name))"
+                holders.append("\(bundleID) → \(app.name)")
+                if !native.contains(app.name) { native.append(app.name) }
+            } else if let browser = browsers.first(where: { bundleID.hasPrefix($0.prefix) }) {
+                let label = CallEpisodeTracker.browserCallLabel(browser.name)
+                holders.append("\(bundleID) → \(label)")
+                if !web.contains(label) { web.append(label) }
+            } else {
+                holders.append("\(bundleID) → not a recognized call app")
             }
         }
-        return nil
+        return (native + web, holders)
     }
 
     /// Bundle IDs of all processes currently running audio *input*.

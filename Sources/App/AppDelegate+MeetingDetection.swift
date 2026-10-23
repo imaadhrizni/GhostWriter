@@ -11,15 +11,30 @@ import SwiftUI
 extension AppDelegate {
 
     /// A conferencing app started using the mic — offer to transcribe.
-    func offerToStartMeeting(for appName: String) {
-        guard !appState.isMeetingMode else { return }
+    /// `service` is set when the call was recognised from an open meeting tab
+    /// ("Zoom", "Google Meet", …) — the mic may not be on yet.
+    func offerToStartMeeting(for appName: String, service: String? = nil) {
+        guard !appState.isMeetingMode else {
+            Log.meeting.info("🔔 Call detected (\(appName)) but Meeting Mode is already on — no prompt")
+            return
+        }
 
         let browser = appName.hasPrefix("browser call")
+        let browserName = appName.replacingOccurrences(of: "browser call ", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+        let title: String, message: String
+        if let service {
+            title = "\(service) meeting detected"
+            message = "A \(service) meeting is open in \(browserName). Start Meeting Mode to transcribe it?"
+        } else if browser {
+            title = "Browser call detected"
+            message = "\(browserName) is using your microphone — likely Google Meet or another web call. Start Meeting Mode to transcribe it?"
+        } else {
+            title = "\(appName) call detected"
+            message = "Looks like a meeting is starting. Start Meeting Mode to transcribe it?"
+        }
         confirmMeetingStart(
-            title: browser ? "Browser call detected" : "\(appName) call detected",
-            message: browser
-                ? "\(appName.replacingOccurrences(of: "browser call ", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "()"))) is using your microphone — likely Google Meet or another web call. Start Meeting Mode to transcribe it?"
-                : "Looks like a meeting is starting. Start Meeting Mode to transcribe it?",
+            title: title,
+            message: message,
             confirmTitle: "Start Meeting Mode",
             declineTitle: "Not Now",
             onDecline: { [weak self] in self?.meetingDetector.snooze() })
@@ -31,8 +46,12 @@ extension AppDelegate {
     func confirmMeetingStart(title: String, message: String,
                              confirmTitle: String, declineTitle: String,
                              onDecline: (() -> Void)? = nil) {
-        guard !meetingStartPromptActive, !appState.isMeetingMode else { return }
+        guard !meetingStartPromptActive, !appState.isMeetingMode else {
+            Log.meeting.info("🔔 Start prompt skipped — \(meetingStartPromptActive ? "another prompt is still open" : "already recording")")
+            return
+        }
         meetingStartPromptActive = true
+        Log.meeting.info("🔔 Offering Meeting Mode: \(title)")
 
         let alert = NSAlert()
         alert.messageText = title
@@ -48,8 +67,26 @@ extension AppDelegate {
                                                 catalogOptions: Self.catalogLinkOptions())
         alert.accessoryView = accessory
 
+        // This is a blocking modal raised from a background app. Make sure it can
+        // open on the Space you're in — including over a full-screen browser or
+        // Zoom window — and, if it goes unanswered, keep bringing it forward and
+        // say so in the log (an unseen prompt otherwise looks like "it never
+        // asked", and no further prompt comes until it's answered).
+        let window = alert.window
+        window.collectionBehavior.insert([.moveToActiveSpace, .fullScreenAuxiliary])
+        let shownAt = Date()
+        let nudge = Timer(timeInterval: 15, repeats: true) { _ in
+            Log.meeting.warning("🔔 Start prompt unanswered after \(Int(Date().timeIntervalSince(shownAt)))s — bringing it forward (it may be hidden behind a full-screen app)")
+            NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
+        }
+        RunLoop.main.add(nudge, forMode: .common)
+
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
+        let response = alert.runModal()
+        nudge.invalidate()
+        Log.meeting.info(response == .alertFirstButtonReturn ? "🔔 Prompt accepted — starting Meeting Mode" : "🔔 Prompt declined")
+        if response == .alertFirstButtonReturn {
             applyTemplateSelection(from: accessory.picker)
             meetingAgenda = Self.parseAgenda(accessory.agendaField.stringValue)
             meetingLiveBrief = accessory.liveBrief.isEnabled ? (accessory.liveBrief.state == .on) : false

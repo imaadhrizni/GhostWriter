@@ -189,8 +189,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             finishInitialization()
         }
 
-        meetingDetector.onMeetingDetected = { [weak self] appName in
-            self?.offerToStartMeeting(for: appName)
+        meetingDetector.onMeetingDetected = { [weak self] appName, service in
+            self?.offerToStartMeeting(for: appName, service: service)
         }
         meetingDetector.onCallEnded = { [weak self] in
             self?.offerToStopMeeting()

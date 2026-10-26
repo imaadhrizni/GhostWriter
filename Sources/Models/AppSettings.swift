@@ -415,6 +415,10 @@ final class AppSettings: ObservableObject {
 
     /// Offer to start Meeting Mode when a conferencing app starts using the mic.
     @Setting(Key.meetingAutoDetect, Default.meetingAutoDetect) var meetingAutoDetect: Bool
+    /// Also notice web meetings (Zoom, Meet, Teams, Webex in the browser) by the
+    /// address of the active tab, so Meeting Mode is offered when you join — before
+    /// the microphone is open. Reads only the address, locally.
+    @Setting(Key.meetingTabDetection, Default.meetingTabDetection) var meetingTabDetection: Bool
 
     /// Interpret spoken commands in dictation ("new paragraph", "scratch that").
     @Setting(Key.voiceCommandsEnabled, Default.voiceCommandsEnabled) var voiceCommandsEnabled: Bool

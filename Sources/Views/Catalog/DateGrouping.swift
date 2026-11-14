@@ -85,7 +85,11 @@ enum DateGrouping {
     /// Buckets are keyed off `Calendar.current` components (not a fixed-format
     /// string), so a note's day matches the local calendar day shown by
     /// `Date.formatted(...)` — no UTC/local off-by-one at day boundaries.
-    static func tree<Item>(_ items: [Item], dateOf: (Item) -> Date?) -> [DateGroupNode<Item>] {
+    ///
+    /// With `weeks`, each month's days are grouped into calendar-week nodes
+    /// (Year → Month → Week → Day). A week that straddles two months appears under
+    /// each, holding only that month's days.
+    static func tree<Item>(_ items: [Item], weeks: Bool = false, dateOf: (Item) -> Date?) -> [DateGroupNode<Item>] {
         let cal = Calendar.current
         // Bucket by local day key, remembering each day's representative date.
         var days: [String: (date: Date, items: [Item])] = [:]
@@ -125,6 +129,7 @@ enum DateGrouping {
             year.children = year.children.map { month -> DateGroupNode<Item> in
                 var month = month
                 month.children.sort { $0.id > $1.id }
+                if weeks { month.children = weekNodes(from: month.children, monthKey: month.id, calendar: cal) }
                 let c = month.children.reduce(0) { $0 + $1.count }
                 return DateGroupNode(id: month.id, title: month.title, count: c,
                                      children: month.children, items: [])
@@ -143,16 +148,80 @@ enum DateGrouping {
         return result
     }
 
-    /// Keys open on first load: the newest year, its newest month, and that
-    /// month's days — so the most recent notes are visible without any clicks.
+    /// Group a month's (newest-first) day nodes into calendar-week nodes, keyed
+    /// "<month>-W<week of year>" and titled "Week 45 · 3–7 Nov" from the days they hold.
+    private static func weekNodes<Item>(from days: [DateGroupNode<Item>], monthKey: String,
+                                        calendar cal: Calendar) -> [DateGroupNode<Item>] {
+        var order: [String] = [], byWeek: [String: (n: Int, days: [DateGroupNode<Item>])] = [:]
+        for day in days {
+            guard let date = date(fromDayKey: day.id, calendar: cal) else { continue }
+            let n = cal.component(.weekOfYear, from: date)
+            let key = "\(monthKey)-W\(String(format: "%02d", n))"
+            if byWeek[key] == nil { order.append(key) }
+            byWeek[key, default: (n, [])].days.append(day)
+        }
+        return order.map { key -> DateGroupNode<Item> in
+            let week = byWeek[key]!
+            // `days` is newest-first, so the span runs last → first.
+            let first = date(fromDayKey: week.days.last!.id, calendar: cal)!
+            let last = date(fromDayKey: week.days.first!.id, calendar: cal)!
+            let span = cal.isDate(first, inSameDayAs: last)
+                ? last.formatted(.dateTime.day().month(.abbreviated))
+                : "\(first.formatted(.dateTime.day()))–\(last.formatted(.dateTime.day().month(.abbreviated)))"
+            return DateGroupNode(id: key, title: "Week \(week.n) · \(span)",
+                                 count: week.days.reduce(0) { $0 + $1.count },
+                                 children: week.days, items: [])
+        }
+        // Newest week first (by its newest day) — the week number alone mis-orders a
+        // year-end week that is "week 1" of the next year.
+        .sorted { ($0.children.first?.id ?? "") > ($1.children.first?.id ?? "") }
+    }
+
+    /// The date a "yyyy-MM-dd" day key stands for (local calendar).
+    private static func date(fromDayKey key: String, calendar cal: Calendar) -> Date? {
+        let p = key.split(separator: "-").compactMap { Int($0) }
+        guard p.count == 3 else { return nil }
+        return cal.date(from: DateComponents(year: p[0], month: p[1], day: p[2]))
+    }
+
+    /// Group keys that contain `date` — year, month, (week) and day — matching the
+    /// keys `tree` assigns, so revealing a note can open exactly the groups holding it.
+    /// `nil` dates live under "0000".
+    static func ancestorKeys(for date: Date?, weeks: Bool = false, calendar cal: Calendar = .current) -> Set<String> {
+        guard let date else { return ["0000"] }
+        let c = cal.dateComponents([.year, .month, .day], from: date)
+        let day = String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+        var keys: Set<String> = [String(day.prefix(4)), String(day.prefix(7)), day]
+        if weeks { keys.insert("\(day.prefix(7))-W\(String(format: "%02d", cal.component(.weekOfYear, from: date)))") }
+        return keys
+    }
+
+    /// Keys open on first load: the newest year, its newest month, and everything
+    /// inside that month (its weeks and days) — so the most recent notes are
+    /// visible without any clicks.
     static func defaultExpanded<Item>(_ tree: [DateGroupNode<Item>]) -> Set<String> {
         var keys: Set<String> = []
         guard let year = tree.first else { return keys }
         keys.insert(year.id)
-        if let month = year.children.first {
-            keys.insert(month.id)
-            for day in month.children { keys.insert(day.id) }
+        if let month = year.children.first { keys.formUnion(allKeys([month])) }
+        return keys
+    }
+
+    /// Whether the tree has a week level between months and days.
+    static func hasWeeks<Item>(_ tree: [DateGroupNode<Item>]) -> Bool {
+        tree.first { !$0.children.isEmpty }?.children.first?.children.first?.children.isEmpty == false
+    }
+
+    /// Keys that open every group shallower than `depth` (0 = years), leaving that
+    /// level's own groups closed — "show me the months", "show me the days".
+    static func keys<Item>(openingBelow depth: Int, in nodes: [DateGroupNode<Item>]) -> Set<String> {
+        var keys: Set<String> = []
+        func walk(_ n: DateGroupNode<Item>, _ d: Int) {
+            guard d < depth, !n.children.isEmpty else { return }
+            keys.insert(n.id)
+            n.children.forEach { walk($0, d + 1) }
         }
+        nodes.forEach { walk($0, 0) }
         return keys
     }
 
@@ -179,25 +248,52 @@ struct ResetButton: View {
     }
 }
 
-/// A compact toggle that expands or collapses every group in a tree at once,
-/// sharing the same `expanded` key set as `DateGroupDisclosure`.
+/// Expands or collapses a date tree: one click toggles everything (as before), and
+/// the menu goes to a chosen level — years, months, weeks, days — or optionally
+/// turns the week level on. Shares the `expanded` key set with `DateGroupDisclosure`.
 struct ExpandCollapseButton<Item>: View {
     let tree: [DateGroupNode<Item>]
     @Binding var expanded: Set<String>
+    /// When set, the menu offers a "Group by week" switch bound to it.
+    var groupByWeek: Binding<Bool>? = nil
 
     private var allExpanded: Bool {
         let all = DateGrouping.allKeys(tree)
         return !all.isEmpty && all.isSubset(of: expanded)
     }
 
+    /// Levels the tree can be opened to, shallowest first — "Months" opens the
+    /// years so month rows show, and so on down to "Days".
+    private var levels: [(title: String, depth: Int)] {
+        var names = ["Months"]
+        if DateGrouping.hasWeeks(tree) { names.append("Weeks") }
+        names.append("Days")
+        return names.enumerated().map { ($1, $0 + 1) }
+    }
+
     var body: some View {
-        Button {
-            expanded = allExpanded ? [] : DateGrouping.allKeys(tree)
+        Menu {
+            Button("Expand All") { expanded = DateGrouping.allKeys(tree) }
+            Button("Collapse All") { expanded = [] }
+            Divider()
+            Section("Expand to") {
+                ForEach(levels, id: \.title) { level in
+                    Button(level.title) { expanded = DateGrouping.keys(openingBelow: level.depth, in: tree) }
+                }
+            }
+            if let groupByWeek {
+                Divider()
+                Toggle("Group by Week", isOn: groupByWeek)
+            }
         } label: {
             Label(allExpanded ? "Collapse All" : "Expand All",
                   systemImage: allExpanded ? "chevron.up.circle" : "chevron.down.circle")
+        } primaryAction: {
+            expanded = allExpanded ? [] : DateGrouping.allKeys(tree)
         }
-        .help(allExpanded ? "Collapse all groups" : "Expand all groups")
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Click to expand or collapse everything; the arrow picks a level — months, weeks, days")
     }
 }
 
@@ -242,6 +338,13 @@ struct DateGroupDisclosure<Item: Identifiable, Row: View>: View {
                     Text("\(node.count)")
                         .font(.caption2).monospacedDigit()
                         .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+                .contextMenu {
+                    // Open or close just this group and everything inside it.
+                    let inside = DateGrouping.allKeys([node])
+                    Button("Expand Everything in “\(node.title)”") { expanded.formUnion(inside) }
+                    Button("Collapse Everything in “\(node.title)”") { expanded.subtract(inside) }
                 }
             }
         }

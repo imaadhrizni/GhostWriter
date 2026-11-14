@@ -17,6 +17,7 @@ struct NotesList: View {
     var unassignedOnly: Bool = false
     var missingOnly: Bool = false
     var range: DateRange = .all
+    @ObservedObject private var settings = AppSettings.shared
     @State private var semanticOrder: [String] = []
     @State private var hovered: String?
     @State private var pendingTrash: CatalogNote?
@@ -86,7 +87,7 @@ struct NotesList: View {
     }
 
     private var groups: [DateGroupNode<CatalogNote>] {
-        DateGrouping.tree(filtered) { $0.date }
+        DateGrouping.tree(filtered, weeks: settings.notesGroupByWeek) { $0.date }
     }
 
     /// Select, expand, and scroll a revealed note into view, then clear the
@@ -95,21 +96,11 @@ struct NotesList: View {
     private func performReveal(_ id: String?, proxy: ScrollViewProxy) {
         guard let id, let target = store.note(id: id) else { return }
         selID = id
-        expanded.formUnion(Self.dateGroupKeys(for: target.date))
+        expanded.formUnion(DateGrouping.ancestorKeys(for: target.date, weeks: settings.notesGroupByWeek))
         DispatchQueue.main.async {
             withAnimation { proxy.scrollTo(id, anchor: .center) }
             reveal = nil
         }
-    }
-
-    /// The year / month / day expansion keys for a note's date, matching the
-    /// local-calendar keys `DateGrouping.tree` assigns, so revealing a note can
-    /// open exactly the groups that contain it. `nil` dates live under "0000".
-    private static func dateGroupKeys(for date: Date?) -> Set<String> {
-        guard let date else { return ["0000"] }
-        let c = Calendar.current.dateComponents([.year, .month, .day], from: date)
-        let day = String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
-        return [String(day.prefix(4)), String(day.prefix(7)), day]
     }
 
     var body: some View {
@@ -142,7 +133,7 @@ struct NotesList: View {
                         }
                         Spacer()
                         if !searching && !filtered.isEmpty {
-                            ExpandCollapseButton(tree: groups, expanded: $expanded)
+                            ExpandCollapseButton(tree: groups, expanded: $expanded, groupByWeek: $settings.notesGroupByWeek)
                                 .buttonStyle(.borderless).font(.caption)
                         }
                     }

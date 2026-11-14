@@ -178,6 +178,9 @@ struct GeneralPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Notes") {
+                Toggle("Group notes by week in the Catalog", isOn: $settings.notesGroupByWeek)
+                Text("The Catalog's Notes list groups by Year › Month › Week › Day. Off drops the Week level (Year › Month › Day). The list's Expand menu can also switch it.")
+                    .font(.caption).foregroundColor(.secondary)
                 Toggle("Open notes in external editor", isOn: $settings.openNotesExternally)
                 Text("Open note files in your default Markdown app (e.g. VS Code, Obsidian, Typora) instead of the in-app viewer — everywhere notes open: the menu, recent list, Catalog, and Ask. Set your preferred app in Finder → a .md file → Get Info → Open with → Change All. Off uses the built-in viewer.")
                     .font(.caption)
@@ -195,6 +198,9 @@ struct GeneralPane: View {
                     Toggle("Keep the microphone muted by default", isOn: $settings.micMuteOnStart)
                     Text("Mutes the Mac's microphone when GhostWriter starts and mutes it again when GhostWriter quits, so it is only live when you unmute it yourself (⌃⌥U) for a call. Off leaves the mic as you left it.")
                         .font(.caption).foregroundColor(.secondary)
+                    if settings.micMuteOnStart {
+                        Toggle("Mute again when a meeting ends", isOn: $settings.micMuteAfterMeeting)
+                    }
                     if !settings.micMuteOnStart {
                         Toggle("Unmute when GhostWriter quits", isOn: $settings.micMuteRestoreOnQuit)
                     }

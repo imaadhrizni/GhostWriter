@@ -247,6 +247,14 @@ extension AppDelegate {
         if MicMute.shared.isSupported, !MicMute.shared.isMuted { MicMute.shared.setMuted(true) }
     }
 
+    /// The meeting is over: put the mic back to muted, ready for the next call —
+    /// only when you keep it muted by default.
+    @MainActor func applyMuteAfterMeeting() {
+        guard settings.micMuteEnabled, settings.micMuteOnStart, settings.micMuteAfterMeeting else { return }
+        MicMute.shared.start()
+        if MicMute.shared.isSupported, !MicMute.shared.isMuted { MicMute.shared.setMuted(true) }
+    }
+
     /// On quit: with "muted by default" the mic goes back to muted (whatever you left
     /// it at during a call); otherwise it is unmuted only if you asked for that.
     @MainActor func applyMuteOnQuit() {

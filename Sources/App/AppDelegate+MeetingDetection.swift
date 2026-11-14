@@ -87,7 +87,7 @@ extension AppDelegate {
             meetingCatalogTarget = resolveCatalogTarget(accessory.catalog.selectedItem?.representedObject as? String)
             // Mic row present → apply its choice (live or muted) before recording starts.
             if accessory.micLive.superview != nil {
-                MainActor.assumeIsolated { MicMute.shared.setMuted(accessory.micLive.state != .on) }
+                _ = MainActor.assumeIsolated { MicMute.shared.setMuted(accessory.micLive.state != .on) }
             }
             // Prep card: surface recent context for the chosen org/opp before
             // recording starts — unless switched off for this meeting.

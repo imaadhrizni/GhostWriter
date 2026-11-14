@@ -3,11 +3,11 @@ import CoreGraphics
 
 // MARK: - Remappable global shortcuts
 
-/// A user-remappable global action. All six are ⌃⌥-modified; only the letter
+/// A user-remappable global action. All seven are ⌃⌥-modified; only the letter
 /// key is configurable (the modifier stays fixed so these never clash with an
 /// app's own ⌘-shortcuts). The default letters spell the original bindings.
 enum GlobalShortcut: String, CaseIterable, Identifiable {
-    case meetingMode, openNotes, pauseMeeting, reinject, quickNote, bookmark
+    case meetingMode, openNotes, pauseMeeting, reinject, quickNote, bookmark, muteMic
 
     var id: String { rawValue }
 
@@ -20,6 +20,7 @@ enum GlobalShortcut: String, CaseIterable, Identifiable {
         case .reinject:     return "Re-type last dictation"
         case .quickNote:    return "Quick note"
         case .bookmark:     return "Bookmark meeting moment"
+        case .muteMic:      return "Mute / unmute microphone"
         }
     }
 
@@ -32,6 +33,7 @@ enum GlobalShortcut: String, CaseIterable, Identifiable {
         case .reinject:     return 9    // V
         case .quickNote:    return 38   // J
         case .bookmark:     return 11   // B
+        case .muteMic:      return 32   // U
         }
     }
 }
@@ -78,6 +80,8 @@ final class HotkeyManager {
     var onQuickNoteHotkey: (() -> Void)?
     /// Fired on ⌃⌥B — drop a timestamped bookmark in the running meeting.
     var onBookmarkHotkey: (() -> Void)?
+    /// Fired on ⌃⌥U — mute / unmute the system microphone (only when enabled in Settings).
+    var onMuteMicHotkey: (() -> Void)?
     /// Fired on Escape while a dictation recording is active — cancel it.
     var onCancelDictation: (() -> Void)?
     /// Asked before swallowing Escape; return true only while dictation is recording.
@@ -173,6 +177,8 @@ final class HotkeyManager {
                 case .reinject:     handler = onReinjectHotkey
                 case .quickNote:    handler = onQuickNoteHotkey
                 case .bookmark:     handler = onBookmarkHotkey
+                // Not swallowed while the feature is off, so ⌃⌥U stays free for other apps.
+                case .muteMic:      handler = AppSettings.shared.micMuteEnabled ? onMuteMicHotkey : nil
                 case .none:         handler = nil
                 }
                 if let handler {

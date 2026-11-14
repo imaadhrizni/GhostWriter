@@ -74,13 +74,7 @@ extension AppDelegate {
         // asked", and no further prompt comes until it's answered).
         let window = alert.window
         window.collectionBehavior.insert([.moveToActiveSpace, .fullScreenAuxiliary])
-        let shownAt = Date()
-        let nudge = Timer(timeInterval: 15, repeats: true) { _ in
-            Log.meeting.warning("🔔 Start prompt unanswered after \(Int(Date().timeIntervalSince(shownAt)))s — bringing it forward (it may be hidden behind a full-screen app)")
-            NSApp.activate(ignoringOtherApps: true)
-            window.orderFrontRegardless()
-        }
-        RunLoop.main.add(nudge, forMode: .common)
+        let nudge = Self.nudgeUntilAnswered(window, notifyTitle: title)
 
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
@@ -469,6 +463,66 @@ extension AppDelegate {
     /// offer to stop instead of transcribing an empty room. Routes through the
     /// same coverage check as a manual end so the open-items list is folded into
     /// this one prompt rather than shown as a second dialog afterwards.
+    /// Keep a blocking prompt in view: bring it forward every 15 s and, the first
+    /// time it goes unanswered, also raise a system notification — a modal can hide
+    /// behind a full-screen app, and an unseen prompt looks like "it never asked".
+    /// Invalidate the returned timer once the prompt is answered.
+    static func nudgeUntilAnswered(_ window: NSWindow, notifyTitle: String) -> Timer {
+        let shownAt = Date()
+        var notified = false
+        let nudge = Timer(timeInterval: 15, repeats: true) { _ in
+            Log.meeting.warning("🔔 Prompt \"\(notifyTitle)\" unanswered after \(Int(Date().timeIntervalSince(shownAt)))s — bringing it forward (it may be hidden behind a full-screen app)")
+            NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
+            if !notified { notified = true; NotificationManager.shared.notifyStartPromptWaiting(notifyTitle) }
+        }
+        RunLoop.main.add(nudge, forMode: .common)
+        return nudge
+    }
+
+    /// A *different* call began while a meeting is still recording — two
+    /// back-to-back calls that would otherwise share one note. Per
+    /// `meetingSplitMode`: ask, split silently, or leave it be.
+    @MainActor
+    func handleNewCallWhileRecording(source: String, service: String?) {
+        guard appState.isMeetingMode, !meetingStartPromptActive, !endCoverageChecking else { return }
+        let name = service.map { "\($0) call" } ?? "call"
+        switch settings.meetingSplitMode {
+        case .off:
+            Log.meeting.info("✂️ New \(name) while recording — split is off, keeping one note")
+        case .auto:
+            splitMeeting(newCall: name)
+        case .ask:
+            meetingStartPromptActive = true
+            defer { meetingStartPromptActive = false }
+            let alert = NSAlert()
+            alert.messageText = "New meeting detected"
+            alert.informativeText = "A new \(name) seems to have started while GhostWriter is still recording the previous one. Save the current notes and start a fresh note for it? Otherwise both calls end up in one note."
+            alert.addButton(withTitle: "Save & Start New Note")
+            alert.addButton(withTitle: "Keep One Note")
+            alert.window.collectionBehavior.insert([.moveToActiveSpace, .fullScreenAuxiliary])
+            let nudge = Self.nudgeUntilAnswered(alert.window, notifyTitle: "New meeting detected")
+            NSApp.activate(ignoringOtherApps: true)
+            let response = alert.runModal()
+            nudge.invalidate()
+            if response == .alertFirstButtonReturn { splitMeeting(newCall: name) }
+            else { Log.meeting.info("✂️ New \(name) while recording — kept in one note") }
+        }
+    }
+
+    /// Finish the current note and start a new one straight away. `stopMeetingMode`
+    /// clears the recording flag on the next main-queue turn, so wait for it.
+    @MainActor
+    func splitMeeting(newCall name: String) {
+        Log.meeting.info("✂️ Splitting the recording — new \(name)")
+        stopMeetingMode()
+        Task { @MainActor in
+            for _ in 0..<20 where appState.isMeetingMode { try? await Task.sleep(nanoseconds: 100_000_000) }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await startMeetingMode()
+        }
+    }
+
     func offerToStopMeeting() {
         guard appState.isMeetingMode else { return }
         Task { @MainActor in await confirmEndAndStopMeeting(callEnded: true) }

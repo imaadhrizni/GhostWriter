@@ -48,3 +48,95 @@ struct CallEpisodeTracker {
     /// again for whatever is on the line right now.
     mutating func dismissCurrent() { offered.formUnion(current) }
 }
+
+// MARK: - Call Boundary Tracker
+//
+// "Has a *different* call started while we're still recording the first?" — the
+// miss behind two back-to-back meetings landing in one note. While Meeting Mode
+// runs the start prompt is (rightly) suppressed, and the end-of-call debounce
+// can't tell a few seconds of silence between two calls from a mute, so without
+// this the second call is silently recorded into the first one's note.
+//
+// Pure and clock-injected like `CallEpisodeTracker`. Three independent signals,
+// each chosen to stay quiet on an ordinary mid-call mute or reconnect:
+//
+//   A. The meeting tab changed identity (Meet room abc-… → xyz-…, or Meet →
+//      Teams) and stayed changed for two reads. Needs a tab known at the start.
+//   B. A meeting tab appeared that we hadn't seen at the start, *and then* the mic
+//      was released and re-taken — the join of a second call after leaving the
+//      first. (Either alone is common within one call.)
+//   C. A call ended while we kept recording (the user chose "Keep Recording"),
+//      and a call source took the mic again after at least `reacquireGap`.
+
+struct CallBoundaryTracker {
+
+    /// What a poll can see of the meeting tab.
+    struct Tab: Equatable {
+        var key: String        // identity — see `WebMeeting.meetingKey`
+        var service: String    // "Google Meet", "Microsoft Teams", …
+        var label: String      // the browser's call label, as offered/recorded
+    }
+
+    struct NewCall: Equatable {
+        var source: String
+        var service: String?
+    }
+
+    /// Quiet this long after "call ended" before a returning mic counts as a new call.
+    static let reacquireGap: TimeInterval = 120
+
+    private var started = false
+    private var baseline: String?
+    private var candidate: (tab: Tab, reads: Int)?
+    private var pendingTab: Tab?
+    private var micQuietSeen = false
+    private var endedAt: Date?
+
+    /// Forget everything — recording started, or stopped.
+    mutating func reset() { self = CallBoundaryTracker() }
+
+    /// The detector reported the tracked call over while we are still recording.
+    mutating func noteCallEnded(at now: Date) { endedAt = now }
+
+    /// Feed one poll made *while recording a meeting*. Returns the new call, if one
+    /// just began.
+    mutating func observe(now: Date, tab: Tab?, micSources: [String]) -> NewCall? {
+        let micHeld = !micSources.isEmpty
+        if !micHeld { micQuietSeen = true }
+
+        if !started {
+            started = true
+            baseline = tab?.key
+        }
+
+        // C — the mic came back long after a call ended that we kept recording through.
+        if let ended = endedAt, micHeld {
+            endedAt = nil
+            if now.timeIntervalSince(ended) >= Self.reacquireGap {
+                return fire(tab: tab, source: tab?.label ?? micSources[0])
+            }
+        }
+
+        guard let tab else { candidate = nil; return nil }
+
+        if tab.key == baseline { candidate = nil; pendingTab = nil; return nil }
+
+        if baseline != nil {
+            // A — a different meeting tab, seen twice running.
+            let reads = (candidate?.tab.key == tab.key ? candidate!.reads : 0) + 1
+            candidate = (tab, reads)
+            if reads >= 2 { return fire(tab: tab, source: tab.label) }
+        } else {
+            // B — a tab we didn't start with; wait for the mic to cycle.
+            if pendingTab?.key != tab.key { pendingTab = tab; micQuietSeen = !micHeld }
+            if micHeld, micQuietSeen { return fire(tab: tab, source: tab.label) }
+        }
+        return nil
+    }
+
+    private mutating func fire(tab: Tab?, source: String) -> NewCall {
+        baseline = tab?.key ?? baseline
+        candidate = nil; pendingTab = nil; micQuietSeen = false; endedAt = nil
+        return NewCall(source: source, service: tab?.service)
+    }
+}

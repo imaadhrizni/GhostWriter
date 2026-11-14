@@ -80,10 +80,26 @@ actor AIGate {
     /// gate knows nothing until a model's first response). The bucket is assumed
     /// full at launch — right unless the app was restarted mid-burst.
     private static let learnedLimitsKey = "ai.learnedModelLimits"
+    /// The most tokens one request to a model can ever carry, learned from a 413
+    /// ("Limit 7000, Requested 7326"). Distinct from the bucket: some models
+    /// (Qwen) advertise a bigger allowance in their headers than they enforce
+    /// per request, and every later response would otherwise re-teach the larger
+    /// number. Estimates run a little under the real count, hence the margin.
+    private static let ceilingsKey = "ai.modelRequestCeilings"
+    private static let estimateMargin = 1.2
+    private var ceilings: [String: Int] = [:]
+    private var ceilingTimes: [String: Double] = [:]      // when each was learned (epoch seconds)
+    private static let ceilingTimesKey = "ai.modelRequestCeilingTimes"
+    /// A learned ceiling is trusted this long, then forgotten so the next big
+    /// request probes again — the provider may have raised the limit (a tier
+    /// upgrade). A wrong guess costs one rejected call and is relearned.
+    private static let ceilingTTL: TimeInterval = 6 * 3600
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        ceilings = (defaults.dictionary(forKey: Self.ceilingsKey) as? [String: Int]) ?? [:]
+        ceilingTimes = (defaults.dictionary(forKey: Self.ceilingTimesKey) as? [String: Double]) ?? [:]
         if let saved = defaults.dictionary(forKey: Self.learnedLimitsKey) as? [String: Int] {
             for (model, limit) in saved where limit > 0 {
                 budgets[model] = Budget(limit: limit, remaining: Double(limit), asOf: Date())
@@ -97,6 +113,8 @@ actor AIGate {
     /// block a model.
     private var pending: [String: [(at: Date, tokens: Int)]] = [:]
     private static let pendingTTL: TimeInterval = 30
+    /// Stand-in wait for a model a request can never fit — sorts last, never "ready".
+    private static let neverFits: TimeInterval = 86_400
 
     /// Models the server told us to stay off until a given time (the `retry-after`
     /// of their last rate-limit). Lets the failover router steer around a
@@ -163,8 +181,9 @@ actor AIGate {
     /// Set a model's allowance directly — from headers, or from the exact
     /// `Limit N, Used U` in a 429 body (more trustworthy: for some models, e.g.
     /// Qwen, the headers describe a different limit than the one being enforced).
-    func noteBudget(model: String, limit: Int, remaining: Int) {
-        guard limit > 0 else { return }
+    func noteBudget(model: String, limit rawLimit: Int, remaining: Int) {
+        guard rawLimit > 0 else { return }
+        let limit = min(rawLimit, activeCeiling(model) ?? rawLimit)
         let changed = budgets[model]?.limit != limit
         budgets[model] = Budget(limit: limit, remaining: Double(max(0, remaining)), asOf: Date())
         if changed {
@@ -174,11 +193,62 @@ actor AIGate {
         }
     }
 
+    /// A model refused a request as too large for it ("Limit N, Requested R"):
+    /// remember N as its per-request ceiling and shrink its bucket to match, so
+    /// routing steers requests that big elsewhere from now on.
+    func noteCeiling(model: String, limit: Int) {
+        guard limit > 0, limit < (activeCeiling(model) ?? Int.max) else { return }
+        ceilings[model] = limit
+        ceilingTimes[model] = Date().timeIntervalSince1970
+        saveCeilings()
+        if let b = budgets[model], b.limit > limit {
+            noteBudget(model: model, limit: limit, remaining: min(Int(b.remaining), limit))
+        }
+        Log.api.info("📏 \(model) takes at most ~\(limit) tokens per request — larger calls will route to another model")
+    }
+
+    /// Whether `estimate` tokens could ever fit `model` in one request.
+    func fits(_ model: String, estimate: Int) -> Bool {
+        guard let ceiling = activeCeiling(model) else { return true }
+        return Int(Double(estimate) * Self.estimateMargin) <= ceiling
+    }
+
+    /// A call succeeded with `promptTokens` of input. If that is more than the
+    /// ceiling we had on record, the limit has been raised — drop the ceiling.
+    func noteSuccess(model: String, promptTokens: Int) {
+        guard let ceiling = activeCeiling(model), promptTokens > ceiling else { return }
+        forgetCeiling(model)
+        Log.api.info("📏 \(model) just took \(promptTokens) tokens (above the ~\(ceiling) ceiling on record) — limit raised, ceiling cleared")
+    }
+
+    /// The model's learned ceiling, unless it has aged out (then it is forgotten).
+    private func activeCeiling(_ model: String) -> Int? {
+        guard let c = ceilings[model] else { return nil }
+        if Date().timeIntervalSince1970 - (ceilingTimes[model] ?? 0) > Self.ceilingTTL {
+            forgetCeiling(model)
+            Log.api.info("📏 Re-probing \(model)'s request limit — the ceiling on record (~\(c)) is old")
+            return nil
+        }
+        return c
+    }
+
+    private func forgetCeiling(_ model: String) {
+        ceilings[model] = nil
+        ceilingTimes[model] = nil
+        saveCeilings()
+    }
+
+    private func saveCeilings() {
+        defaults.set(ceilings, forKey: Self.ceilingsKey)
+        defaults.set(ceilingTimes, forKey: Self.ceilingTimesKey)
+    }
+
     /// How long until `model` could take `estimate` more tokens: the server's
     /// cooldown for it, or the time its token bucket needs to cover the deficit —
     /// counting what other callers have already promised themselves from it. A
     /// model we know nothing about counts as ready.
     private func expectedWait(_ model: String, estimate: Int, now: Date) -> TimeInterval {
+        if !fits(model, estimate: estimate) { return Self.neverFits }   // too big for this model, however long we wait
         var seconds = max(0, unavailableUntil[model]?.timeIntervalSince(now) ?? 0)
         if let budget = budgets[model], estimate <= budget.limit {
             let promised = Double(pendingTokens(model, now: now))

@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import Combine
 
 // MARK: - App Delegate
 
@@ -149,6 +150,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var liveBriefMenuItem: NSMenuItem?
     var liveBriefEndMenuItem: NSMenuItem?
     var statsMenuItem: NSMenuItem?
+    var muteMicMenuItem: NSMenuItem?
+    var micMuteObserver: AnyCancellable?
     var errorMenuItem: NSMenuItem?
 
     // Support logic
@@ -195,7 +198,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingDetector.onCallEnded = { [weak self] in
             self?.offerToStopMeeting()
         }
+        meetingDetector.isRecordingMeeting = { [weak self] in self?.appState.isMeetingMode ?? false }
+        meetingDetector.onNewCallWhileRecording = { [weak self] source, service in
+            MainActor.assumeIsolated { self?.handleNewCallWhileRecording(source: source, service: service) }
+        }
         meetingDetector.start()
+        MainActor.assumeIsolated { setUpMicMute() }
         startDigestScheduler()
         startBackupScheduler()
 
@@ -368,7 +376,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func onSettingsChanged() {
         // Sliders write straight to UserDefaults and the capture callbacks read
         // AppSettings live, so a reset needs no re-wiring — this hook exists for
-        // anything that caches a value at setup time.
+        // anything that caches a value at setup time. The mic-mute switch is one:
+        // a reset turns it off, which must also unmute.
+        MainActor.assumeIsolated { micMuteSettingChanged() }
     }
 
     @objc func showAPIKeyWindow() {
@@ -379,6 +389,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Don't leave the whole Mac muted after quitting (unless the user opted to).
+        if settings.micMuteRestoreOnQuit { MainActor.assumeIsolated { if MicMute.shared.isMuted { MicMute.shared.setMuted(false) } } }
         hotkeyManager.stop()
         audioCapture.stop()
         systemAudioCapture.stop()
@@ -504,6 +516,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         quickNoteItem.target = self
         menu.addItem(quickNoteItem)
         self.quickNoteMenuItem = quickNoteItem
+
+        // System-wide mic mute — a capture-adjacent verb, hidden unless enabled
+        // in Settings → Capture → Shortcuts.
+        let muteItem = NSMenuItem(title: "Mute Microphone", action: #selector(toggleMicMute), keyEquivalent: shortcutLetter(.muteMic))
+        muteItem.keyEquivalentModifierMask = [.control, .option]
+        muteItem.image = NSImage(systemSymbolName: "mic.slash", accessibilityDescription: nil)
+        muteItem.target = self
+        muteItem.isHidden = !settings.micMuteEnabled
+        menu.addItem(muteItem)
+        self.muteMicMenuItem = muteItem
 
         // Transcribe an existing audio file — an ingest verb that *creates* a
         // note, so it belongs with the capture actions, not the browse list.
@@ -697,6 +719,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // ⌃⌥J — toggle a quick dictated note into today's notes file
         hotkeyManager.onQuickNoteHotkey = { [weak self] in
             self?.toggleQuickNote()
+        }
+
+        // ⌃⌥U — mute / unmute the system microphone (when enabled in Settings)
+        hotkeyManager.onMuteMicHotkey = { [weak self] in
+            MainActor.assumeIsolated { self?.toggleMicMute() }
         }
 
         // ⌃⌥B — drop a timestamped bookmark in the running meeting
@@ -1152,6 +1179,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startRecording() {
         // A quick note owns the mic engine right now — finish/cancel it first.
         guard !quickNoteActive else { return }
+        // A system-muted mic would record silence and type nothing — say why instead.
+        if settings.micMuteEnabled, MainActor.assumeIsolated({ MicMute.shared.isMuted }) {
+            reportError("Your microphone is muted — press ⌃⌥\(ShortcutKeys.label(for: settings.shortcutKeyCode(for: .muteMic))) to unmute, then dictate again.")
+            return
+        }
         guard permissionGuard.hasMicrophonePermission,
               permissionGuard.hasAccessibilityPermission else {
             Log.dictation.warning("⚠️ Missing permissions — cannot record")

@@ -79,7 +79,7 @@ final class AppSettings: ObservableObject {
 
     // MARK: - Global shortcuts
 
-    /// User overrides for the six ⌃⌥ global shortcuts, keyed by
+    /// User overrides for the seven ⌃⌥ global shortcuts, keyed by
     /// `GlobalShortcut.rawValue` → virtual key code. Only non-default bindings
     /// are stored; the modifier (⌃⌥) is fixed.
     private var shortcutOverrides: [String: Int] {
@@ -171,6 +171,16 @@ final class AppSettings: ObservableObject {
             return Default.notesFolder
         }
         set { set(newValue.path, Key.notesFolderPath) }
+    }
+
+    /// What happens when a different call starts while one is being recorded.
+    var meetingSplitMode: MeetingSplitMode {
+        get {
+            guard let raw = defaults.string(forKey: Key.meetingSplitMode),
+                  let mode = MeetingSplitMode(rawValue: raw) else { return Default.meetingSplitMode }
+            return mode
+        }
+        set { set(newValue.rawValue, Key.meetingSplitMode) }
     }
 
     /// How the floating overlay behaves during meetings.
@@ -294,6 +304,8 @@ final class AppSettings: ObservableObject {
     /// Prepend YAML front-matter (Obsidian/Notion friendly) to notes files.
     @Setting(Key.frontMatterEnabled, Default.frontMatterEnabled) var frontMatterEnabled: Bool
     @Setting(Key.titleIncludesAccount, Default.titleIncludesAccount) var titleIncludesAccount: Bool
+    @Setting(Key.micMuteEnabled, Default.micMuteEnabled) var micMuteEnabled: Bool
+    @Setting(Key.micMuteRestoreOnQuit, Default.micMuteRestoreOnQuit) var micMuteRestoreOnQuit: Bool
 
     /// How meeting notes files are organized under the notes folder.
     var notesOrganization: NotesOrganization {

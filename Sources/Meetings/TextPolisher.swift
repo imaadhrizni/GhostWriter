@@ -1319,6 +1319,9 @@ final class TextPolisher {
                 if let u = GroqError.tokenUsage(in: errBody) {
                     await AIGate.shared.noteBudget(model: modelID, limit: u.limit, remaining: u.limit - u.used)
                 }
+                if let ceiling = GroqError.requestCeiling(in: errBody) {
+                    await AIGate.shared.noteCeiling(model: modelID, limit: ceiling)
+                }
                 throw GroqError.http(http, body: errBody)
             }
             let result: ChatResponse
@@ -1331,6 +1334,7 @@ final class TextPolisher {
                 throw error
             }
             Self.recordUsage(result)
+            if let prompt = result.usage?.prompt_tokens { await AIGate.shared.noteSuccess(model: modelID, promptTokens: prompt) }
             APIUsageLog.shared.recordChat(source: source, model: modelID,
                                           inputTokens: result.usage?.prompt_tokens ?? 0,
                                           outputTokens: result.usage?.completion_tokens ?? 0,
@@ -1438,6 +1442,9 @@ final class TextPolisher {
                 if let u = GroqError.tokenUsage(in: errText) {
                     await AIGate.shared.noteBudget(model: modelID, limit: u.limit, remaining: u.limit - u.used)
                 }
+                if let ceiling = GroqError.requestCeiling(in: errText) {
+                    await AIGate.shared.noteCeiling(model: modelID, limit: ceiling)
+                }
                 throw GroqError.http(http, body: errText)
             }
 
@@ -1460,6 +1467,7 @@ final class TextPolisher {
 
             if let usage {
                 UsageStats.shared.recordChat(inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens)
+                await AIGate.shared.noteSuccess(model: modelID, promptTokens: usage.prompt_tokens)
             }
             APIUsageLog.shared.recordChat(source: source, model: modelID,
                                           inputTokens: usage?.prompt_tokens ?? 0,

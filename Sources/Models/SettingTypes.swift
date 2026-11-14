@@ -523,6 +523,30 @@ enum NotesOrganization: String, CaseIterable, Identifiable {
 
 // MARK: - Meeting Overlay Mode
 
+/// What to do when a different call starts while a meeting is still recording
+/// (two back-to-back calls that would otherwise share one note).
+enum MeetingSplitMode: String, CaseIterable, Identifiable {
+    case ask, auto, off
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .ask:  return "Ask me"
+        case .auto: return "Split automatically"
+        case .off:  return "Keep one note"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .ask:  return "A prompt offers to save the current notes and start a fresh note for the new call."
+        case .auto: return "The current notes are saved and a new note starts, with no prompt. Best for back-to-back days; a mid-call reconnect to a different room would also split."
+        case .off:  return "Never split — everything recorded until you stop goes into one note."
+        }
+    }
+}
+
 /// Display behavior of the floating overlay during Meeting Mode.
 enum MeetingOverlayMode: String, CaseIterable, Identifiable {
     case captions   // pill + live transcript captions

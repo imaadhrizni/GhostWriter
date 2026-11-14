@@ -48,6 +48,9 @@ extension AppSettings {
         static let retainMeetingAudio     = "meeting.retainAudio"
         static let frontMatterEnabled     = "meeting.frontMatterEnabled"
         static let titleIncludesAccount   = "meeting.titleIncludesAccount"
+        static let micMuteEnabled         = "audio.micMute.enabled"
+        static let meetingSplitMode       = "meeting.splitMode"
+        static let micMuteRestoreOnQuit   = "audio.micMute.restoreOnQuit"
         static let diarizationEnabled     = "meeting.diarizationEnabled"
         static let offlineFallback        = "transcription.offlineFallback"
         static let preferOnDeviceAI       = "ai.preferOnDevice"
@@ -147,7 +150,7 @@ extension AppSettings {
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
                           structuredExtraction, extractKeyFields, extractUnanswered, watchlistKeywords, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, talkTimeAnalytics, objectionIntel, agenticAsk, agenticAskMaxHops, liveAssistantEnabled, meetingPrepCard,
-                          notifyOnMeetingEnd, retainMeetingAudio, frontMatterEnabled, titleIncludesAccount,
+                          notifyOnMeetingEnd, retainMeetingAudio, frontMatterEnabled, titleIncludesAccount, micMuteEnabled, micMuteRestoreOnQuit, meetingSplitMode,
                           diarizationEnabled, offlineFallback, preferOnDeviceAI, transcriptionLanguage,
                           digestEnabled, digestFrequency, digestHour, digestWeekday, staleRelationshipDays, lastDigestDay,
                           vocabulary, replacements, appProfiles, pasteOnlyApps,
@@ -214,6 +217,9 @@ extension AppSettings {
         static let retainMeetingAudio              = true
         static let frontMatterEnabled              = true
         static let titleIncludesAccount            = true
+        static let meetingSplitMode                = MeetingSplitMode.ask
+        static let micMuteEnabled                  = false  // opt-in: claims a global hotkey
+        static let micMuteRestoreOnQuit            = true
         static let diarizationEnabled              = true
         static let offlineFallback                 = true
         static let preferOnDeviceAI                = false

@@ -28,6 +28,15 @@ final class MeetingDetector {
     /// the cue to offer stopping Meeting Mode instead of recording silence.
     var onCallEnded: (() -> Void)?
 
+    /// Called on the main thread when a *different* call begins while a meeting is
+    /// being recorded — a back-to-back call that would share the first one's note.
+    /// Arguments: the call source and, when known, the service ("Microsoft Teams").
+    var onNewCallWhileRecording: ((String, String?) -> Void)?
+
+    /// Whether Meeting Mode is recording right now (`suppressed` also covers
+    /// dictation, which must not look like a meeting).
+    var isRecordingMeeting: () -> Bool = { false }
+
     /// While true (we are recording ourselves), *start* prompts are
     /// suppressed. Call-end tracking keeps running so a meeting being
     /// transcribed still gets its "call ended" signal.
@@ -40,6 +49,8 @@ final class MeetingDetector {
     private var lastHolders = ""         // last logged set of mic-holding processes (log on change only)
     private var tabHold = TabCallHold()  // a web-meeting tab seen in the frontmost browser
     private var lastTabRead = Date.distantPast
+    private var boundary = CallBoundaryTracker()   // is a second call starting inside this recording?
+    private var wasRecording = false
     private var tabDenied = Set<String>() // browsers whose Automation permission was refused (logged once each)
     private var lastTabLog = ""
 
@@ -109,6 +120,7 @@ final class MeetingDetector {
                     Log.meeting.info("👂 Call ended (\(self.activeSource ?? "?") released the mic)")
                     activeSource = nil
                     quietPolls = 0
+                    if wasRecording { boundary.noteCallEnded(at: Date()) }
                     onCallEnded?()
                 }
             }
@@ -116,6 +128,24 @@ final class MeetingDetector {
             quietPolls = 0
             activeSource = scan.sources[0]
         }
+
+        // A different call beginning while we record: the start prompt is suppressed
+        // then, so this is the only way a back-to-back call gets noticed.
+        let recording = isRecordingMeeting()
+        if recording {
+            if !wasRecording { boundary.reset() }
+            let boundaryTab = tab.flatMap { t in
+                tabHold.key.map { CallBoundaryTracker.Tab(key: $0, service: t.service,
+                                                          label: CallEpisodeTracker.browserCallLabel(t.browser)) }
+            }
+            if let call = boundary.observe(now: Date(), tab: boundaryTab, micSources: scan.sources) {
+                Log.meeting.info("👂 New call while recording\(call.service.map { " — \($0)" } ?? "") (\(call.source))")
+                onNewCallWhileRecording?(call.source, call.service)
+            }
+        } else if wasRecording {
+            boundary.reset()
+        }
+        wasRecording = recording
 
         // OFFERING Meeting Mode considers the mic *and* an open meeting tab. The
         // tab's key is the browser's own call label, so a browser that has both an
@@ -155,8 +185,11 @@ final class MeetingDetector {
             }
             return tabHold.observe(.unread, now: now)
         }
-        let reading: TabCallHold.Reading = result.url.flatMap(WebMeeting.service(for:))
-            .map { .meeting(browser: browser, service: $0) } ?? .other
+        let reading: TabCallHold.Reading = result.url.flatMap { url in
+            WebMeeting.service(for: url).map {
+                .meeting(browser: browser, service: $0, key: WebMeeting.meetingKey(for: url, service: $0))
+            }
+        } ?? .other
         let held = tabHold.observe(reading, now: now)
 
         let logKey = held.map { "\($0.service)|\($0.browser)" } ?? ""

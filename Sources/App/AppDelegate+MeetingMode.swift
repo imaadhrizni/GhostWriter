@@ -167,7 +167,7 @@ extension AppDelegate {
         startMeetingTimer()
 
         // Update status bar icon
-        statusItem?.button?.image = NSImage(systemSymbolName: "headphones.circle.fill", accessibilityDescription: "Meeting Mode")
+        refreshStatusIcon()
 
         // Overlay behavior per settings: captions / minimal pill / hidden
         if let panel = overlayPanel {
@@ -275,7 +275,7 @@ extension AppDelegate {
             self.appState.isSpeakerActive = false
             LiveMeetingAssistant.shared.stop()
             self.meetingModeMenuItem?.title = "Start Meeting"
-            self.statusItem?.button?.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: "GhostWriter")
+            MainActor.assumeIsolated { self.refreshStatusIcon() }
 
             if let panel = self.overlayPanel {
                 panel.ignoresMouseEvents = true  // restore pass-through

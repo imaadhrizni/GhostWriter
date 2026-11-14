@@ -53,6 +53,25 @@ enum WebMeeting {
     }
 }
 
+extension WebMeeting {
+    /// Which meeting `url` is, for telling one call from the next in the same
+    /// browser: the service plus, where the address names the room (a Meet code, a
+    /// Zoom id), that room. Services whose address changes *during* one call
+    /// (Teams moves from pre-join to the in-call page) key on the service alone,
+    /// so only a change of service is a new call there.
+    static func meetingKey(for url: URL, service: String) -> String {
+        let path = url.path.lowercased()
+        func first(_ pattern: String) -> String? {
+            path.range(of: pattern, options: .regularExpression).map { String(path[$0]) }
+        }
+        switch service {
+        case "Google Meet": return "\(service)|\(first(#"[a-z]{3}-[a-z]{4}-[a-z]{3}"#) ?? "")"
+        case "Zoom":        return "\(service)|\(first(#"\d{8,12}"#) ?? "")"
+        default:            return service
+        }
+    }
+}
+
 // MARK: - Tab Call Hold
 //
 // Remembers that a meeting tab was seen, so one meeting isn't re-offered every
@@ -65,19 +84,22 @@ struct TabCallHold {
     enum Reading {
         case unread                                       // browser not frontmost / not scriptable / throttled
         case other                                        // frontmost browser, active tab isn't a meeting
-        case meeting(browser: String, service: String)
+        case meeting(browser: String, service: String, key: String)
     }
 
     static let leftTabAfter: TimeInterval = 180           // seen elsewhere this long → left the meeting
     static let unseenAfter: TimeInterval = 600            // not seen at all this long → let go
 
-    private var held: (browser: String, service: String, lastMeeting: Date, firstOther: Date?)?
+    private var held: (browser: String, service: String, key: String, lastMeeting: Date, firstOther: Date?)?
+
+    /// Identity of the held meeting (see `WebMeeting.meetingKey`).
+    var key: String? { held?.key }
 
     /// The meeting tab currently considered open, if any.
     mutating func observe(_ reading: Reading, now: Date) -> (browser: String, service: String)? {
         switch reading {
-        case .meeting(let browser, let service):
-            held = (browser, service, now, nil)
+        case .meeting(let browser, let service, let key):
+            held = (browser, service, key, now, nil)
         case .other:
             if var h = held {
                 h.firstOther = h.firstOther ?? now

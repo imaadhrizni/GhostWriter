@@ -189,10 +189,15 @@ struct GeneralPane: View {
                     .onChange(of: settings.micMuteEnabled) { _, _ in
                         MainActor.assumeIsolated { (NSApp.delegate as? AppDelegate)?.micMuteSettingChanged() }
                     }
-                Text("Adds ⌃⌥U (change it under Capture → Shortcuts) and a menu item that mutes the Mac's microphone for every app on a call — Zoom, Meet, Teams — not just GhostWriter, so your side isn't transcribed while muted either. The menu-bar icon turns red while muted. Dictation while muted tells you why nothing was typed. Off leaves the key free.")
+                Text("Adds ⌃⌥U (change it under Capture → Shortcuts) and a menu item that mutes the Mac's microphone for every app on a call — Zoom, Meet, Teams — not just GhostWriter, so your side isn't transcribed while muted either. The menu-bar icon turns into a red slashed mic while muted. Dictation while muted tells you why nothing was typed. Off leaves the key free.")
                     .font(.caption).foregroundColor(.secondary)
                 if settings.micMuteEnabled {
-                    Toggle("Unmute when GhostWriter quits", isOn: $settings.micMuteRestoreOnQuit)
+                    Toggle("Keep the microphone muted by default", isOn: $settings.micMuteOnStart)
+                    Text("Mutes the Mac's microphone when GhostWriter starts and mutes it again when GhostWriter quits, so it is only live when you unmute it yourself (⌃⌥U) for a call. Off leaves the mic as you left it.")
+                        .font(.caption).foregroundColor(.secondary)
+                    if !settings.micMuteOnStart {
+                        Toggle("Unmute when GhostWriter quits", isOn: $settings.micMuteRestoreOnQuit)
+                    }
                 }
                 Divider()
                 Toggle("Prefer built-in microphone", isOn: $settings.preferBuiltInMic)

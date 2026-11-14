@@ -73,5 +73,5 @@ These work system-wide, from any app (they ride the same Accessibility event tap
 | **⌃⌥M** | Start / stop Meeting Mode |
 | **⌃⌥P** | Pause / resume meeting transcription |
 | **⌃⌥B** | Bookmark the current moment in a running meeting |
-| **⌃⌥U** | Mute / unmute the Mac's microphone for every app (opt-in: Settings → General → Microphone → *Mute shortcut*) |
+| **⌃⌥U** | Mute / unmute the Mac's microphone for every app (Settings → General → Microphone; on by default, with the mic muted at launch) |
 | **⌃⌥N** | Open meeting notes |

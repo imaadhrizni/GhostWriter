@@ -306,6 +306,7 @@ final class AppSettings: ObservableObject {
     @Setting(Key.titleIncludesAccount, Default.titleIncludesAccount) var titleIncludesAccount: Bool
     @Setting(Key.micMuteEnabled, Default.micMuteEnabled) var micMuteEnabled: Bool
     @Setting(Key.micMuteRestoreOnQuit, Default.micMuteRestoreOnQuit) var micMuteRestoreOnQuit: Bool
+    @Setting(Key.micMuteOnStart, Default.micMuteOnStart) var micMuteOnStart: Bool
 
     /// How meeting notes files are organized under the notes folder.
     var notesOrganization: NotesOrganization {

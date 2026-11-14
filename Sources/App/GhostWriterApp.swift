@@ -152,6 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statsMenuItem: NSMenuItem?
     var muteMicMenuItem: NSMenuItem?
     var micMuteObserver: AnyCancellable?
+    var terminationSignalSources: [DispatchSourceSignal] = []
     var errorMenuItem: NSMenuItem?
 
     // Support logic
@@ -203,7 +204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MainActor.assumeIsolated { self?.handleNewCallWhileRecording(source: source, service: service) }
         }
         meetingDetector.start()
-        MainActor.assumeIsolated { setUpMicMute() }
+        MainActor.assumeIsolated { setUpMicMute(); applyMuteOnLaunch() }
+        installTerminationSignalHandlers()
         startDigestScheduler()
         startBackupScheduler()
 
@@ -390,7 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // Don't leave the whole Mac muted after quitting (unless the user opted to).
-        if settings.micMuteRestoreOnQuit { MainActor.assumeIsolated { if MicMute.shared.isMuted { MicMute.shared.setMuted(false) } } }
+        MainActor.assumeIsolated { applyMuteOnQuit() }
         hotkeyManager.stop()
         audioCapture.stop()
         systemAudioCapture.stop()

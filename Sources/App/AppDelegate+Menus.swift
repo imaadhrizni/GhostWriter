@@ -239,6 +239,38 @@ extension AppDelegate {
             .sink { [weak self] _ in self?.refreshStatusIcon() }
     }
 
+    /// "Muted by default": mute the mic as GhostWriter starts, so it is only live
+    /// when you unmute it on purpose (⌃⌥U) for a call.
+    @MainActor func applyMuteOnLaunch() {
+        guard settings.micMuteEnabled, settings.micMuteOnStart else { return }
+        MicMute.shared.start()
+        if MicMute.shared.isSupported, !MicMute.shared.isMuted { MicMute.shared.setMuted(true) }
+    }
+
+    /// On quit: with "muted by default" the mic goes back to muted (whatever you left
+    /// it at during a call); otherwise it is unmuted only if you asked for that.
+    @MainActor func applyMuteOnQuit() {
+        guard settings.micMuteEnabled else { return }
+        if settings.micMuteOnStart {
+            if MicMute.shared.isSupported, !MicMute.shared.isMuted { MicMute.shared.setMuted(true) }
+        } else if settings.micMuteRestoreOnQuit, MicMute.shared.isMuted {
+            MicMute.shared.setMuted(false)
+        }
+    }
+
+    /// `pkill` / `kill` (and `./ship.sh`, which restarts the app) send SIGTERM,
+    /// which would skip `applicationWillTerminate` — route it through a normal quit
+    /// so the mic's quit state is applied.
+    func installTerminationSignalHandlers() {
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { NSApp.terminate(nil) }
+            source.resume()
+            terminationSignalSources.append(source)
+        }
+    }
+
     /// Settings turned the feature on or off. Turning it off while muted unmutes —
     /// there'd be no hotkey left to undo it.
     @MainActor func micMuteSettingChanged() {
@@ -268,8 +300,18 @@ extension AppDelegate {
         let (symbol, label) = muted ? ("mic.slash.circle.fill", "GhostWriter — microphone muted")
             : appState.isMeetingMode ? ("headphones.circle.fill", "Meeting Mode")
             : ("waveform.circle.fill", "GhostWriter")
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        let base = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        if muted {
+            // A template image is drawn in the menu bar's own black/white and ignores
+            // tint — so paint it: white glyph on a red disc, which stays vivid on any bar.
+            let colors = NSImage.SymbolConfiguration(paletteColors: [.white, .systemRed])
+            let painted = base?.withSymbolConfiguration(colors)
+            painted?.isTemplate = false
+            button.image = painted
+        } else {
+            base?.isTemplate = true
+            button.image = base
+        }
         button.image?.size = NSSize(width: 18, height: 18)
-        button.contentTintColor = muted ? .systemRed : nil
     }
 }

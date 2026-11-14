@@ -20,7 +20,7 @@
 | Path | Purpose |
 | --- | --- |
 | `Sources/Services/HotkeyManager.swift` | Global hotkeys (push-to-talk, Esc, ⌃⌥ shortcuts incl. ⌃⌥U mic mute, only claimed while enabled) via CGEvent tap |
-| `Sources/Audio/MicMute.swift` | `MicMute` — system-level mute of the default input device: the device's mute switch, else input volume to 0 (previous level restored); CoreAudio listeners keep state in step with external changes and default-input switches |
+| `Sources/Audio/MicMute.swift` | `MicMute` — system-level mute applied to **every** input device (a mic switched to later, e.g. AirPods connecting, is muted to match; per-device saved volume) and read back from the default: the device's mute switch, else input volume to 0 (previous level restored); CoreAudio listeners keep state in step with external changes and default-input switches |
 | `Sources/Audio/AudioCapture.swift` | Microphone capture (+ in-memory WAV wrapper for PCM uploads) |
 | `Sources/Audio/AudioTranscoder.swift` | Prepares decoded 16 kHz PCM for an optimal Groq upload — encodes to the smallest accepted container (Opus → FLAC → WAV) and splits over-limit recordings on silence into stitchable chunks |
 | `Sources/Audio/VoiceActivityDetector.swift` | RMS-based voice-activity detection |

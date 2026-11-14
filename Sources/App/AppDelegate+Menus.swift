@@ -244,7 +244,7 @@ extension AppDelegate {
     @MainActor func applyMuteOnLaunch() {
         guard settings.micMuteEnabled, settings.micMuteOnStart else { return }
         MicMute.shared.start()
-        if MicMute.shared.isSupported, !MicMute.shared.isMuted { MicMute.shared.setMuted(true) }
+        if MicMute.shared.isSupported { MicMute.shared.setMuted(true) }   // every input, even if the default already is
     }
 
     /// The meeting is over: put the mic back to muted, ready for the next call —
@@ -252,7 +252,7 @@ extension AppDelegate {
     @MainActor func applyMuteAfterMeeting() {
         guard settings.micMuteEnabled, settings.micMuteOnStart, settings.micMuteAfterMeeting else { return }
         MicMute.shared.start()
-        if MicMute.shared.isSupported, !MicMute.shared.isMuted { MicMute.shared.setMuted(true) }
+        if MicMute.shared.isSupported { MicMute.shared.setMuted(true) }   // every input, even if the default already is
     }
 
     /// On quit: with "muted by default" the mic goes back to muted (whatever you left
@@ -260,7 +260,7 @@ extension AppDelegate {
     @MainActor func applyMuteOnQuit() {
         guard settings.micMuteEnabled else { return }
         if settings.micMuteOnStart {
-            if MicMute.shared.isSupported, !MicMute.shared.isMuted { MicMute.shared.setMuted(true) }
+            if MicMute.shared.isSupported { MicMute.shared.setMuted(true) }   // every input, even if the default already is
         } else if settings.micMuteRestoreOnQuit, MicMute.shared.isMuted {
             MicMute.shared.setMuted(false)
         }

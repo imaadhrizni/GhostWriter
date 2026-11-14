@@ -15,6 +15,11 @@ import Foundation
 //      remembered and restored on unmute) — for devices with no mute switch.
 // A device with neither (some Bluetooth headsets) is reported unsupported.
 //
+// Mute state is applied to **every** input device, not just the current default:
+// a mic that is switched to later (AirPods connecting and taking over as the input)
+// would otherwise be live while the one you muted sits silent. A device that
+// appears or becomes the default while the system is muted is muted to match.
+//
 // State is read back from the device, never assumed, and a CoreAudio listener
 // keeps `isMuted` honest when something else changes it (System Settings, another
 // app, the device being unplugged or the default input switching).
@@ -35,6 +40,7 @@ final class MicMute: ObservableObject {
     private var listeners: [(object: AudioObjectID, address: AudioObjectPropertyAddress, block: AudioObjectPropertyListenerBlock)] = []
     private var started = false
 
+    /// Per-device (suffixed with the device UID): each mic has its own level to restore.
     private static let savedVolumeKey = "audio.micMute.savedVolume"
     /// The level an unmute falls back to when no earlier volume was remembered.
     private static let fallbackVolume: Float32 = 0.7
@@ -47,6 +53,12 @@ final class MicMute: ObservableObject {
         started = true
         listen(AudioObjectID(kAudioObjectSystemObject), Self.address(kAudioHardwarePropertyDefaultInputDevice, global: true)) { [weak self] in
             self?.rebind()
+        }
+        // A microphone appeared (AirPods connected, a USB mic plugged in): match it to
+        // the system's mute state before anything can use it.
+        listen(AudioObjectID(kAudioObjectSystemObject), Self.address(kAudioHardwarePropertyDevices, global: true)) { [weak self] in
+            guard let self, self.isMuted else { return }
+            self.applyToAllInputs(muted: true)
         }
         rebind()
     }
@@ -67,40 +79,93 @@ final class MicMute: ObservableObject {
     @discardableResult
     func toggle() -> Bool { setMuted(!isMuted) }
 
-    /// Mute or unmute the default input. Returns the resulting state.
+    /// Mute or unmute every input device (the default's resulting state is returned).
     @discardableResult
     func setMuted(_ muted: Bool) -> Bool {
         if !started { start() }
         guard deviceID != kAudioObjectUnknown else { return isMuted }
-
-        let switches = Self.settableElements(deviceID, selector: kAudioDevicePropertyMute)
-        if !switches.isEmpty {
-            for el in switches { Self.setU32(deviceID, Self.address(kAudioDevicePropertyMute, element: el), muted ? 1 : 0) }
-        } else {
-            let sliders = Self.settableElements(deviceID, selector: kAudioDevicePropertyVolumeScalar)
-            guard !sliders.isEmpty else {
-                Log.audio.warning("🔇 \(self.deviceName) has no mute or volume control — can't mute it")
-                return isMuted
-            }
-            if muted {
-                // Remember the level (unless it's already zero) so unmute can restore it.
-                if let v = Self.getF32(deviceID, Self.address(kAudioDevicePropertyVolumeScalar, element: sliders[0])), v > 0.001 {
-                    UserDefaults.standard.set(Double(v), forKey: Self.savedVolumeKey)
-                }
-            }
-            let target: Float32 = muted ? 0
-                : Float32(UserDefaults.standard.object(forKey: Self.savedVolumeKey) as? Double ?? Double(Self.fallbackVolume))
-            for el in sliders { Self.setF32(deviceID, Self.address(kAudioDevicePropertyVolumeScalar, element: el), target) }
+        guard Self.canMute(deviceID) else {
+            Log.audio.warning("🔇 \(self.deviceName) has no mute or volume control — can't mute it")
+            return isMuted
         }
+        applyToAllInputs(muted: muted)
         refresh()
         Log.audio.info("\(self.isMuted ? "🔇 Microphone muted" : "🎙️ Microphone unmuted") (\(self.deviceName))")
         return isMuted
+    }
+
+    /// Set the mute state on each input device that has any control (default first).
+    private func applyToAllInputs(muted: Bool) {
+        for device in Self.inputDevices() where Self.canMute(device) {
+            Self.apply(muted: muted, to: device)
+        }
+    }
+
+    /// Mute switch if the device has one, else its input volume (the prior level is
+    /// remembered per device and restored on unmute).
+    private static func apply(muted: Bool, to device: AudioObjectID) {
+        let switches = settableElements(device, selector: kAudioDevicePropertyMute)
+        if !switches.isEmpty {
+            for el in switches { setU32(device, address(kAudioDevicePropertyMute, element: el), muted ? 1 : 0) }
+            return
+        }
+        let sliders = settableElements(device, selector: kAudioDevicePropertyVolumeScalar)
+        guard !sliders.isEmpty else { return }
+        let key = "\(savedVolumeKey).\(uid(of: device))"
+        if muted {
+            if let v = getF32(device, address(kAudioDevicePropertyVolumeScalar, element: sliders[0])), v > 0.001 {
+                UserDefaults.standard.set(Double(v), forKey: key)
+            }
+        }
+        let target: Float32 = muted ? 0
+            : Float32(UserDefaults.standard.object(forKey: key) as? Double ?? Double(fallbackVolume))
+        for el in sliders { setF32(device, address(kAudioDevicePropertyVolumeScalar, element: el), target) }
+    }
+
+    private static func canMute(_ device: AudioObjectID) -> Bool {
+        !settableElements(device, selector: kAudioDevicePropertyMute).isEmpty
+            || !settableElements(device, selector: kAudioDevicePropertyVolumeScalar).isEmpty
+    }
+
+    /// Every device with at least one input channel.
+    private static func inputDevices() -> [AudioObjectID] {
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var a = address(kAudioHardwarePropertyDevices, global: true)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &a, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &a, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids.filter { id in
+            var c = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+                                               mScope: kAudioObjectPropertyScopeInput,
+                                               mElement: kAudioObjectPropertyElementMain)
+            var cs: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(id, &c, 0, nil, &cs) == noErr, cs > 0 else { return false }
+            let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(cs), alignment: 16)
+            defer { raw.deallocate() }
+            guard AudioObjectGetPropertyData(id, &c, 0, nil, &cs, raw) == noErr else { return false }
+            let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+            return list.reduce(0) { $0 + Int($1.mNumberChannels) } > 0
+        }
+    }
+
+    private static func uid(of id: AudioObjectID) -> String {
+        var a = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
+                                           mScope: kAudioObjectPropertyScopeGlobal,
+                                           mElement: kAudioObjectPropertyElementMain)
+        var ref: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = withUnsafeMutablePointer(to: &ref) { AudioObjectGetPropertyData(id, &a, 0, nil, &size, $0) }
+        guard status == noErr, let s = ref?.takeRetainedValue() else { return String(id) }
+        return s as String
     }
 
     // MARK: Device tracking
 
     /// The default input changed (or first start): re-point the listeners at it.
     private func rebind() {
+        let hadDevice = deviceID != kAudioObjectUnknown
+        let wasMuted = isMuted
         // Drop per-device listeners, keep the system-object one.
         let system = AudioObjectID(kAudioObjectSystemObject)
         for l in listeners where l.object != system {
@@ -120,6 +185,13 @@ final class MicMute: ObservableObject {
             }
         }
         refresh()
+        // A different microphone took over as the default (AirPods connected…): keep
+        // the system's state — if it was muted, the newcomer must not be live.
+        if hadDevice, wasMuted, !isMuted, isSupported {
+            Log.audio.info("🔇 Input switched to \(self.deviceName) while muted — muting it too")
+            applyToAllInputs(muted: true)
+            refresh()
+        }
     }
 
     /// Re-read name, support and mute state from the device.

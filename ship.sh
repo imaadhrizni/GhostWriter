@@ -106,7 +106,7 @@ cat <<EOF > "${APP_NAME}.app/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.49.0</string>
+    <string>0.50.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>

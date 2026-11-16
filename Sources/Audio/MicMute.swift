@@ -39,6 +39,7 @@ final class MicMute: ObservableObject {
     private var deviceID = AudioObjectID(kAudioObjectUnknown)
     private var listeners: [(object: AudioObjectID, address: AudioObjectPropertyAddress, block: AudioObjectPropertyListenerBlock)] = []
     private var started = false
+    private var generation = 0     // bumped per request, so a stale re-check stands down
 
     /// Per-device (suffixed with the device UID): each mic has its own level to restore.
     private static let savedVolumeKey = "audio.micMute.savedVolume"
@@ -90,8 +91,34 @@ final class MicMute: ObservableObject {
         }
         applyToAllInputs(muted: muted)
         refresh()
-        Log.audio.info("\(self.isMuted ? "🔇 Microphone muted" : "🎙️ Microphone unmuted") (\(self.deviceName))")
+        if isMuted != muted {
+            Log.audio.warning("🎙️ Asked to \(muted ? "mute" : "unmute") \(self.deviceName) but it still reports \(self.isMuted ? "muted" : "live") — retrying")
+        } else {
+            Log.audio.info("\(self.isMuted ? "🔇 Microphone muted" : "🎙️ Microphone unmuted") (\(self.deviceName))")
+        }
+        enforce(muted)
         return isMuted
+    }
+
+    /// Some devices — Bluetooth headsets especially — drop or reset a mute change when
+    /// their input stream opens (the profile switch as a call starts). Look again a
+    /// moment later and re-apply if the device no longer matches. A newer request
+    /// supersedes this one.
+    private func enforce(_ muted: Bool) {
+        generation += 1
+        let mine = generation
+        Task { @MainActor [weak self] in
+            for delay in [0.6, 1.5, 3.0] {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard let self, self.generation == mine else { return }
+                self.refresh()
+                if self.isMuted != muted {
+                    Log.audio.warning("🎙️ \(self.deviceName) drifted back to \(self.isMuted ? "muted" : "live") — re-applying \(muted ? "mute" : "unmute")")
+                    self.applyToAllInputs(muted: muted)
+                    self.refresh()
+                }
+            }
+        }
     }
 
     /// Set the mute state on each input device that has any control (default first).

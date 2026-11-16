@@ -86,8 +86,12 @@ extension AppDelegate {
             meetingLiveBrief = accessory.liveBrief.isEnabled ? (accessory.liveBrief.state == .on) : false
             meetingCatalogTarget = resolveCatalogTarget(accessory.catalog.selectedItem?.representedObject as? String)
             // Mic row present → apply its choice (live or muted) before recording starts.
+            var micChoice: Bool?   // true = live; nil = no mic row in the dialog
             if accessory.micLive.superview != nil {
-                _ = MainActor.assumeIsolated { MicMute.shared.setMuted(accessory.micLive.state != .on) }
+                let live = accessory.micLive.state == .on
+                micChoice = live
+                Log.meeting.info("🎙️ Start dialog: microphone \(live ? "live" : "muted") for this meeting")
+                _ = MainActor.assumeIsolated { MicMute.shared.setMuted(!live) }
             }
             // Prep card: surface recent context for the chosen org/opp before
             // recording starts — unless switched off for this meeting.
@@ -98,6 +102,10 @@ extension AppDelegate {
             // can't open a spurious second dialog before isMeetingMode flips.
             Task { @MainActor in
                 await startMeetingMode()
+                // Opening the meeting's microphone stream can reset a Bluetooth headset's
+                // mute state (AirPods switching profile) — apply the choice again now
+                // that the stream is up.
+                if let live = micChoice { MicMute.shared.setMuted(!live) }
                 meetingStartPromptActive = false
             }
         } else {

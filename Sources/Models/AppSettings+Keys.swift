@@ -53,6 +53,8 @@ extension AppSettings {
         static let meetingSplitMode       = "meeting.splitMode"
         static let micMuteRestoreOnQuit   = "audio.micMute.restoreOnQuit"
         static let micMuteOnStart         = "audio.micMute.onStart"
+        static let micMuteSeparateIcon    = "audio.micMute.separateIcon"
+        static let speakerIconEnabled     = "audio.speaker.iconEnabled"
         static let micMuteAfterMeeting    = "audio.micMute.afterMeeting"
         static let diarizationEnabled     = "meeting.diarizationEnabled"
         static let offlineFallback        = "transcription.offlineFallback"
@@ -153,7 +155,7 @@ extension AppSettings {
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
                           structuredExtraction, extractKeyFields, extractUnanswered, watchlistKeywords, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, talkTimeAnalytics, objectionIntel, agenticAsk, agenticAskMaxHops, liveAssistantEnabled, meetingPrepCard,
-                          notifyOnMeetingEnd, retainMeetingAudio, frontMatterEnabled, titleIncludesAccount, micMuteEnabled, notesGroupByWeek, micMuteRestoreOnQuit, micMuteOnStart, micMuteAfterMeeting, meetingSplitMode,
+                          notifyOnMeetingEnd, retainMeetingAudio, frontMatterEnabled, titleIncludesAccount, micMuteEnabled, notesGroupByWeek, micMuteRestoreOnQuit, micMuteOnStart, micMuteAfterMeeting, micMuteSeparateIcon, speakerIconEnabled, meetingSplitMode,
                           diarizationEnabled, offlineFallback, preferOnDeviceAI, transcriptionLanguage,
                           digestEnabled, digestFrequency, digestHour, digestWeekday, staleRelationshipDays, lastDigestDay,
                           vocabulary, replacements, appProfiles, pasteOnlyApps,
@@ -225,6 +227,8 @@ extension AppSettings {
         static let notesGroupByWeek                = true   // Year › Month › Week › Day; off drops the Week level
         static let micMuteRestoreOnQuit            = false
         static let micMuteAfterMeeting             = true   // re-mute when a meeting ends
+        static let speakerIconEnabled              = true   // speaker status icon in the menu bar
+        static let micMuteSeparateIcon             = true   // own menu-bar icon for the mic
         static let micMuteOnStart                  = true   // mic stays muted unless you unmute it on purpose
         static let diarizationEnabled              = true
         static let offlineFallback                 = true

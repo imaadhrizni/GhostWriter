@@ -308,6 +308,8 @@ final class AppSettings: ObservableObject {
     @Setting(Key.notesGroupByWeek, Default.notesGroupByWeek) var notesGroupByWeek: Bool
     @Setting(Key.micMuteRestoreOnQuit, Default.micMuteRestoreOnQuit) var micMuteRestoreOnQuit: Bool
     @Setting(Key.micMuteOnStart, Default.micMuteOnStart) var micMuteOnStart: Bool
+    @Setting(Key.micMuteSeparateIcon, Default.micMuteSeparateIcon) var micMuteSeparateIcon: Bool
+    @Setting(Key.speakerIconEnabled, Default.speakerIconEnabled) var speakerIconEnabled: Bool
     @Setting(Key.micMuteAfterMeeting, Default.micMuteAfterMeeting) var micMuteAfterMeeting: Bool
 
     /// How meeting notes files are organized under the notes folder.

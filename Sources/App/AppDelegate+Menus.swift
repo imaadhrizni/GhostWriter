@@ -304,7 +304,10 @@ extension AppDelegate {
     /// is visible at a glance), headphones during Meeting Mode, else the waveform.
     @MainActor func refreshStatusIcon() {
         guard let button = statusItem?.button else { return }
-        let muted = settings.micMuteEnabled && MicMute.shared.isMuted
+        let separate = settings.micMuteEnabled && settings.micMuteSeparateIcon
+        // With its own mic icon, the main icon only tells the app's state; otherwise it
+        // doubles as the mute indicator (a red slashed mic while muted).
+        let muted = !separate && settings.micMuteEnabled && MicMute.shared.isMuted
         let (symbol, label) = muted ? ("mic.slash.circle.fill", "GhostWriter — microphone muted")
             : appState.isMeetingMode ? ("headphones.circle.fill", "Meeting Mode")
             : ("waveform.circle.fill", "GhostWriter")
@@ -321,5 +324,94 @@ extension AppDelegate {
             button.image = base
         }
         button.image?.size = NSSize(width: 18, height: 18)
+        refreshMicStatusItem(show: separate)
+    }
+
+    /// The second menu-bar icon: a red slashed mic while muted, a green mic while live.
+    /// Click it to mute or unmute. Created and removed with the setting.
+    @MainActor private func refreshMicStatusItem(show: Bool) {
+        guard show else {
+            if let item = micStatusItem { NSStatusBar.system.removeStatusItem(item); micStatusItem = nil }
+            return
+        }
+        if micStatusItem == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            item.button?.target = self
+            item.button?.action = #selector(toggleMicMute)
+            micStatusItem = item
+        }
+        guard let button = micStatusItem?.button else { return }
+        let muted = MicMute.shared.isMuted
+        let symbol = muted ? "mic.slash.fill" : "mic.fill"
+        let label = muted ? "Microphone muted — click to unmute" : "Microphone live — click to mute"
+        let colors = NSImage.SymbolConfiguration(paletteColors: [muted ? .systemRed : .systemGreen])
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?.withSymbolConfiguration(colors)
+        image?.isTemplate = false
+        image?.size = NSSize(width: 16, height: 16)
+        button.image = image
+        button.toolTip = label
     }
 }
+
+// MARK: - Speaker status icon
+
+extension AppDelegate {
+
+    /// Track the default output and keep the speaker icon in step with it. Called at
+    /// launch and whenever the setting (or a settings reset) changes.
+    @MainActor func setUpSpeakerStatus() {
+        speakerObserver = nil
+        guard settings.speakerIconEnabled else {
+            SpeakerStatus.shared.stop()
+            if let item = speakerStatusItem { NSStatusBar.system.removeStatusItem(item); speakerStatusItem = nil }
+            return
+        }
+        SpeakerStatus.shared.start()
+        let speaker = SpeakerStatus.shared
+        speakerObserver = speaker.$isMuted.combineLatest(speaker.$volume, speaker.$deviceName)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshSpeakerStatusItem() }
+    }
+
+    /// Click the icon to mute or unmute the speaker.
+    @MainActor @objc func toggleSpeakerMute() {
+        guard SpeakerStatus.shared.isSupported else {
+            let name = SpeakerStatus.shared.deviceName
+            reportError("\(name.isEmpty ? "The current output" : name) can't be muted from here — it has no mute or volume control.")
+            return
+        }
+        SpeakerStatus.shared.toggle()
+    }
+
+    /// A speaker whose waves follow the volume; red and slashed while muted.
+    @MainActor private func refreshSpeakerStatusItem() {
+        if speakerStatusItem == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            item.button?.target = self
+            item.button?.action = #selector(toggleSpeakerMute)
+            speakerStatusItem = item
+        }
+        guard let button = speakerStatusItem?.button else { return }
+        let speaker = SpeakerStatus.shared
+        let percent = Int((speaker.volume * 100).rounded())
+        let symbol: String
+        if speaker.isMuted { symbol = "speaker.slash.fill" }
+        else if speaker.volume < 0.34 { symbol = "speaker.wave.1.fill" }
+        else if speaker.volume < 0.67 { symbol = "speaker.wave.2.fill" }
+        else { symbol = "speaker.wave.3.fill" }
+        let device = speaker.deviceName.isEmpty ? "Speaker" : speaker.deviceName
+        let label = speaker.isMuted ? "\(device) — muted · click to unmute" : "\(device) — volume \(percent)% · click to mute"
+        let base = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        if speaker.isMuted {
+            let painted = base?.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.systemRed]))
+            painted?.isTemplate = false
+            button.image = painted
+        } else {
+            base?.isTemplate = true      // the menu bar's own black/white — quiet while live
+            button.image = base
+        }
+        button.image?.size = NSSize(width: 16, height: 16)
+        button.toolTip = label
+    }
+}
+

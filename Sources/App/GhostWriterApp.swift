@@ -151,6 +151,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var liveBriefEndMenuItem: NSMenuItem?
     var statsMenuItem: NSMenuItem?
     var muteMicMenuItem: NSMenuItem?
+    /// The second menu-bar icon — the microphone's state, click to mute/unmute.
+    var micStatusItem: NSStatusItem?
+    /// The third menu-bar icon — the speaker: output volume / mute, click to mute.
+    var speakerStatusItem: NSStatusItem?
+    var speakerObserver: AnyCancellable?
     var micMuteObserver: AnyCancellable?
     var terminationSignalSources: [DispatchSourceSignal] = []
     var errorMenuItem: NSMenuItem?
@@ -204,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MainActor.assumeIsolated { self?.handleNewCallWhileRecording(source: source, service: service) }
         }
         meetingDetector.start()
-        MainActor.assumeIsolated { setUpMicMute(); applyMuteOnLaunch() }
+        MainActor.assumeIsolated { setUpMicMute(); applyMuteOnLaunch(); setUpSpeakerStatus() }
         installTerminationSignalHandlers()
         startDigestScheduler()
         startBackupScheduler()
@@ -380,7 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // AppSettings live, so a reset needs no re-wiring — this hook exists for
         // anything that caches a value at setup time. The mic-mute switch is one:
         // a reset turns it off, which must also unmute.
-        MainActor.assumeIsolated { micMuteSettingChanged() }
+        MainActor.assumeIsolated { micMuteSettingChanged(); setUpSpeakerStatus() }
     }
 
     @objc func showAPIKeyWindow() {

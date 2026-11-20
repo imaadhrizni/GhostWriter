@@ -74,13 +74,7 @@ extension AppDelegate {
         // asked", and no further prompt comes until it's answered).
         let window = alert.window
         window.collectionBehavior.insert([.moveToActiveSpace, .fullScreenAuxiliary])
-        let shownAt = Date()
-        let nudge = Timer(timeInterval: 15, repeats: true) { _ in
-            Log.meeting.warning("🔔 Start prompt unanswered after \(Int(Date().timeIntervalSince(shownAt)))s — bringing it forward (it may be hidden behind a full-screen app)")
-            NSApp.activate(ignoringOtherApps: true)
-            window.orderFrontRegardless()
-        }
-        RunLoop.main.add(nudge, forMode: .common)
+        let nudge = Self.nudgeUntilAnswered(window, notifyTitle: title)
 
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
@@ -91,6 +85,14 @@ extension AppDelegate {
             meetingAgenda = Self.parseAgenda(accessory.agendaField.stringValue)
             meetingLiveBrief = accessory.liveBrief.isEnabled ? (accessory.liveBrief.state == .on) : false
             meetingCatalogTarget = resolveCatalogTarget(accessory.catalog.selectedItem?.representedObject as? String)
+            // Mic row present → apply its choice (live or muted) before recording starts.
+            var micChoice: Bool?   // true = live; nil = no mic row in the dialog
+            if accessory.micLive.superview != nil {
+                let live = accessory.micLive.state == .on
+                micChoice = live
+                Log.meeting.info("🎙️ Start dialog: microphone \(live ? "live" : "muted") for this meeting")
+                _ = MainActor.assumeIsolated { MicMute.shared.setMuted(!live) }
+            }
             // Prep card: surface recent context for the chosen org/opp before
             // recording starts — unless switched off for this meeting.
             if let target = meetingCatalogTarget, accessory.prepCard.state == .on {
@@ -100,6 +102,10 @@ extension AppDelegate {
             // can't open a spurious second dialog before isMeetingMode flips.
             Task { @MainActor in
                 await startMeetingMode()
+                // Opening the meeting's microphone stream can reset a Bluetooth headset's
+                // mute state (AirPods switching profile) — apply the choice again now
+                // that the stream is up.
+                if let live = micChoice { MicMute.shared.setMuted(!live) }
                 meetingStartPromptActive = false
             }
         } else {
@@ -249,6 +255,8 @@ extension AppDelegate {
         let liveBrief = NSSwitch(frame: .zero)
         let prepCard = NSSwitch(frame: .zero)
         let prepLabel = NSTextField(labelWithString: "Show prep card")
+        /// "Microphone live" — only added to the dialog when mic mute is enabled.
+        let micLive = NSSwitch(frame: .zero)
 
         /// Full link options (No link, org/opp rows, quick-add). The popup is
         /// rebuilt from this, filtered by the search field, so the list stays
@@ -310,10 +318,13 @@ extension AppDelegate {
         // with a cursor so the spacing stays even and easy to retune.
         let capH: CGFloat = 15, popH: CGFloat = 26, fieldH: CGFloat = 44, rowH: CGFloat = 22
         let capGap: CGFloat = 3, groupGap: CGFloat = 14, rowGap: CGFloat = 6
+        // Mic row only when system mic mute is on and the input can be muted.
+        let showMic = MainActor.assumeIsolated { AppSettings.shared.micMuteEnabled && MicMute.shared.isSupported }
         let height = capH + capGap + popH + rowGap + popH + groupGap   // link: caption + search + popup
                    + capH + capGap + popH + groupGap
                    + capH + capGap + fieldH + groupGap
                    + rowH + rowGap + rowH
+                   + (showMic ? rowGap + rowH : 0)
         let container = StartAccessory(frame: NSRect(x: 0, y: 0, width: width, height: height))
 
         // Distance consumed from the top edge; `place` reserves the next element
@@ -447,6 +458,29 @@ extension AppDelegate {
         container.addSubview(prepLabel)
         container.addSubview(prep)
 
+        // Microphone (bottom) — start with your mic live or muted. Defaults to live:
+        // you're about to join a call. Only offered when mic mute is enabled.
+        if showMic {
+            top += rowGap
+            let micRowY = place(rowH)
+            let mic = container.micLive
+            mic.controlSize = .mini
+            mic.sizeToFit()
+            mic.frame = NSRect(x: width - mic.frame.width,
+                               y: micRowY + (rowH - mic.frame.height) / 2,
+                               width: mic.frame.width, height: mic.frame.height)
+            mic.state = .on
+            let micLabel = NSTextField(labelWithString: "Unmute my microphone")
+            micLabel.frame = NSRect(x: 0, y: micRowY + (rowH - 16) / 2,
+                                    width: width - mic.frame.width - 8, height: 16)
+            micLabel.font = .systemFont(ofSize: 12)
+            let micTip = "On: your microphone goes live for this meeting. Off: it stays muted — you can still unmute any time with the mute shortcut. Applies to this meeting only."
+            mic.toolTip = micTip
+            micLabel.toolTip = micTip
+            container.addSubview(micLabel)
+            container.addSubview(mic)
+        }
+
         // Set the prep switch's initial enabled state from the default link.
         container.catalogChanged()
 
@@ -463,6 +497,66 @@ extension AppDelegate {
     private func applyTemplateSelection(from picker: NSPopUpButton) {
         guard let id = picker.selectedItem?.representedObject as? String else { return }
         settings.selectedTemplateID = id
+    }
+
+    /// Keep a blocking prompt in view: bring it forward every 15 s and, the first
+    /// time it goes unanswered, also raise a system notification — a modal can hide
+    /// behind a full-screen app, and an unseen prompt looks like "it never asked".
+    /// Invalidate the returned timer once the prompt is answered.
+    static func nudgeUntilAnswered(_ window: NSWindow, notifyTitle: String) -> Timer {
+        let shownAt = Date()
+        var notified = false
+        let nudge = Timer(timeInterval: 15, repeats: true) { _ in
+            Log.meeting.warning("🔔 Prompt \"\(notifyTitle)\" unanswered after \(Int(Date().timeIntervalSince(shownAt)))s — bringing it forward (it may be hidden behind a full-screen app)")
+            NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
+            if !notified { notified = true; NotificationManager.shared.notifyStartPromptWaiting(notifyTitle) }
+        }
+        RunLoop.main.add(nudge, forMode: .common)
+        return nudge
+    }
+
+    /// A *different* call began while a meeting is still recording — two
+    /// back-to-back calls that would otherwise share one note. Per
+    /// `meetingSplitMode`: ask, split silently, or leave it be.
+    @MainActor
+    func handleNewCallWhileRecording(source: String, service: String?) {
+        guard appState.isMeetingMode, !meetingStartPromptActive, !endCoverageChecking else { return }
+        let name = service.map { "\($0) call" } ?? "call"
+        switch settings.meetingSplitMode {
+        case .off:
+            Log.meeting.info("✂️ New \(name) while recording — split is off, keeping one note")
+        case .auto:
+            splitMeeting(newCall: name)
+        case .ask:
+            meetingStartPromptActive = true
+            defer { meetingStartPromptActive = false }
+            let alert = NSAlert()
+            alert.messageText = "New meeting detected"
+            alert.informativeText = "A new \(name) seems to have started while GhostWriter is still recording the previous one. Save the current notes and start a fresh note for it? Otherwise both calls end up in one note."
+            alert.addButton(withTitle: "Save & Start New Note")
+            alert.addButton(withTitle: "Keep One Note")
+            alert.window.collectionBehavior.insert([.moveToActiveSpace, .fullScreenAuxiliary])
+            let nudge = Self.nudgeUntilAnswered(alert.window, notifyTitle: "New meeting detected")
+            NSApp.activate(ignoringOtherApps: true)
+            let response = alert.runModal()
+            nudge.invalidate()
+            if response == .alertFirstButtonReturn { splitMeeting(newCall: name) }
+            else { Log.meeting.info("✂️ New \(name) while recording — kept in one note") }
+        }
+    }
+
+    /// Finish the current note and start a new one straight away. `stopMeetingMode`
+    /// clears the recording flag on the next main-queue turn, so wait for it.
+    @MainActor
+    func splitMeeting(newCall name: String) {
+        Log.meeting.info("✂️ Splitting the recording — new \(name)")
+        stopMeetingMode(remute: false)
+        Task { @MainActor in
+            for _ in 0..<20 where appState.isMeetingMode { try? await Task.sleep(nanoseconds: 100_000_000) }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await startMeetingMode()
+        }
     }
 
     /// The tracked call released the mic while Meeting Mode is still running —

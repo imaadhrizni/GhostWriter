@@ -40,8 +40,8 @@ enum RemindersExporter {
             reminder.calendar = list
             reminder.title = item.displayText
             reminder.notes = "From meeting: \(item.file.displayName)"
-            if let due = item.due, let comps = dueComponents(from: due) {
-                reminder.dueDateComponents = comps
+            if let day = item.dueDate {
+                reminder.dueDateComponents = Calendar.current.dateComponents([.year, .month, .day], from: day)
             }
             do {
                 try store.save(reminder, commit: false)
@@ -69,15 +69,5 @@ enum RemindersExporter {
             }
         }
         if !granted { throw ExportError.accessDenied }
-    }
-
-    /// Parse a stated due date into date components. Accepts ISO "yyyy-MM-dd"
-    /// (what the summary is asked to emit); anything else is left off the
-    /// reminder rather than guessed wrong.
-    private static func dueComponents(from text: String) -> DateComponents? {
-        guard let date = DateDisplay.posixDay.date(from: text.trimmingCharacters(in: .whitespaces)) else {
-            return nil
-        }
-        return Calendar.current.dateComponents([.year, .month, .day], from: date)
     }
 }

@@ -139,6 +139,10 @@ private struct NotesViewerView: View {
     /// The window title for generated drafts (nil for file-backed notes) —
     /// drives the draft header's kind, title, and subtitle.
     let documentTitle: String?
+    @ObservedObject private var catalog = CatalogStore.shared
+    @State private var titling = false
+    @State private var showFiling = false
+    @State private var filingNoteID = ""
     @State private var text: String
     @State private var savedText: String
     @State private var status: String = ""
@@ -180,6 +184,64 @@ private struct NotesViewerView: View {
     /// PDF export instead of "Meeting_2026-10-06_17-50-36".
     private var noteTitle: String {
         FrontMatter.displayTitle(in: text) ?? fileURL?.deletingPathExtension().lastPathComponent ?? "Note"
+    }
+
+    // MARK: Catalog filing & title
+
+    /// This note's Catalog row, if it has one (the row is created on demand when
+    /// you file or reveal the note).
+    private var catalogNote: CatalogNote? {
+        fileURL.flatMap { url in
+            let rel = AppSettings.shared.relativePath(of: url)
+            return catalog.doc.notes.first { $0.filePath == rel }
+        }
+    }
+
+    /// The Catalog row for this note, creating it when missing.
+    private func ensureCatalogNote() -> CatalogNote? {
+        guard let fileURL else { return nil }
+        return catalog.note(forRelativePath: AppSettings.shared.relativePath(of: fileURL),
+                            title: noteTitle, date: nil)
+    }
+
+    /// "Acme › Platform POC", the org, or "Unassigned" — where the note is filed.
+    private var filingLabel: String {
+        guard let n = catalogNote else { return "Unassigned" }
+        if let p = n.projectIDs.first { return catalog.projectPath(of: p) }
+        if let o = n.orgIDs.first { return catalog.orgPath(of: o) }
+        return "Unassigned"
+    }
+
+    private func openFiling() {
+        guard let n = ensureCatalogNote() else { return }
+        filingNoteID = n.id
+        showFiling = true
+    }
+
+    private func revealInCatalog() {
+        guard let n = ensureCatalogNote() else { return }
+        NotificationCenter.default.post(name: .revealNoteInCatalog, object: n.id)
+    }
+
+    /// Generate (or regenerate) the title from the transcript, then reload so the
+    /// header shows it. Held back while there are unsaved edits, since the title
+    /// is written to the file's front-matter.
+    private func generateTitle() {
+        guard let fileURL else { return }
+        guard !isDirty else { status = "Save your edits first, then generate the title."; return }
+        titling = true
+        status = "Generating title…"
+        Task { @MainActor in
+            defer { titling = false }
+            switch await MeetingTitler.generate(for: fileURL) {
+            case .titled(let t):
+                let fresh = fileURL.readText() ?? text
+                text = fresh; savedText = fresh
+                status = "Title: \(t)"
+            case .failed(let why):
+                status = why
+            }
+        }
     }
 
     /// Speaker labels only exist in meeting notes.
@@ -481,6 +543,27 @@ private struct NotesViewerView: View {
         .animation(.default, value: status)
     }
 
+    /// Current filing (removable) plus the same org/project picker the Catalog uses.
+    private var filingPopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let n = catalogNote, !catalog.isUnassigned(n) {
+                HStack {
+                    Label(filingLabel, systemImage: "folder").font(.callout).lineLimit(1)
+                    Spacer()
+                    Button("Unassign") {
+                        for p in n.projectIDs { catalog.setProject(p, on: n.id, false) }
+                        for o in n.orgIDs { catalog.setOrg(o, on: n.id, false) }
+                        showFiling = false
+                    }
+                    .buttonStyle(.link).font(.caption)
+                }
+                .padding(.horizontal, 10).padding(.top, 10)
+                Divider()
+            }
+            AssignPopover(store: catalog, noteID: filingNoteID, show: $showFiling)
+        }
+    }
+
     // MARK: File-note toolbar
 
     private var fileToolbar: some View {
@@ -511,6 +594,27 @@ private struct NotesViewerView: View {
             Button { copyToPasteboard() } label: { Image(systemName: "doc.on.doc") }
                 .help(isEditable ? "Copy the raw Markdown"
                                  : "Copy formatted text — pastes with styling into Mail, docs, etc.")
+
+            // Catalog: where this note is filed, and a way to jump to it there.
+            if fileURL != nil {
+                Button { openFiling() } label: {
+                    Label(filingLabel, systemImage: catalogNote.map { catalog.isUnassigned($0) } ?? true ? "folder.badge.plus" : "folder")
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: 200)
+                .help("File this note under an organisation or project")
+                .popover(isPresented: $showFiling) { filingPopover }
+
+                Button { revealInCatalog() } label: { Image(systemName: "tray.full") }
+                    .help("Show this note in the Catalog")
+            }
+
+            // A placeholder title ("Meeting 2026-…") gets a one-click fix.
+            if isMeetingNote, MeetingTitler.isDefault(noteTitle) {
+                Button { generateTitle() } label: { Label("Title", systemImage: "textformat") }
+                    .disabled(titling)
+                    .help("Generate a title from the transcript")
+            }
 
             // AI actions — the primary reason to open a note.
             if canSummarize {
@@ -573,6 +677,10 @@ private struct NotesViewerView: View {
                 }
                 if isMeetingNote {
                     Divider()
+                    Button { generateTitle() } label: {
+                        Label(MeetingTitler.isDefault(noteTitle) ? "Generate Title" : "Regenerate Title", systemImage: "textformat")
+                    }
+                    .disabled(titling)
                     Button { regenerateRefinement() } label: {
                         Label("Regenerate AI Summary", systemImage: "arrow.clockwise")
                     }

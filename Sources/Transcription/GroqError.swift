@@ -70,6 +70,15 @@ enum GroqError: LocalizedError {
         return nums.count == 2 ? (nums[0], nums[1]) : nil
     }
 
+    /// The per-request token ceiling named by a 413 ("Request too large … Limit
+    /// 7000, Requested 7326") — what this model will take in one call, however
+    /// long we wait. nil for any other error.
+    static func requestCeiling(in body: String) -> Int? {
+        guard body.contains("Request too large"),
+              let m = body.range(of: #"Limit (\d+), Requested (\d+)"#, options: .regularExpression) else { return nil }
+        return body[m].split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }.first
+    }
+
     /// Groq's `error.message` from a JSON error body, if present.
     private static func serverMessage(in body: String) -> String? {
         guard let data = body.data(using: .utf8),

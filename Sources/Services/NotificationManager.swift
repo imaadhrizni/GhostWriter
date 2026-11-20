@@ -99,6 +99,13 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         post(title: "Automatic backup failed", body: message, fileURL: nil, sound: nil)
     }
 
+    /// The "start Meeting Mode?" dialog has sat unanswered — it's a modal that can
+    /// hide behind a full-screen app, so say so where it can't be missed.
+    func notifyStartPromptWaiting(_ title: String) {
+        post(title: title, body: "GhostWriter is waiting to start recording — click to answer.",
+             fileURL: nil, sound: .default)
+    }
+
     /// "Something went wrong" — no click payload; also surfaced in the menu.
     func notifyError(_ message: String) {
         let clipped = message.count > 160 ? String(message.prefix(160)) + "…" : message

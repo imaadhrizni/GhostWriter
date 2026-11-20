@@ -47,6 +47,15 @@ extension AppSettings {
         static let notifyOnMeetingEnd     = "meeting.notifyOnMeetingEnd"
         static let retainMeetingAudio     = "meeting.retainAudio"
         static let frontMatterEnabled     = "meeting.frontMatterEnabled"
+        static let titleIncludesAccount   = "meeting.titleIncludesAccount"
+        static let micMuteEnabled         = "audio.micMute.enabled"
+        static let notesGroupByWeek       = "catalog.notes.groupByWeek"
+        static let meetingSplitMode       = "meeting.splitMode"
+        static let micMuteRestoreOnQuit   = "audio.micMute.restoreOnQuit"
+        static let micMuteOnStart         = "audio.micMute.onStart"
+        static let micMuteSeparateIcon    = "audio.micMute.separateIcon"
+        static let speakerIconEnabled     = "audio.speaker.iconEnabled"
+        static let micMuteAfterMeeting    = "audio.micMute.afterMeeting"
         static let diarizationEnabled     = "meeting.diarizationEnabled"
         static let offlineFallback        = "transcription.offlineFallback"
         static let preferOnDeviceAI       = "ai.preferOnDevice"
@@ -103,6 +112,7 @@ extension AppSettings {
         static let networkDerivedLinks    = "catalog.network.derivedLinks"
         static let networkAnimate         = "catalog.network.animate"
         static let networkDormantDays     = "catalog.network.dormantDays"
+        static let actionMyNames          = "catalog.actions.myNames"
         static let uiDateFormat           = "ui.dateFormat"
         static let pdfPaperSize           = "export.pdfPaperSize"
         static let browserTabDetection    = "dictation.browserTabDetection"
@@ -145,7 +155,7 @@ extension AppSettings {
                           notesFolderPath, overlayMode,
                           summariesEnabled, actionItemsEnabled,
                           structuredExtraction, extractKeyFields, extractUnanswered, watchlistKeywords, draftGuidance, userDraftTemplates, openNotesExternally, topicChapters, talkTimeAnalytics, objectionIntel, agenticAsk, agenticAskMaxHops, liveAssistantEnabled, meetingPrepCard,
-                          notifyOnMeetingEnd, retainMeetingAudio, frontMatterEnabled,
+                          notifyOnMeetingEnd, retainMeetingAudio, frontMatterEnabled, titleIncludesAccount, micMuteEnabled, notesGroupByWeek, micMuteRestoreOnQuit, micMuteOnStart, micMuteAfterMeeting, micMuteSeparateIcon, speakerIconEnabled, meetingSplitMode,
                           diarizationEnabled, offlineFallback, preferOnDeviceAI, transcriptionLanguage,
                           digestEnabled, digestFrequency, digestHour, digestWeekday, staleRelationshipDays, lastDigestDay,
                           vocabulary, replacements, appProfiles, pasteOnlyApps,
@@ -162,7 +172,7 @@ extension AppSettings {
                           quickNotesFolderPath, quickNoteNotify,
                           localOnlyMode, redactionEnabled, redactEmails, redactPhones, redactNumbers,
                           autoTagging, errorNotifications, verboseLogging, modelFailover,
-                          networkShowNotes, networkShowTags, networkDerivedLinks, networkAnimate, networkDormantDays,
+                          networkShowNotes, networkShowTags, networkDerivedLinks, networkAnimate, networkDormantDays, actionMyNames,
                           uiDateFormat, pdfPaperSize,
                           browserTabDetection, domainStyleRules,
                           saveDictations, dictationsFolderPath, dictationOrganization, audioImportMaxMB,
@@ -211,6 +221,15 @@ extension AppSettings {
         static let notifyOnMeetingEnd              = true
         static let retainMeetingAudio              = true
         static let frontMatterEnabled              = true
+        static let titleIncludesAccount            = true
+        static let meetingSplitMode                = MeetingSplitMode.ask
+        static let micMuteEnabled                  = true
+        static let notesGroupByWeek                = true   // Year › Month › Week › Day; off drops the Week level
+        static let micMuteRestoreOnQuit            = false
+        static let micMuteAfterMeeting             = true   // re-mute when a meeting ends
+        static let speakerIconEnabled              = true   // speaker status icon in the menu bar
+        static let micMuteSeparateIcon             = true   // own menu-bar icon for the mic
+        static let micMuteOnStart                  = true   // mic stays muted unless you unmute it on purpose
         static let diarizationEnabled              = true
         static let offlineFallback                 = true
         static let preferOnDeviceAI                = false
@@ -270,6 +289,7 @@ extension AppSettings {
         static let networkDerivedLinks             = true    // person/tag ↔ organisation links computed from notes
         static let networkAnimate                  = true    // live layout animation (off = settle instantly)
         static let networkDormantDays: Int         = 45      // days without a note before an account counts as dormant
+        static let actionMyNames                   = ""      // extra names for the Action Items "Me" filter (comma-separated)
         static let uiDateFormat                    = "dd MMM yyyy"
         static let pdfPaperSize                     = "letter"   // "letter" | "a4"
         static let browserTabDetection             = true

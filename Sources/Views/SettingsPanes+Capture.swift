@@ -314,6 +314,20 @@ struct MeetingPane: View {
                 Toggle("Offer to start when a call is detected", isOn: $settings.meetingAutoDetect)
                 Text("When Zoom, Teams, Webex, Slack, a browser call (Google Meet), or another conferencing app starts using the microphone, GhostWriter asks whether to start Meeting Mode — and offers to stop when the call ends.")
                     .font(.caption).foregroundColor(.secondary)
+                HStack {
+                    Text("When a new call starts mid-recording")
+                    Spacer()
+                    Picker("", selection: $settings.meetingSplitMode) {
+                        ForEach(MeetingSplitMode.allCases) { Text($0.displayName).tag($0) }
+                    }
+                    .labelsHidden().frame(width: 190)
+                    .disabled(!settings.meetingAutoDetect)
+                    DefaultResetButton(isDefault: settings.meetingSplitMode == AppSettings.Default.meetingSplitMode) {
+                        settings.meetingSplitMode = AppSettings.Default.meetingSplitMode
+                    }
+                }
+                Text(settings.meetingSplitMode.help + " Detected from a change of meeting tab (Meet room, Meet → Teams), a call that ended and another that began, or a join right after the mic was released.")
+                    .font(.caption).foregroundColor(.secondary)
                 Toggle("Also detect web meetings by the browser tab", isOn: $settings.meetingTabDetection)
                     .disabled(!settings.meetingAutoDetect)
                 Text("Zoom's web client often doesn't open your microphone until you unmute or choose Join Audio, so the call can go unnoticed. With this on, an open Zoom, Google Meet, Teams or Webex meeting page in the frontmost Chrome, Edge, Brave, Arc, Vivaldi, Opera or Safari tab is offered right away. Only the tab's address is read, on your Mac, and never stored or logged; macOS asks once for permission to control your browser (System Settings → Privacy & Security → Automation). Firefox can't be read this way and still relies on the microphone.")

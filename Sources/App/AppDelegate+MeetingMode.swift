@@ -167,7 +167,7 @@ extension AppDelegate {
         startMeetingTimer()
 
         // Update status bar icon
-        statusItem?.button?.image = NSImage(systemSymbolName: "headphones.circle.fill", accessibilityDescription: "Meeting Mode")
+        refreshStatusIcon()
 
         // Overlay behavior per settings: captions / minimal pill / hidden
         if let panel = overlayPanel {
@@ -201,7 +201,9 @@ extension AppDelegate {
         statusItem?.button?.title = String(format: " %d:%02d", elapsed / 60, elapsed % 60)
     }
 
-    func stopMeetingMode() {
+    /// `remute: false` is for a split (the next note starts straight away, so the
+    /// mic must stay as it is).
+    func stopMeetingMode(remute: Bool = true) {
         meetingTimer?.invalidate()
         meetingTimer = nil
         statusItem?.button?.title = ""
@@ -275,7 +277,10 @@ extension AppDelegate {
             self.appState.isSpeakerActive = false
             LiveMeetingAssistant.shared.stop()
             self.meetingModeMenuItem?.title = "Start Meeting"
-            self.statusItem?.button?.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: "GhostWriter")
+            MainActor.assumeIsolated {
+                if remute { self.applyMuteAfterMeeting() }
+                self.refreshStatusIcon()
+            }
 
             if let panel = self.overlayPanel {
                 panel.ignoresMouseEvents = true  // restore pass-through

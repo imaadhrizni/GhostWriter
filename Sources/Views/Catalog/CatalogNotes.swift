@@ -17,6 +17,7 @@ struct NotesList: View {
     var unassignedOnly: Bool = false
     var missingOnly: Bool = false
     var range: DateRange = .all
+    @ObservedObject private var settings = AppSettings.shared
     @State private var semanticOrder: [String] = []
     @State private var hovered: String?
     @State private var pendingTrash: CatalogNote?
@@ -30,6 +31,8 @@ struct NotesList: View {
     @State private var multiSel = Set<String>()
     @State private var pendingBulkTrash = false
     @State private var showBulkAssign = false
+    // Bulk "generate titles" progress (nil = idle).
+    @State private var titleProgress: (done: Int, total: Int)?
 
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
 
@@ -62,8 +65,29 @@ struct NotesList: View {
         return facetFiltered(ns).sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
     }
 
+    /// Visible meeting notes still on the placeholder title.
+    private var untitled: [CatalogNote] {
+        filtered.filter { $0.filePath.hasSuffix(".md") && MeetingTitler.isDefault($0.title) && store.fileExists($0) }
+    }
+
+    /// Generate real titles for every visible placeholder-titled note, one after
+    /// another (the AI gate paces the calls).
+    private func titleAll() {
+        let targets = untitled
+        guard !targets.isEmpty, titleProgress == nil else { return }
+        titleProgress = (0, targets.count)
+        Task { @MainActor in
+            let polisher = TextPolisher()
+            for (i, n) in targets.enumerated() {
+                _ = await MeetingTitler.generate(for: store.url(of: n), using: polisher)
+                titleProgress = (i + 1, targets.count)
+            }
+            titleProgress = nil
+        }
+    }
+
     private var groups: [DateGroupNode<CatalogNote>] {
-        DateGrouping.tree(filtered) { $0.date }
+        DateGrouping.tree(filtered, weeks: settings.notesGroupByWeek) { $0.date }
     }
 
     /// Select, expand, and scroll a revealed note into view, then clear the
@@ -72,21 +96,11 @@ struct NotesList: View {
     private func performReveal(_ id: String?, proxy: ScrollViewProxy) {
         guard let id, let target = store.note(id: id) else { return }
         selID = id
-        expanded.formUnion(Self.dateGroupKeys(for: target.date))
+        expanded.formUnion(DateGrouping.ancestorKeys(for: target.date, weeks: settings.notesGroupByWeek))
         DispatchQueue.main.async {
             withAnimation { proxy.scrollTo(id, anchor: .center) }
             reveal = nil
         }
-    }
-
-    /// The year / month / day expansion keys for a note's date, matching the
-    /// local-calendar keys `DateGrouping.tree` assigns, so revealing a note can
-    /// open exactly the groups that contain it. `nil` dates live under "0000".
-    private static func dateGroupKeys(for date: Date?) -> Set<String> {
-        guard let date else { return ["0000"] }
-        let c = Calendar.current.dateComponents([.year, .month, .day], from: date)
-        let day = String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
-        return [String(day.prefix(4)), String(day.prefix(7)), day]
     }
 
     var body: some View {
@@ -107,9 +121,19 @@ struct NotesList: View {
                         }
                         .buttonStyle(.borderless).font(.caption)
                         .help("Select multiple to assign or delete")
+                        if let p = titleProgress {
+                            ProgressView().controlSize(.small)
+                            Text("Titling \(p.done)/\(p.total)").font(.caption).foregroundStyle(.secondary)
+                        } else if !untitled.isEmpty {
+                            Button(action: titleAll) {
+                                Label("Title \(untitled.count) untitled", systemImage: "sparkles")
+                            }
+                            .buttonStyle(.borderless).font(.caption)
+                            .help("Generate a title from the transcript for every meeting still named “Meeting <date>”")
+                        }
                         Spacer()
                         if !searching && !filtered.isEmpty {
-                            ExpandCollapseButton(tree: groups, expanded: $expanded)
+                            ExpandCollapseButton(tree: groups, expanded: $expanded, groupByWeek: $settings.notesGroupByWeek)
                                 .buttonStyle(.borderless).font(.caption)
                         }
                     }
@@ -498,6 +522,8 @@ struct NoteLinkEditor: View {
     let note: CatalogNote
     @State private var showAssign = false
     @State private var titleDraft = ""
+    @State private var titling = false
+    @State private var titleStatus = ""
     @State private var meetingTypeID = ""
     @State private var audioRelPath = ""
     @State private var audioBusy = false
@@ -512,8 +538,19 @@ struct NoteLinkEditor: View {
     private func commitTitle() {
         let t = titleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, t != current.title else { return }
-        store.renameNote(relativePath: note.filePath, to: t)
-        MeetingNotesWriter.setFrontMatterTitle(t, to: fileURL)
+        MeetingTitler.apply(t, to: fileURL)
+    }
+
+    /// Ask the model for a title from the transcript and show it in the field.
+    private func suggestTitle() {
+        titling = true; titleStatus = ""
+        Task { @MainActor in
+            defer { titling = false }
+            switch await MeetingTitler.generate(for: fileURL) {
+            case .titled(let t): titleDraft = t
+            case .failed(let why): titleStatus = why
+            }
+        }
     }
 
     /// Load the front-matter fields the editor edits directly (meeting type,
@@ -670,8 +707,20 @@ struct NoteLinkEditor: View {
             Section {
                 Button { openNote(note) } label: { Label("Open note", systemImage: "arrow.up.forward.app") }
                 // Editable title — writes the Catalog row and the file front-matter.
-                TextField("Title", text: $titleDraft)
-                    .onSubmit(commitTitle)
+                HStack {
+                    TextField("Title", text: $titleDraft)
+                        .onSubmit(commitTitle)
+                    if isMeetingNote {
+                        Button { suggestTitle() } label: {
+                            if titling { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "sparkles") }
+                        }
+                        .buttonStyle(.borderless).disabled(titling)
+                        .help(MeetingTitler.isDefault(current.title)
+                              ? "Generate a title from the meeting" : "Regenerate the title from the meeting")
+                    }
+                }
+                if !titleStatus.isEmpty { Text(titleStatus).font(.caption).foregroundStyle(.secondary) }
                 if let d = note.date { LabeledContent("Date") { Text(d.formatted(date: .abbreviated, time: .shortened)) } }
                 // Meeting type — correct the template a note was filed under.
                 if isMeetingNote {

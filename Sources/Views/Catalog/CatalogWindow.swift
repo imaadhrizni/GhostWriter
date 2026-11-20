@@ -43,6 +43,7 @@ enum CatalogSection: String, CaseIterable, Identifiable {
     case projects      = "Projects"
     case people        = "People"
     case tags          = "Tags"
+    case actions       = "Action Items"
     case questions     = "Open Questions"
     case poc           = "POC Tracker"
     case radar         = "Keyword Radar"
@@ -57,14 +58,15 @@ enum CatalogSection: String, CaseIterable, Identifiable {
     /// • **Graph** — the CRM entities, in the deal-flow chain (org → project) kept
     ///   contiguous to match the Map tree, with People and Tags — the cross-cutting
     ///   per-note entities — last.
-    /// • **Track** — the watch/resolve surfaces, led by the actionable inbox.
+    /// • **Track** — the watch/resolve surfaces, led by the actionable inboxes
+    ///   (Action Items, then Open Questions).
     /// • **Explore** — the graph lenses over everything: Map (the hierarchy as a
     ///   tree) and Network (the same records as a linked graph).
     static let sidebarGroups: [(title: String?, sections: [CatalogSection])] = [
         ("Overview", [.dashboard, .reports]),
         ("Records",  [.notes, .recordings]),
         ("Graph",    [.organisations, .projects, .people, .tags]),
-        ("Track",    [.questions, .poc, .radar]),
+        ("Track",    [.actions, .questions, .poc, .radar]),
         ("Explore",  [.map, .network]),
     ]
 
@@ -81,6 +83,7 @@ enum CatalogSection: String, CaseIterable, Identifiable {
         case .poc:           return "POC"
         case .radar:         return "Term"
         case .questions:     return "Question"
+        case .actions:       return "Action Item"
         case .reports:       return "Report"
         }
     }
@@ -98,6 +101,7 @@ enum CatalogSection: String, CaseIterable, Identifiable {
         case .poc:           return "flask"
         case .radar:         return "dot.radiowaves.left.and.right"
         case .questions:     return "questionmark.circle"
+        case .actions:       return "checklist"
         case .reports:       return "chart.bar.doc.horizontal"
         }
     }
@@ -115,6 +119,7 @@ enum CatalogSection: String, CaseIterable, Identifiable {
         case .poc:           return .cyan
         case .radar:         return .red
         case .questions:     return .mint
+        case .actions:       return Color(red: 0.86, green: 0.60, blue: 0.0)   // amber — the one system hue the sidebar hasn't used
         case .reports:       return .green
         }
     }
@@ -189,12 +194,13 @@ struct CatalogView: View {
         case .poc:           return store.allPocs.count
         case .radar:         return 0
         case .questions:     return 0
+        case .actions:       return 0
         case .reports:       return 0
         }
     }
 
     /// Sections that fill the content column and want no detail pane.
-    private var wideCanvas: Bool { section == .dashboard || section == .questions || section == .reports || section == .recordings }
+    private var wideCanvas: Bool { section == .dashboard || section == .questions || section == .actions || section == .reports || section == .recordings }
     /// Master lists that carry a filter/sort toolbar and so want a wider column.
     private var wideMaster: Bool { section == .poc || section == .radar || section == .map }
     /// The Network graph needs room to breathe: a wide content column with its
@@ -309,6 +315,8 @@ struct CatalogView: View {
                                onOpenNote: { id in if let n = store.note(id: id) { openNote(n) } })
         } else if section == .poc {
             PocProjectList(store: store, selID: $selID)
+        } else if section == .actions {
+            ActionItemsList(store: store)
         } else if section == .questions {
             OpenQuestionsList(store: store)
         } else if section == .reports {

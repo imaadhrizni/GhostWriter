@@ -28,6 +28,11 @@ extension AppDelegate {
                 }
             }
             statsMenuItem?.title = statsLine
+            // Mic mute: only when enabled; the title says what the click will do.
+            muteMicMenuItem?.isHidden = !settings.micMuteEnabled
+            let micMuted = MainActor.assumeIsolated { MicMute.shared.isMuted }
+            muteMicMenuItem?.title = micMuted ? "Unmute Microphone" : "Mute Microphone"
+            muteMicMenuItem?.image = NSImage(systemSymbolName: micMuted ? "mic.fill" : "mic.slash", accessibilityDescription: nil)
             // Pause only makes sense mid-meeting — hide it otherwise.
             pauseMenuItem?.isHidden = !appState.isMeetingMode
             // Live Brief show/hide — only while its panel is running.
@@ -218,3 +223,195 @@ extension AppDelegate {
         }
     }
 }
+
+// MARK: - Microphone mute
+
+extension AppDelegate {
+
+    /// Track the default input and keep the menu-bar icon in step with its mute
+    /// state — including a mute made elsewhere (System Settings, another app).
+    @MainActor func setUpMicMute() {
+        micMuteObserver = nil
+        guard settings.micMuteEnabled else { refreshStatusIcon(); return }
+        MicMute.shared.start()
+        micMuteObserver = MicMute.shared.$isMuted
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshStatusIcon() }
+    }
+
+    /// "Muted by default": mute the mic as GhostWriter starts, so it is only live
+    /// when you unmute it on purpose (⌃⌥U) for a call.
+    @MainActor func applyMuteOnLaunch() {
+        guard settings.micMuteEnabled, settings.micMuteOnStart else { return }
+        MicMute.shared.start()
+        if MicMute.shared.isSupported { MicMute.shared.setMuted(true) }   // every input, even if the default already is
+    }
+
+    /// The meeting is over: put the mic back to muted, ready for the next call —
+    /// only when you keep it muted by default.
+    @MainActor func applyMuteAfterMeeting() {
+        guard settings.micMuteEnabled, settings.micMuteOnStart, settings.micMuteAfterMeeting else { return }
+        MicMute.shared.start()
+        if MicMute.shared.isSupported { MicMute.shared.setMuted(true) }   // every input, even if the default already is
+    }
+
+    /// On quit: with "muted by default" the mic goes back to muted (whatever you left
+    /// it at during a call); otherwise it is unmuted only if you asked for that.
+    @MainActor func applyMuteOnQuit() {
+        guard settings.micMuteEnabled else { return }
+        if settings.micMuteOnStart {
+            if MicMute.shared.isSupported { MicMute.shared.setMuted(true) }   // every input, even if the default already is
+        } else if settings.micMuteRestoreOnQuit, MicMute.shared.isMuted {
+            MicMute.shared.setMuted(false)
+        }
+    }
+
+    /// `pkill` / `kill` (and `./ship.sh`, which restarts the app) send SIGTERM,
+    /// which would skip `applicationWillTerminate` — route it through a normal quit
+    /// so the mic's quit state is applied.
+    func installTerminationSignalHandlers() {
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { NSApp.terminate(nil) }
+            source.resume()
+            terminationSignalSources.append(source)
+        }
+    }
+
+    /// Settings turned the feature on or off. Turning it off while muted unmutes —
+    /// there'd be no hotkey left to undo it.
+    @MainActor func micMuteSettingChanged() {
+        if !settings.micMuteEnabled, MicMute.shared.isMuted { MicMute.shared.setMuted(false) }
+        if !settings.micMuteEnabled { MicMute.shared.stop() }
+        setUpMicMute()
+    }
+
+    /// Menu item and ⌃⌥U hotkey.
+    @MainActor @objc func toggleMicMute() {
+        guard settings.micMuteEnabled else { return }
+        MicMute.shared.start()
+        guard MicMute.shared.isSupported else {
+            let name = MicMute.shared.deviceName
+            reportError("\(name.isEmpty ? "The current microphone" : name) can't be muted from here — it has no mute or volume control.")
+            return
+        }
+        let muted = MicMute.shared.toggle()
+        NSSound(named: muted ? "Funk" : "Pop")?.play()
+    }
+
+    /// The menu-bar icon for the current state: a red slashed mic while muted (so it
+    /// is visible at a glance), headphones during Meeting Mode, else the waveform.
+    @MainActor func refreshStatusIcon() {
+        guard let button = statusItem?.button else { return }
+        let separate = settings.micMuteEnabled && settings.micMuteSeparateIcon
+        // With its own mic icon, the main icon only tells the app's state; otherwise it
+        // doubles as the mute indicator (a red slashed mic while muted).
+        let muted = !separate && settings.micMuteEnabled && MicMute.shared.isMuted
+        let (symbol, label) = muted ? ("mic.slash.circle.fill", "GhostWriter — microphone muted")
+            : appState.isMeetingMode ? ("headphones.circle.fill", "Meeting Mode")
+            : ("waveform.circle.fill", "GhostWriter")
+        let base = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        if muted {
+            // A template image is drawn in the menu bar's own black/white and ignores
+            // tint — so paint it: white glyph on a red disc, which stays vivid on any bar.
+            let colors = NSImage.SymbolConfiguration(paletteColors: [.white, .systemRed])
+            let painted = base?.withSymbolConfiguration(colors)
+            painted?.isTemplate = false
+            button.image = painted
+        } else {
+            base?.isTemplate = true
+            button.image = base
+        }
+        button.image?.size = NSSize(width: 18, height: 18)
+        refreshMicStatusItem(show: separate)
+    }
+
+    /// The second menu-bar icon: a red slashed mic while muted, a green mic while live.
+    /// Click it to mute or unmute. Created and removed with the setting.
+    @MainActor private func refreshMicStatusItem(show: Bool) {
+        guard show else {
+            if let item = micStatusItem { NSStatusBar.system.removeStatusItem(item); micStatusItem = nil }
+            return
+        }
+        if micStatusItem == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            item.button?.target = self
+            item.button?.action = #selector(toggleMicMute)
+            micStatusItem = item
+        }
+        guard let button = micStatusItem?.button else { return }
+        let muted = MicMute.shared.isMuted
+        let symbol = muted ? "mic.slash.fill" : "mic.fill"
+        let label = muted ? "Microphone muted — click to unmute" : "Microphone live — click to mute"
+        let colors = NSImage.SymbolConfiguration(paletteColors: [muted ? .systemRed : .systemGreen])
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?.withSymbolConfiguration(colors)
+        image?.isTemplate = false
+        image?.size = NSSize(width: 16, height: 16)
+        button.image = image
+        button.toolTip = label
+    }
+}
+
+// MARK: - Speaker status icon
+
+extension AppDelegate {
+
+    /// Track the default output and keep the speaker icon in step with it. Called at
+    /// launch and whenever the setting (or a settings reset) changes.
+    @MainActor func setUpSpeakerStatus() {
+        speakerObserver = nil
+        guard settings.speakerIconEnabled else {
+            SpeakerStatus.shared.stop()
+            if let item = speakerStatusItem { NSStatusBar.system.removeStatusItem(item); speakerStatusItem = nil }
+            return
+        }
+        SpeakerStatus.shared.start()
+        let speaker = SpeakerStatus.shared
+        speakerObserver = speaker.$isMuted.combineLatest(speaker.$volume, speaker.$deviceName)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshSpeakerStatusItem() }
+    }
+
+    /// Click the icon to mute or unmute the speaker.
+    @MainActor @objc func toggleSpeakerMute() {
+        guard SpeakerStatus.shared.isSupported else {
+            let name = SpeakerStatus.shared.deviceName
+            reportError("\(name.isEmpty ? "The current output" : name) can't be muted from here — it has no mute or volume control.")
+            return
+        }
+        SpeakerStatus.shared.toggle()
+    }
+
+    /// A speaker whose waves follow the volume; red and slashed while muted.
+    @MainActor private func refreshSpeakerStatusItem() {
+        if speakerStatusItem == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            item.button?.target = self
+            item.button?.action = #selector(toggleSpeakerMute)
+            speakerStatusItem = item
+        }
+        guard let button = speakerStatusItem?.button else { return }
+        let speaker = SpeakerStatus.shared
+        let percent = Int((speaker.volume * 100).rounded())
+        let symbol: String
+        if speaker.isMuted { symbol = "speaker.slash.fill" }
+        else if speaker.volume < 0.34 { symbol = "speaker.wave.1.fill" }
+        else if speaker.volume < 0.67 { symbol = "speaker.wave.2.fill" }
+        else { symbol = "speaker.wave.3.fill" }
+        let device = speaker.deviceName.isEmpty ? "Speaker" : speaker.deviceName
+        let label = speaker.isMuted ? "\(device) — muted · click to unmute" : "\(device) — volume \(percent)% · click to mute"
+        let base = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        if speaker.isMuted {
+            let painted = base?.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.systemRed]))
+            painted?.isTemplate = false
+            button.image = painted
+        } else {
+            base?.isTemplate = true      // the menu bar's own black/white — quiet while live
+            button.image = base
+        }
+        button.image?.size = NSSize(width: 16, height: 16)
+        button.toolTip = label
+    }
+}
+

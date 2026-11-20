@@ -37,6 +37,10 @@ struct MeetingNotesPane: View {
                 Toggle("Obsidian/Notion front-matter", isOn: $settings.frontMatterEnabled)
                 Text("Prepends YAML metadata (title, date, tags) to each notes file.")
                     .font(.caption).foregroundColor(.secondary)
+                Toggle("Put the customer / partner name in generated titles", isOn: $settings.titleIncludesAccount)
+                    .disabled(!settings.frontMatterEnabled)
+                Text("Generated titles read “Acme: SSO rollout kickoff” — the account the note is filed under, else the customer or partner named in the meeting — with a short topic after it. Off gives the topic alone.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Recording") {

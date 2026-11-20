@@ -128,6 +128,7 @@ enum MeetingRefinery {
         async let factsTask: TextPolisher.MeetingFacts? = wantsFacts
             ? await tp.extractMeetingFacts(
                 transcript: transcript, includeTitle: wantsTitle,
+                topicOnlyTitle: settings.titleIncludesAccount,
                 includePeople: includePeople, fields: schema)
             : nil
         async let chaptersTask: String? = settings.topicChapters
@@ -168,9 +169,7 @@ enum MeetingRefinery {
         // key fields (one fast structured call above).
         if let facts {
             if wantsTitle, !facts.title.isEmpty {
-                MeetingNotesWriter.setFrontMatterTitle(facts.title, to: fileURL)
-                CatalogStore.shared.renameNote(
-                    relativePath: AppSettings.shared.relativePath(of: fileURL), to: facts.title)
+                MeetingTitler.apply(MeetingTitler.title(topic: facts.title, customer: facts.metadata.customer, for: fileURL), to: fileURL)
             }
             if wantsMeta {
                 var meta = facts.metadata

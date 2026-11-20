@@ -178,6 +178,9 @@ struct GeneralPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroup("Notes") {
+                Toggle("Group notes by week in the Catalog", isOn: $settings.notesGroupByWeek)
+                Text("The Catalog's Notes list groups by Year › Month › Week › Day. Off drops the Week level (Year › Month › Day). The list's Expand menu can also switch it.")
+                    .font(.caption).foregroundColor(.secondary)
                 Toggle("Open notes in external editor", isOn: $settings.openNotesExternally)
                 Text("Open note files in your default Markdown app (e.g. VS Code, Obsidian, Typora) instead of the in-app viewer — everywhere notes open: the menu, recent list, Catalog, and Ask. Set your preferred app in Finder → a .md file → Get Info → Open with → Change All. Off uses the built-in viewer.")
                     .font(.caption)
@@ -185,10 +188,43 @@ struct GeneralPane: View {
             }
 
             SettingsGroup("Microphone") {
+                Toggle("Mute shortcut", isOn: $settings.micMuteEnabled)
+                    .onChange(of: settings.micMuteEnabled) { _, _ in
+                        MainActor.assumeIsolated { (NSApp.delegate as? AppDelegate)?.micMuteSettingChanged() }
+                    }
+                Text("Adds ⌃⌥U (change it under Capture → Shortcuts) and a menu item that mutes the Mac's microphone for every app on a call — Zoom, Meet, Teams — not just GhostWriter, so your side isn't transcribed while muted either. The menu-bar icon turns into a red slashed mic while muted. Dictation while muted tells you why nothing was typed. Off leaves the key free.")
+                    .font(.caption).foregroundColor(.secondary)
+                if settings.micMuteEnabled {
+                    Toggle("Show a separate microphone icon in the menu bar", isOn: $settings.micMuteSeparateIcon)
+                        .onChange(of: settings.micMuteSeparateIcon) { _, _ in
+                            MainActor.assumeIsolated { (NSApp.delegate as? AppDelegate)?.refreshStatusIcon() }
+                        }
+                    Text("A second icon next to GhostWriter's: a red slashed mic while muted, a green mic while live — click it to toggle. GhostWriter's own icon then keeps showing the app's state (waveform, or headphones during a meeting). Off puts the mute state in GhostWriter's single icon.")
+                        .font(.caption).foregroundColor(.secondary)
+                    Toggle("Keep the microphone muted by default", isOn: $settings.micMuteOnStart)
+                    Text("Mutes the Mac's microphone when GhostWriter starts and mutes it again when GhostWriter quits, so it is only live when you unmute it yourself (⌃⌥U) for a call. Off leaves the mic as you left it.")
+                        .font(.caption).foregroundColor(.secondary)
+                    if settings.micMuteOnStart {
+                        Toggle("Mute again when a meeting ends", isOn: $settings.micMuteAfterMeeting)
+                    }
+                    if !settings.micMuteOnStart {
+                        Toggle("Unmute when GhostWriter quits", isOn: $settings.micMuteRestoreOnQuit)
+                    }
+                }
+                Divider()
                 Toggle("Prefer built-in microphone", isOn: $settings.preferBuiltInMic)
                 Text("Off: capture from the system default input (e.g. your headset mic). On: always use the Mac's built-in mic — keeps Bluetooth headphones (AirPods) in high-quality audio, since using their mic forces the low-quality call profile and shifts volume. Applies to dictation and meetings.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Speaker") {
+                Toggle("Show a speaker icon in the menu bar", isOn: $settings.speakerIconEnabled)
+                    .onChange(of: settings.speakerIconEnabled) { _, _ in
+                        MainActor.assumeIsolated { (NSApp.delegate as? AppDelegate)?.setUpSpeakerStatus() }
+                    }
+                Text("Shows the Mac's output at a glance: the speaker's waves follow the volume, and it turns into a red slashed speaker when muted. The tooltip names the active output (e.g. your AirPods); click the icon to mute or unmute. It follows the volume keys and device switches.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             SettingsGroup("Display") {
@@ -211,6 +247,19 @@ struct GeneralPane: View {
                     }
                 }
                 Text("What the Network section (Catalog → Explore) shows when it opens — you can still toggle each from its toolbar. Derived links connect people and tags to the organisations whose notes they appear in, so accounts that share a contact are linked even with notes hidden. With animation off the layout appears already settled (it is also instant when macOS Reduce Motion is on).")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            SettingsGroup("Action Items") {
+                HStack {
+                    Text("My names")
+                    TextField("e.g. Siva", text: $settings.actionMyNames)
+                        .textFieldStyle(.roundedBorder)
+                    DefaultResetButton(isDefault: settings.actionMyNames == AppSettings.Default.actionMyNames) {
+                        settings.actionMyNames = AppSettings.Default.actionMyNames
+                    }
+                }
+                Text("Meeting summaries assign action items to whoever was speaking — \"You\" for your own voice, or a name once you've identified speakers. List the names that mean you (comma-separated) so the **Me** filter in Catalog → Action Items finds your tasks. Your “You” speaker label is always included.")
                     .font(.caption).foregroundColor(.secondary)
             }
 

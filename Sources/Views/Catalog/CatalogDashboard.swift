@@ -79,8 +79,7 @@ struct DashboardMetrics {
             // Action items — open + overdue.
             for item in NotesLibrary.actionItems(inFile: f.url) where !item.done {
                 open += 1
-                if let due = item.due, let dd = dayFmt.date(from: due.trimmingCharacters(in: .whitespaces)),
-                   dd < today { overdue += 1 }
+                if item.isOverdue(asOf: today) { overdue += 1 }
             }
 
             // Unanswered questions (the SE's follow-up queue).
@@ -555,8 +554,10 @@ struct DashboardView: View {
                     StatNumber("\(metrics.openActions)", "Open", .blue)
                     StatNumber("\(metrics.overdueActions)", "Overdue", metrics.overdueActions > 0 ? .red : .secondary)
                 }
-                Text("Commitments across \(metrics.meetingsScanned) recent meetings. Tick them off in a note or the Digest.")
+                Text("Commitments across \(metrics.meetingsScanned) recent meetings. Tick them off here, in a note, or the Digest.")
                     .font(.caption).foregroundColor(.secondary)
+                Button("Open Action Items") { openSection(.actions) }
+                    .buttonStyle(.link).font(.caption)
             }
         }
     }

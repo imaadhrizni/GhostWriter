@@ -79,7 +79,7 @@ final class AppSettings: ObservableObject {
 
     // MARK: - Global shortcuts
 
-    /// User overrides for the six ⌃⌥ global shortcuts, keyed by
+    /// User overrides for the seven ⌃⌥ global shortcuts, keyed by
     /// `GlobalShortcut.rawValue` → virtual key code. Only non-default bindings
     /// are stored; the modifier (⌃⌥) is fixed.
     private var shortcutOverrides: [String: Int] {
@@ -171,6 +171,16 @@ final class AppSettings: ObservableObject {
             return Default.notesFolder
         }
         set { set(newValue.path, Key.notesFolderPath) }
+    }
+
+    /// What happens when a different call starts while one is being recorded.
+    var meetingSplitMode: MeetingSplitMode {
+        get {
+            guard let raw = defaults.string(forKey: Key.meetingSplitMode),
+                  let mode = MeetingSplitMode(rawValue: raw) else { return Default.meetingSplitMode }
+            return mode
+        }
+        set { set(newValue.rawValue, Key.meetingSplitMode) }
     }
 
     /// How the floating overlay behaves during meetings.
@@ -293,6 +303,14 @@ final class AppSettings: ObservableObject {
 
     /// Prepend YAML front-matter (Obsidian/Notion friendly) to notes files.
     @Setting(Key.frontMatterEnabled, Default.frontMatterEnabled) var frontMatterEnabled: Bool
+    @Setting(Key.titleIncludesAccount, Default.titleIncludesAccount) var titleIncludesAccount: Bool
+    @Setting(Key.micMuteEnabled, Default.micMuteEnabled) var micMuteEnabled: Bool
+    @Setting(Key.notesGroupByWeek, Default.notesGroupByWeek) var notesGroupByWeek: Bool
+    @Setting(Key.micMuteRestoreOnQuit, Default.micMuteRestoreOnQuit) var micMuteRestoreOnQuit: Bool
+    @Setting(Key.micMuteOnStart, Default.micMuteOnStart) var micMuteOnStart: Bool
+    @Setting(Key.micMuteSeparateIcon, Default.micMuteSeparateIcon) var micMuteSeparateIcon: Bool
+    @Setting(Key.speakerIconEnabled, Default.speakerIconEnabled) var speakerIconEnabled: Bool
+    @Setting(Key.micMuteAfterMeeting, Default.micMuteAfterMeeting) var micMuteAfterMeeting: Bool
 
     /// How meeting notes files are organized under the notes folder.
     var notesOrganization: NotesOrganization {
@@ -1183,6 +1201,16 @@ final class AppSettings: ObservableObject {
     @Setting(Key.networkDerivedLinks, Default.networkDerivedLinks) var networkDerivedLinks: Bool
     /// Animate the layout settling (off = jump straight to the settled picture).
     @Setting(Key.networkAnimate, Default.networkAnimate) var networkAnimate: Bool
+    /// Names the notes use for you, beyond your "You" speaker label (comma-separated,
+    /// e.g. "Siva") — what the **Me** filter in Catalog → Action Items matches.
+    @Setting(Key.actionMyNames, Default.actionMyNames) var actionMyNames: String
+
+    /// The names that mean "me" in action-item owners: your speaker label plus `actionMyNames`.
+    var myOwnerNames: [String] {
+        ([speakerLabelYou] + actionMyNames.split(separator: ",").map(String.init))
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
     /// Days without a note before an open organisation/project is flagged dormant.
     var networkDormantDays: Int {
         get { min(365, max(7, int(Key.networkDormantDays, Default.networkDormantDays))) }

@@ -99,7 +99,7 @@ enum DigestService {
             let inPeriod = (parseDate(file.day) ?? .distantPast) >= since
             var overdue: [NotesLibrary.ActionItem] = [], open: [NotesLibrary.ActionItem] = []
             for item in NotesLibrary.actionItems(inFile: file.url) where !item.done {
-                if let due = item.due, let d = parseDate(due), d < today { overdue.append(item) }
+                if item.isOverdue(asOf: today) { overdue.append(item) }
                 else { open.append(item) }
             }
             guard inPeriod || !overdue.isEmpty || !open.isEmpty else { continue }

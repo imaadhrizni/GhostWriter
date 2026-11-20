@@ -191,44 +191,27 @@ enum NotesLibrary {
         let rawLine: String
 
         /// Assignee, from a "@owner" token when the summary identified one.
-        var owner: String? {
-            guard let m = ActionItem.ownerRegex.firstMatch(
-                in: text, range: NSRange(text.startIndex..., in: text)),
-                let r = Range(m.range(at: 1), in: text) else { return nil }
-            return String(text[r])
+        var owner: String? { ActionItemParsing.owner(in: text) }
+
+        /// Due date as written, from a "(due: …)" annotation when the summary stated one.
+        var due: String? { ActionItemParsing.due(in: text) }
+
+        /// The due date as a calendar day — relative phrases ("tomorrow", "Monday",
+        /// "end of next week") resolved against the day of the meeting the item came
+        /// from. nil when the note gives no date or it can't be pinned to one.
+        var dueDate: Date? {
+            ActionItemParsing.dueDate(from: due, relativeTo: DateDisplay.posixDay.date(from: file.day))
         }
 
-        /// Due date, from a "(due: …)" annotation when the summary stated one.
-        var due: String? {
-            guard let m = ActionItem.dueRegex.firstMatch(
-                in: text, range: NSRange(text.startIndex..., in: text)),
-                let r = Range(m.range(at: 1), in: text) else { return nil }
-            return String(text[r]).trimmingCharacters(in: .whitespaces)
+        /// Open and past its due day (done items are never overdue).
+        func isOverdue(asOf today: Date = Calendar.current.startOfDay(for: Date())) -> Bool {
+            guard !done, let d = dueDate else { return false }
+            return d < today
         }
 
         /// The action alone, with the "@owner" / "(due: …)" chips and any
         /// trailing "—" separator removed — for a clean row and Reminders title.
-        var displayText: String {
-            var s = text
-            s = ActionItem.dueRegex.stringByReplacingMatches(
-                in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "")
-            s = ActionItem.ownerRegex.stringByReplacingMatches(
-                in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "")
-            s = s.trimmingCharacters(in: .whitespaces)
-            while s.hasSuffix("—") || s.hasSuffix("-") || s.hasSuffix(",") {
-                s = String(s.dropLast()).trimmingCharacters(in: .whitespaces)
-            }
-            return s.isEmpty ? text : s
-        }
-
-        // Owner is only recognized in the trailing "— @owner" position the
-        // summary emits, so an @mention or email inside the action text isn't
-        // mistaken for the assignee.
-        private static let ownerRegex =
-            try! NSRegularExpression(pattern: "[—–-]\\s*@([\\w][\\w.'-]*)")
-        private static let dueRegex =
-            try! NSRegularExpression(pattern: "\\(due:\\s*([^)]*)\\)",
-                                     options: [.caseInsensitive])
+        var displayText: String { ActionItemParsing.displayText(of: text) }
     }
 
     /// Flip an item's checkbox in its notes file.
@@ -279,68 +262,28 @@ enum NotesLibrary {
     /// items are merged and deduped case-insensitively. One shared
     /// implementation for the Catalog dashboard card and the Open Questions list.
     static func openQuestions(in text: String) -> [OpenQuestion] {
-        var out: [OpenQuestion] = []
-        var seen = Set<String>()
-        var inSection = false
-        for raw in text.components(separatedBy: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("## ") || line.hasPrefix("# ") {
-                let h = line.lowercased()
-                inSection = (h == "## open questions" || h == "## unanswered questions")
-                continue
-            }
-            guard inSection, line.hasPrefix("- ") || line.hasPrefix("* ") else { continue }
-            var body = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-            var done = false
-            if body.hasPrefix("[ ] ") {
-                body = String(body.dropFirst(4))
-            } else if body.lowercased().hasPrefix("[x] ") {
-                done = true; body = String(body.dropFirst(4))
-            }
-            body = body.trimmingCharacters(in: .whitespaces)
-            guard !body.isEmpty, seen.insert(body.lowercased()).inserted else { continue }
-            out.append(OpenQuestion(text: body, done: done, rawLine: line))
+        ActionItemParsing.questions(in: text).map {
+            OpenQuestion(text: $0.text, done: $0.done, rawLine: $0.rawLine)
         }
-        return out
     }
 
     /// Action items parsed from a single notes file — bullets under the
-    /// "## Action Items" heading. Used by the Catalog note editor.
+    /// "## Action Items" heading. Used by the Catalog note editor, the Digest, the
+    /// Dashboard and the Action Items screen.
     static func actionItems(inFile url: URL) -> [ActionItem] {
         guard let content = url.readText() else { return [] }
-        let file = MeetingFile(url: url)
-        var items: [ActionItem] = [], inSection = false
-        for rawLine in content.split(whereSeparator: \.isNewline) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            if line.lowercased().hasPrefix("## action items") { inSection = true; continue }
-            if inSection {
-                if line.hasPrefix("#") { inSection = false; continue }
-                if line.hasPrefix("-") || line.hasPrefix("*") {
-                    var text = line.dropFirst().trimmingCharacters(in: .whitespaces)
-                    var done = false
-                    while text.hasPrefix("[ ]") || text.lowercased().hasPrefix("[x]") {
-                        if text.lowercased().hasPrefix("[x]") { done = true }
-                        text = text.dropFirst(3).trimmingCharacters(in: .whitespaces)
-                    }
-                    // Skip "none" placeholders the AI writes when there are no
-                    // action items (e.g. "- _None_", "- N/A", "- —").
-                    if !text.isEmpty, !Self.isNonePlaceholder(String(text)) {
-                        items.append(ActionItem(file: file, text: String(text), done: done, rawLine: line))
-                    }
-                }
-            }
-        }
-        return items
+        return actionItems(in: content, file: MeetingFile(url: url))
     }
 
-    /// True when a bullet is a "no items" placeholder rather than a real action
-    /// — stripped of markdown emphasis/punctuation it reads as none / n/a / etc.
-    static func isNonePlaceholder(_ s: String) -> Bool {
-        let stripped = s
-            .trimmingCharacters(in: CharacterSet(charactersIn: "_*`~ ()—–-."))
-            .lowercased()
-        return ["", "none", "n/a", "na", "nil", "nothing",
-                "no action items", "no items", "none."].contains(stripped)
+    /// The same, from text already in hand (a scan that also needs the title and
+    /// front-matter reads each file once).
+    static func actionItems(in content: String, file: MeetingFile) -> [ActionItem] {
+        ActionItemParsing.items(in: content).map {
+            ActionItem(file: file, text: $0.text, done: $0.done, rawLine: $0.rawLine)
+        }
     }
+
+    /// True when a bullet is a "no items" placeholder — see `ActionItemParsing`.
+    static func isNonePlaceholder(_ s: String) -> Bool { ActionItemParsing.isNonePlaceholder(s) }
 }
 

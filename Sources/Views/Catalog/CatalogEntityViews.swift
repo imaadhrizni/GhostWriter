@@ -34,7 +34,7 @@ struct EntityList: View {
             Divider()
             Group {
                 switch section {
-                case .dashboard, .map, .network, .notes, .recordings, .poc, .radar, .questions, .reports: EmptyView()   // handled by CatalogView
+                case .dashboard, .map, .network, .notes, .recordings, .poc, .radar, .questions, .actions, .reports: EmptyView()   // handled by CatalogView
                 case .organisations: orgList
                 case .people:        peopleList
                 case .projects:      projectList
@@ -285,7 +285,7 @@ struct EntityList: View {
             var name = "New Tag", n = 2
             while existing.contains(name.lowercased()) { name = "New Tag \(n)"; n += 1 }
             selID = store.addTag(name: name).id
-        case .dashboard, .notes, .recordings, .poc, .radar, .questions, .reports:   break
+        case .dashboard, .notes, .recordings, .poc, .radar, .questions, .actions, .reports:   break
         }
     }
 }
@@ -319,7 +319,7 @@ struct EntityEditorView: View {
 
     var body: some View {
         switch section {
-        case .dashboard, .map, .network, .recordings, .poc, .radar, .questions, .reports: EmptyView()
+        case .dashboard, .map, .network, .recordings, .poc, .radar, .questions, .actions, .reports: EmptyView()
         case .organisations:
             if let o = store.org(id) { OrgEditor(store: store, org: o, onDelete: onDelete) } else { missing }
         case .people:
